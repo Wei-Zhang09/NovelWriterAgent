@@ -35,7 +35,9 @@ import {
 import { z } from 'zod';
 import { Planner, Writer, Reviewer } from '@nwa/writing';
 import { ChapterWorkspace, ContinuityChecker, FactExtractor, CanonPromoter } from '@nwa/story';
-import { CommitEngine } from '@nwa/harness';
+import { CommitEngine, SummaryIndexer, MemoryGatherer } from '@nwa/harness';
+import { FtsIndex } from '@nwa/storage';
+import { bigramTokenizer, Retriever, buildMatchExpression } from '@nwa/retrieval';
 import type { ReviewIssue } from '@nwa/shared';
 import { TransitionGate } from '@nwa/harness';
 import type { ToolContext } from '@nwa/shared';
@@ -79,6 +81,8 @@ interface OpenProject {
   /** STEP 4：Event Bus 与 Agent Runtime（模型未配置时 runtime 为 null） */
   readonly events: EventBus;
   runtime: AgentRuntime | null;
+  /** FTS 索引器（补缺口：检索可用） */
+  readonly fts: FtsIndex;
 }
 
 let opened: OpenProject | null = null;
@@ -425,12 +429,26 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const db = new Database({ path: dbPath, migrations: MIGRATIONS });
     const repos = createRepositories(db);
     const tools = new ToolRegistry(logger.child('tools'));
+    // FTS 索引器（补缺口：检索可用）
+    const fts = new FtsIndex({ db, tokenizer: bigramTokenizer, logger: logger.child('fts') });
+
     // ⚠ commit 工具需要项目目录（写 chapters/ 等），只能在 project.open 注册
     for (const tool of createAllTools(repos, {
       logger: logger.child('tools'),
       commit: {
         db,
         rootDir: dir,
+        indexer: {
+          indexChapter: (input) => {
+            fts.indexChapter({
+              chapterId: input.chapterId,
+              bookId: repos.books.listByProject(repos.projects.list()[0]?.id ?? '')[0]?.id ?? '',
+              chapterNumber: input.chapterNumber,
+              sourceRef: input.sourceRef,
+              text: input.body,
+            });
+          },
+        },
         // 工作区读取由 app 层注入，避免 @nwa/harness 依赖 @nwa/story
         readWorkspaceText: (chapterNumber, name) => {
           const ws = new ChapterWorkspace({
@@ -446,7 +464,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     }
 
     const events = new EventBus({ runs: repos.runs, logger: logger.child('events') });
-    const project: OpenProject = { dir, db, repos, tools, events, runtime: null };
+    const project: OpenProject = { dir, db, repos, tools, events, runtime: null, fts };
     project.runtime = buildRuntime(project);
     opened = project;
     logger.info('项目已打开', { dir, tools: tools.list().length, agentReady: project.runtime !== null });
@@ -1289,6 +1307,100 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     return r.data;
   },
 
+  /**
+   * 检索（补缺口）：走 FTS + bm25，结果带 sourceRef。
+   * ⚠ 只读。
+   */
+  'search.query': (params: { query: string; limit?: number }) => {
+    const p = requireProject();
+    const projectId = p.repos.projects.list()[0]?.id;
+    const bookId = projectId ? p.repos.books.listByProject(projectId)[0]?.id : undefined;
+
+    const retriever = new Retriever({ runner: p.fts, tokenizer: bigramTokenizer });
+    const chapterTrace = retriever.retrieve({
+      query: params.query,
+      limit: params.limit ?? 10,
+      ...(bookId ? { filter: { bookId } } : {}),
+    });
+
+    const gatherer = new MemoryGatherer({
+      retriever,
+      memoryIndex: p.fts,
+      buildMatch: (q) => buildMatchExpression(bigramTokenizer.query(q)),
+      logger: logger.child('memory'),
+    });
+    const mem = gatherer.gather(params.query, {
+      limit: params.limit ?? 10,
+      ...(bookId ? { bookId } : {}),
+      includeMemoryIndex: true,
+    });
+
+    return {
+      query: params.query,
+      engine: chapterTrace.engine,
+      tookMs: chapterTrace.tookMs,
+      matchedTokens: chapterTrace.matchedTokens,
+      chapters: chapterTrace.hits.map((h) => ({
+        id: h.id,
+        sourceRef: h.sourceRef,
+        score: Number(h.score.toFixed(3)),
+      })),
+      memories: mem.entries.map((e) => ({
+        id: e.id,
+        sourceRef: e.sourceRef,
+        score: Number(e.score.toFixed(3)),
+      })),
+      retrieved: mem.retrieved,
+    };
+  },
+
+  /** 待确认摘要清单（ADR-0006 约束 C 的验收卡） */
+  'summary.pending': () => {
+    const p = requireProject();
+    const projectId = p.repos.projects.list()[0]?.id;
+    const bookId = projectId ? p.repos.books.listByProject(projectId)[0]?.id : undefined;
+    if (!bookId) return { pending: [], approvedCount: 0 };
+    const indexer = new SummaryIndexer({
+      repos: p.repos,
+      fts: p.fts,
+      logger: logger.child('summary'),
+    });
+    return {
+      pending: indexer.pendingSummaries(bookId),
+      approvedCount: p.repos.chapters.listApprovedSummaries(bookId).length,
+    };
+  },
+
+  /** 确认摘要（可同时改写内容）→ 才进检索索引 */
+  'summary.approve': (params: { chapterId: string; edited?: string }) => {
+    const p = requireProject();
+    const chapter = p.repos.chapters.approveSummary(
+      params.chapterId,
+      params.edited,
+    );
+    const indexer = new SummaryIndexer({
+      repos: p.repos,
+      fts: p.fts,
+      logger: logger.child('summary'),
+    });
+    const r = indexer.indexChapter(chapter.id);
+    return { chapterId: chapter.id, indexed: r.indexed, reason: r.reason ?? null };
+  },
+
+  /** 撤回摘要确认（发现写错时） */
+  'summary.revoke': (params: { chapterId: string }) => {
+    const p = requireProject();
+    const chapter = p.repos.chapters.revokeSummaryApproval(params.chapterId);
+    const indexer = new SummaryIndexer({
+      repos: p.repos,
+      fts: p.fts,
+      logger: logger.child('summary'),
+    });
+    // ⚠ 撤回同时清理索引，避免旧内容继续被检索到
+    const r = indexer.indexChapter(chapter.id);
+    return { chapterId: chapter.id, indexed: r.indexed, reason: r.reason ?? null };
+  },
+
   // ── Agent Runtime / Run 可观测性（STEP 4） ────────────────
 
   /** Run 与 Agent 的当前状态（UI 右栏） */
@@ -1552,7 +1664,16 @@ function bootstrap(): void {
       tools.register(tool);
     }
   const events = new EventBus({ runs: repos.runs, logger: logger.child('events') });
-  const project: OpenProject = { dir: PROJECTS_ROOT, db, repos, tools, events, runtime: null };
+  const bootFts = new FtsIndex({ db, tokenizer: bigramTokenizer, logger: logger.child('fts') });
+  const project: OpenProject = {
+    dir: PROJECTS_ROOT,
+    db,
+    repos,
+    tools,
+    events,
+    runtime: null,
+    fts: bootFts,
+  };
   project.runtime = buildRuntime(project);
   opened = project;
   logger.info('迁移完成', {

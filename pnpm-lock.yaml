@@ -44,6 +44,9 @@ importers:
       '@nwa/harness':
         specifier: workspace:*
         version: link:../../packages/harness
+      '@nwa/retrieval':
+        specifier: workspace:*
+        version: link:../../packages/retrieval
       '@nwa/shared':
         specifier: workspace:*
         version: link:../../packages/shared

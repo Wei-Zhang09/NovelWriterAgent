@@ -199,3 +199,16 @@ body {
 /* 门禁预检结果（STEP 8） */
 .perm-line--ok { color: #4ade80; }
 .perm-line--err { color: #fca5a5; }
+
+/* 检索输入与小按钮（补缺口） */
+.input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+}
+.btn--small { font-size: 11px; padding: 2px 8px; }

@@ -52,6 +52,8 @@ describe('迁移', () => {
       '0002_checkpoint_seq',
       '0003_foreshadow_payoff',
       '0004_chapter_review',
+      '0005_fts',
+      '0006_summary_approval',
     ]);
   });
 
@@ -71,16 +73,50 @@ describe('迁移', () => {
     expect(second).toEqual(first);
   });
 
-  it('表与索引数量符合迁移声明（22 表 / 27 索引）', () => {
+  it('表与索引数量符合迁移声明（FTS 虚拟表与影子表分组断言）', () => {
     const db = open('c.db');
-    const tables = db.all<{ name: string }>(
+    // ⚠ 实测数字（补缺口后）：
+    //   业务表 22 张 + FTS 虚拟表 2 张 = 24
+    //   FTS5 为每个虚拟表建 5 张影子表（_data/_idx/_content/_docsize/_config）
+    //     → 2 × 5 = 10
+    //   索引 27 → 28（0006 新增 idx_chapters_summary_pending）
+    //
+    // 分组断言而不是只数总数：这样新增业务表与新增 FTS 表会分别失败，
+    // 一眼能看出是哪一类变了。
+    const all = db.all<{ name: string }>(
       "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
     );
+    const shadow = all.filter((t) =>
+      /^(chapter_fts|memory_fts)_(data|idx|content|docsize|config)$/.test(t.name),
+    );
+    const ftsVirtual = all.filter((t) => t.name === 'chapter_fts' || t.name === 'memory_fts');
+    const business = all.filter((t) => !shadow.includes(t) && !ftsVirtual.includes(t));
+
+    expect(business.length).toBe(22);
+    expect(ftsVirtual.length).toBe(2);
+    expect(shadow.length).toBe(10);
+
     const indexes = db.all<{ name: string }>(
       "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'",
     );
-    expect(tables.length).toBe(22);
-    expect(indexes.length).toBe(27);
+    expect(indexes.length).toBe(28);
+  });
+
+  it('⚠ 全部迁移都已应用（构建产物不遗漏 SQL）', () => {
+    const db = open('c2.db');
+    const applied = db.all<{ id: string }>('SELECT id FROM schema_migrations ORDER BY id');
+    // ⚠ 这条断言源于一个真实 bug：tsc -b 不拷贝 .sql，
+    //   dist/migrations 会缺少新迁移，且**不报错**。
+    //   开发态测试走 src 所以全绿，构建产物却静默缺迁移。
+    //   现在 build 脚本会拷贝并校验数量。
+    expect(applied.map((r) => r.id)).toEqual([
+      '0001_init',
+      '0002_checkpoint_seq',
+      '0003_foreshadow_payoff',
+      '0004_chapter_review',
+      '0005_fts',
+      '0006_summary_approval',
+    ]);
   });
 
   it('连接级 PRAGMA 全部生效', () => {
@@ -158,20 +194,27 @@ describe('FTS 可幂等重建（§59：索引是派生数据）', () => {
     const db = open('h.db');
     db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS chapter_fts USING fts5(tokens, tokenize='unicode61')");
 
-    db.run('INSERT INTO chapter_fts(tokens) VALUES (?)', '张 三 张三 走 了');
+    // ⚠ 这里的 INSERT 必须提供全部 5 列，且 rebuildFts 的 sourceSql 也必须。
+    //   早先测试用 1 列版本，与真实结构冲突
+    //   （"table chapter_fts has 5 columns but 1 values were supplied"）。
+    const cols = 'tokens, chapter_id, book_id, chapter_number, source_ref';
+    const insert = (t: string) => db.run(`INSERT INTO chapter_fts(${cols}) VALUES (?, ?, ?, ?, ?)`, t, 'c1', 'b1', 1, 'chapters/001.md');
+    const selectAll = `SELECT ${cols} FROM chapter_fts WHERE 0`;
+
+    insert('张 三 张三 走 了');
     const count = () => db.get<{ c: number }>('SELECT count(*) AS c FROM chapter_fts')?.c ?? 0;
     expect(count()).toBe(1);
 
-    // 第一次重建：清空后从"真源"重灌
-    db.rebuildFts('chapter_fts', "SELECT tokens FROM chapter_fts WHERE 0");
+    // 第一次重建：清空后从"真源"重灌（WHERE 0 表示真源为空 → 验证清空）
+    db.rebuildFts('chapter_fts', selectAll);
     expect(count()).toBe(0);
 
-    db.run('INSERT INTO chapter_fts(tokens) VALUES (?)', '张 三 张三');
+    insert('张 三 张三');
     const after1 = db.all('SELECT tokens FROM chapter_fts ORDER BY tokens');
 
     // 第二次重建：同样输入
-    db.rebuildFts('chapter_fts', "SELECT tokens FROM chapter_fts WHERE 0");
-    db.run('INSERT INTO chapter_fts(tokens) VALUES (?)', '张 三 张三');
+    db.rebuildFts('chapter_fts', selectAll);
+    insert('张 三 张三');
     const after2 = db.all('SELECT tokens FROM chapter_fts ORDER BY tokens');
 
     expect(after2).toEqual(after1);

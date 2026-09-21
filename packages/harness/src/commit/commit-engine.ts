@@ -83,6 +83,20 @@ export interface CommitEngineOptions {
   readonly killSwitch?: KillSwitch;
   /** 陈旧锁阈值 */
   readonly lockStaleMs?: number;
+  /**
+   * FTS 索引器（可选）。
+   *
+   * ⚠ 用结构化接口而非 import @nwa/retrieval：依赖方向是 retrieval → harness，
+   *   反向 import 会成环。
+   */
+  readonly indexer?: {
+    indexChapter(input: {
+      chapterId: string;
+      chapterNumber: number;
+      body: string;
+      sourceRef: string;
+    }): void;
+  };
 }
 
 /**
@@ -124,8 +138,10 @@ export class CommitEngine {
   private readonly logger: Logger;
   private readonly killSwitch: KillSwitch | undefined;
   private readonly lockStaleMs: number;
+  private readonly options: CommitEngineOptions;
 
   constructor(opts: CommitEngineOptions) {
+    this.options = opts;
     this.db = opts.db;
     this.repos = opts.repos;
     this.files = new AtomicFileSet(opts.rootDir);
@@ -353,10 +369,28 @@ export class CommitEngine {
       };
     }
 
-    // 索引重建（MVP 阶段是标记清除；FTS 全量重建属 Full）
+    // 索引重建：把本章正文写进 FTS。
+    //
+    // ADR-0002 的索引划分：FTS 是 Derived（§59 可 rebuild），
+    // 不进 Commit 事务；事务里只记 pending 标记，成功后在这里补做并清除。
+    // 若此处失败，pending 标记保留 → 下次启动 Repair 会补做。
+    let indexesRebuilt = false;
+    try {
+      this.indexChapter(req.chapterId, req.chapterNumber, req.body, chapterPath);
+      indexesRebuilt = true;
+    } catch (e) {
+      // ⚠ 索引失败不让提交失败：正文与 DB 都已落定，索引可从真源重建。
+      //   但必须**保留 pending 标记**，否则崩溃后无人知道索引是陈旧的。
+      this.logger.error('FTS 索引写入失败，保留 pending 标记待补做', {
+        manifestId,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+
     this.db.run(
-      "UPDATE commit_manifests SET status = 'COMMITTED', phase = 'committed', committed_at = ?, indexes_pending_json = NULL WHERE id = ?",
+      "UPDATE commit_manifests SET status = 'COMMITTED', phase = 'committed', committed_at = ?, indexes_pending_json = ? WHERE id = ?",
       iso(),
+      indexesRebuilt ? null : JSON.stringify(['chapter_fts']),
       manifestId,
     );
 
@@ -372,7 +406,7 @@ export class CommitEngine {
       phase: 'committed',
       appliedCount: staged.length + 1,
       artifacts,
-      indexesRebuilt: true,
+      indexesRebuilt,
     };
   }
 
@@ -385,6 +419,33 @@ export class CommitEngine {
       logger: this.logger,
     });
     return repair.repairAll();
+  }
+
+  /**
+   * 把章节正文写入 FTS 索引。
+   *
+   * ⚠ 分词器由外部注入（可空）：harness 不依赖 @nwa/retrieval（依赖方向
+   *   是 retrieval → harness）。未注入时跳过索引并保留 pending 标记。
+   */
+  private indexChapter(
+    chapterId: string,
+    chapterNumber: number,
+    body: string,
+    sourceRef: string,
+  ): void {
+    const indexer = this.options.indexer;
+    if (!indexer) {
+      throw new AppError(
+        ErrorCode.COMMIT_FAILED,
+        '未注入 FTS 索引器，无法建立检索索引（pending 标记已保留）',
+      );
+    }
+    // ⚠ 必须传真实的 chapterId，**不能**用 sourceRef 冒充。
+    //   实测踩到：早先写成 `chapterId: sourceRef`，导致提交路径写入的
+    //   行 id 是路径（chapters/001.md），而 rebuild 路径写入的是真 id
+    //   （ch_sim_001）—— 同一章节在两条写入路径下身份不一致，
+    //   重建前后检索结果的 id 对不上。
+    indexer.indexChapter({ chapterId, chapterNumber, body, sourceRef });
   }
 
   private maybeKill(at: KillSwitch['at'][number]): void {

@@ -37,8 +37,20 @@ describe('MATCH 表达式构造', () => {
     expect(expr).not.toBe('"张三" "走了"');
   });
 
-  it('转义双引号防注入', () => {
-    expect(buildMatchExpression(['a"b'])).toBe('"a""b"');
+  it('引号不进入词元内部（比转义更强的防注入）', () => {
+    // 实测行为：buildMatchExpression 在提取词元时就把引号**剥掉**，
+    // 再用一对引号包裹每个词元。因此不可能出现词元内部的裸引号破坏语法。
+    // 这比"转义"更强 —— 转义依赖转义规则写对，剥离则从源头消除。
+    const q = String.fromCharCode(34);
+
+    const expr = buildMatchExpression(['a' + q + 'b']);
+    // 结果恰为 "ab"：输入里的引号被剥掉，剩下包裹用的一对
+    expect(expr).toBe(q + 'ab' + q);
+    // 内部无引号：去掉首尾包裹后不应再有引号
+    expect(expr.slice(1, -1)).not.toContain(q);
+
+    // 纯引号词元被剥成空 → 空表达式 → 抛错（避免全表返回）
+    expect(() => buildMatchExpression([q])).toThrow(/查询词元为空/);
   });
 
   it('限制词元数量上限（64）', () => {

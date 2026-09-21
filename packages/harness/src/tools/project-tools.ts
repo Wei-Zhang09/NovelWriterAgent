@@ -209,6 +209,14 @@ export function createAllTools(
         name: 'draft' | 'revision',
       ) => string | null;
       readonly assertGateOpen?: (chapterId: string) => void;
+      readonly indexer?: {
+        indexChapter(input: {
+          chapterId: string;
+          chapterNumber: number;
+          body: string;
+          sourceRef: string;
+        }): void;
+      };
     };
   },
 ): AnyToolDefinition[] {
@@ -247,6 +255,7 @@ export function createAllTools(
           logger: opts?.logger ?? new Logger('harness:commit'),
           readWorkspaceText: opts.commit.readWorkspaceText,
           ...(opts.commit.assertGateOpen ? { assertGateOpen: opts.commit.assertGateOpen } : {}),
+          ...(opts.commit.indexer ? { indexer: opts.commit.indexer } : {}),
         })
       : []),
     // STEP 10：一致性检查（continuity.check / continuity.dimensions）—— 只读

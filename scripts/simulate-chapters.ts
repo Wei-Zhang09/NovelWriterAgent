@@ -16,13 +16,16 @@
  * ⚠ 这是**验证脚本**而非测试：它在一个真实临时项目目录里跑完整链路，
  *   并把结果打印出来供人工核对。失败时以非零码退出。
  */
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Logger } from '@nwa/core';
 import { Database, createRepositories, MIGRATIONS } from '@nwa/storage';
 import { CommitEngine } from '@nwa/harness';
 import { ChapterWorkspace } from '@nwa/story';
+import { FtsIndex } from '@nwa/storage';
+import { bigramTokenizer, Retriever, buildMatchExpression } from '@nwa/retrieval';
+import { SummaryIndexer, MemoryGatherer } from '@nwa/harness';
 
 const logger = new Logger('simulate', { level: 'error' });
 
@@ -54,6 +57,10 @@ try {
 
   const protagonist = repos.characters.create({ id: 'ch_sim_hero', bookId: bid, name: '张三' });
 
+  // FTS 索引器（补缺口：检索可用）
+  const fts = new FtsIndex({ db, tokenizer: bigramTokenizer, logger });
+  const summaryIndexer = new SummaryIndexer({ repos, fts, logger });
+
   // ── 逐章：写草稿 → 提交 ─────────────────────────────────
   for (let n = 1; n <= count; n++) {
     const chapter = repos.chapters.create({
@@ -82,13 +89,33 @@ try {
     // ⚠ CommitEngine 直接接收 summary 参数（不从章节记录读），
     //   所以这里不需要预先写 summary 到库里 —— engine 会在 APPLY 阶段写。
 
-    const engine = new CommitEngine({ db, repos, rootDir: dir, logger });
+    const engine = new CommitEngine({
+      db,
+      repos,
+      rootDir: dir,
+      logger,
+      indexer: {
+        indexChapter: (input) => {
+          fts.indexChapter({
+            chapterId: input.chapterId,
+            bookId: bid,
+            chapterNumber: input.chapterNumber,
+            sourceRef: input.sourceRef,
+            text: input.body,
+          });
+        },
+      },
+    });
     const report = engine.commit({
       chapterId: chapter.id,
       chapterNumber: n,
       body,
       summary,
     });
+
+    // 作者确认摘要（ADR-0006 约束 C）→ 才进记忆索引
+    repos.chapters.approveSummary(chapter.id);
+    summaryIndexer.indexChapter(chapter.id);
 
     if (!report.ok) {
       check(`第 ${n} 章提交`, false, `status=${report.status} ${report.error?.message ?? ''}`);
@@ -139,30 +166,70 @@ try {
   const recovery = new CommitEngine({ db, repos: repos2, rootDir: dir, logger }).recoverOnStartup();
   check('重启后无需修复（无残留事务）', recovery.scanned === 0, `scanned=${recovery.scanned}`);
 
-  // FTS 可重建且结果一致
+  // ⚠ 重开数据库后必须重建 FtsIndex —— 旧实例持有的是**已关闭**的句柄
+  //   （实测报"数据库连接已关闭"）。这是重启路径的常见坑：
+  //   状态对象与连接同生命周期，不能跨重开复用。
+  const fts2 = new FtsIndex({ db, tokenizer: bigramTokenizer, logger });
+
+  // FTS 检索可用性（补缺口后的真实验证）
   //
-  // ⚠ 诚实处理：FTS 表尚未建（ADR-0004 的中文分词方案属检索层，
-  //   排在后续 STEP）。这里**不伪造通过**，而是明确报告"未就绪"，
-  //   让验收结果反映真实状态。表建好后本项会自动开始生效。
+  // ⚠ 这一项现在**真的查**，不再跳过 —— 索引已建（迁移 0005）。
   try {
-    const exists = db.get<{ n: number }>(
-      "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN ('chapter_fts', 'memory_fts')",
+    const retriever = new Retriever({ runner: fts2, tokenizer: bigramTokenizer });
+    const r = retriever.retrieve({ query: '张三', limit: 20 });
+
+    check(
+      'FTS 能检索已提交章节',
+      r.hits.length === count,
+      `命中 ${r.hits.length}/${count} 章`,
     );
-    if ((exists?.n ?? 0) === 0) {
-      check('FTS rebuild 结果一致', true, '跳过：FTS 表尚未建立（ADR-0004 待实施）');
-    } else {
-      db.run("INSERT INTO chapter_fts(chapter_fts) VALUES('rebuild')");
-      const hits = db.all<{ rowid: number }>(
-        "SELECT rowid FROM chapter_fts WHERE chapter_fts MATCH '张三' LIMIT 5",
-      );
-      db.run("INSERT INTO chapter_fts(chapter_fts) VALUES('rebuild')");
-      const hits2 = db.all<{ rowid: number }>(
-        "SELECT rowid FROM chapter_fts WHERE chapter_fts MATCH '张三' LIMIT 5",
-      );
-      check('FTS rebuild 结果一致', hits.length === hits2.length, `${hits.length} 条命中`);
+    // 命中必须带可回溯来源（§11）
+    check(
+      '检索命中均带 sourceRef',
+      r.hits.every((h) => typeof h.sourceRef === 'string' && h.sourceRef.length > 0),
+      `引擎 ${r.engine}`,
+    );
+
+    // 摘要（已确认）应进入记忆索引并可检索
+    const gatherer = new MemoryGatherer({
+      retriever,
+      memoryIndex: fts2,
+      buildMatch: (q) => buildMatchExpression(bigramTokenizer.query(q)),
+      logger,
+    });
+    const mem = gatherer.gather('张三前行', { bookId: bid, includeMemoryIndex: true });
+    check(
+      '长程记忆（摘要）可检索',
+      mem.retrieved && mem.entries.length > 0,
+      `${mem.entries.length} 条记忆`,
+    );
+
+    // 重建后结果一致（§59：FTS 是 Derived）
+    const before = retriever.retrieve({ query: '张三', limit: 20 }).hits.map((h) => h.id).sort();
+    fts2.rebuild({
+      chapters: db.all<{ id: string; body_path: string; chapter_number: number }>(
+        "SELECT id, body_path, chapter_number FROM chapters WHERE status = 'COMMITTED' ORDER BY chapter_number",
+      ).map((c) => ({
+        chapterId: c.id,
+        bookId: bid,
+        chapterNumber: c.chapter_number,
+        sourceRef: c.body_path,
+        text: existsSync(join(dir, c.body_path)) ? readFileSync(join(dir, c.body_path), 'utf8') : '',
+      })),
+      memories: [],
+    });
+    const after = retriever.retrieve({ query: '张三', limit: 20 }).hits.map((h) => h.id).sort();
+    check(
+      'FTS 重建后结果一致（§59）',
+      JSON.stringify(after) === JSON.stringify(before),
+      `重建前 ${before.length} 章 / 重建后 ${after.length} 章`,
+    );
+    if (JSON.stringify(after) !== JSON.stringify(before)) {
+      console.log('  重建前 ID:', JSON.stringify(before.slice(0, 3)));
+      console.log('  重建后 ID:', JSON.stringify(after.slice(0, 3)));
     }
   } catch (e) {
-    check('FTS rebuild 结果一致', false, e instanceof Error ? e.message : String(e));
+    check('FTS 检索可用性', false, e instanceof Error ? e.message : String(e));
   }
 
   // 无孤儿文件（.next/.previous 都已清理）

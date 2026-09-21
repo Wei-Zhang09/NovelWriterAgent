@@ -87,6 +87,19 @@ export type { GateResult, GateContext } from './workflow/transition-gate.js';
 export { ContextEngine } from './context/engine.js';
 export type { ContextEngineOptions } from './context/engine.js';
 export { defaultTokenCounter, conservativeTokenCounter } from './context/token-counter.js';
+export { MemoryGatherer } from './context/memory-gatherer.js';
+export type {
+  MemoryCandidate,
+  GatherMemoryOptions,
+  GatherMemoryResult,
+  RetrieverLike,
+  MemoryIndexLike,
+  MatchExpressionBuilder,
+  RetrievalHitLike,
+  RetrievalTraceLike,
+} from './context/memory-gatherer.js';
+export { SummaryIndexer } from './context/summary-indexer.js';
+export type { ReindexResult } from './context/summary-indexer.js';
 export { SLOT_NAMES } from './context/types.js';
 export type {
   AssembledContext,

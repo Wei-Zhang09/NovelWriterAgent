@@ -57,3 +57,7 @@ export {
   WORKSPACE_FILES,
 } from './project-layout.js';
 export type { ProjectMeta, WorkspaceFile } from './project-layout.js';
+
+// ── FTS 检索索引（补缺口：ADR-0004 落地） ──────────────────
+export { FtsIndex } from './fts/index.js';
+export type { Tokenizer, IndexChapterInput, IndexMemoryInput } from './fts/index.js';

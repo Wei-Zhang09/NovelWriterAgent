@@ -16,7 +16,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && node scripts/copy-migrations.mjs",
     "clean": "tsc -b --clean"
   },
   "dependencies": {

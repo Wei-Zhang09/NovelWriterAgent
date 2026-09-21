@@ -23,6 +23,9 @@
       "path": "../../packages/harness"
     },
     {
+      "path": "../../packages/retrieval"
+    },
+    {
       "path": "../../packages/shared"
     },
     {

@@ -27,6 +27,18 @@ export function createCommitTools(
     readonly readWorkspaceText: (chapterNumber: number, name: 'draft' | 'revision') => string | null;
     /** 门禁检查（由调用方注入 TransitionGate 的结果） */
     readonly assertGateOpen?: (chapterId: string) => void;
+    /**
+     * FTS 索引器（可选）。由 app 层注入 —— harness 不依赖 @nwa/retrieval。
+     * 缺省时提交仍成功，但 manifest 保留 pending 标记。
+     */
+    readonly indexer?: {
+      indexChapter(input: {
+        chapterId: string;
+        chapterNumber: number;
+        body: string;
+        sourceRef: string;
+      }): void;
+    };
   },
 ): AnyToolDefinition[] {
   /**
@@ -166,6 +178,7 @@ export function createCommitTools(
         repos: deps.repos,
         rootDir: deps.rootDir,
         logger: deps.logger,
+        ...(deps.indexer ? { indexer: deps.indexer } : {}),
       });
 
       const report = engine.commit({

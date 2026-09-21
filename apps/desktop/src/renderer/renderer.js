@@ -38,6 +38,7 @@ const state = {
   lastReview: null,
   lastCanon: null,
   lastCommit: null,
+  lastSearch: null,
 };
 
 async function call(method, params) {
@@ -1047,6 +1048,94 @@ function renderAgent() {
   });
 
   a.append(commitBox);
+
+  // ── 检索面板（补缺口：FTS 可用） ──
+  const searchBox = el('div', 'form form--rail');
+  searchBox.append(el('h3', null, '检索'));
+  const searchMsg = el('div', 'form-msg');
+
+  const searchRow = el('div', 'btn-row');
+  const searchInput = el('input', 'input');
+  searchInput.placeholder = '检索关键词（中文）';
+  const searchBtn = el('button', 'btn btn--primary', '检索');
+  searchRow.append(searchInput, searchBtn);
+  searchBox.append(searchRow, searchMsg);
+  searchBox.append(el('div', 'perm-line', 'FTS + bm25；结果均带出处'));
+  const searchDetail = el('div', 'model-status');
+  searchBox.append(searchDetail);
+
+  searchBtn.addEventListener('click', async () => {
+    const q = searchInput.value.trim();
+    if (!q) {
+      searchMsg.className = 'form-msg form-msg--err';
+      searchMsg.textContent = '请输入检索词';
+      return;
+    }
+    searchMsg.className = 'form-msg';
+    searchMsg.textContent = '检索中…';
+    const r = await call('search.query', { query: q, limit: 8 });
+    if (!r.ok) {
+      searchMsg.className = 'form-msg form-msg--err';
+      searchMsg.textContent = `${r.error.code}: ${r.error.message}`;
+      return;
+    }
+    const d = r.data;
+    state.lastSearch = d;
+    searchMsg.className = 'form-msg form-msg--ok';
+    searchMsg.textContent = `章节 ${d.chapters.length} 条 / 记忆 ${d.memories.length} 条`
+      + `（${d.engine}，${d.tookMs}ms，词元 ${d.matchedTokens.length} 个）`;
+
+    searchDetail.replaceChildren();
+    for (const h of d.chapters) {
+      searchDetail.append(el('div', 'perm-line', `[章] ${h.sourceRef}（${h.score}）`));
+    }
+    for (const m of d.memories) {
+      searchDetail.append(el('div', 'perm-line', `[忆] ${m.sourceRef}（${m.score}）`));
+    }
+  });
+
+  a.append(searchBox);
+
+  // ── 摘要确认面板（ADR-0006 约束 C）──
+  const sumBox = el('div', 'form form--rail');
+  sumBox.append(el('h3', null, '摘要确认'));
+  const sumMsg = el('div', 'form-msg');
+  const sumRow = el('div', 'btn-row');
+  const sumRefreshBtn = el('button', 'btn', '刷新待确认');
+  sumRow.append(sumRefreshBtn);
+  sumBox.append(sumRow, sumMsg);
+  // 必须说明为什么需要确认
+  sumBox.append(el('div', 'perm-line', '未确认的摘要不进检索（摘要是长程记忆的源头）'));
+  const sumDetail = el('div', 'model-status');
+  sumBox.append(sumDetail);
+
+  async function refreshPending() {
+    const r = await call('summary.pending', {});
+    if (!r.ok) return;
+    const d = r.data;
+    sumMsg.className = d.pending.length > 0 ? 'form-msg form-msg--err' : 'form-msg form-msg--ok';
+    sumMsg.textContent = d.pending.length > 0
+      ? `${d.pending.length} 条摘要待确认（已确认 ${d.approvedCount} 条）—— 未确认不进检索`
+      : `全部已确认（${d.approvedCount} 条）`;
+    sumDetail.replaceChildren();
+    for (const item of d.pending) {
+      const row = el('div', 'issue-row');
+      const body = el('div', 'issue-body');
+      body.append(el('div', 'issue-msg', `第 ${item.chapterNumber} 章：${item.summary.slice(0, 60)}`));
+      const okBtn = el('button', 'btn btn--small', '确认');
+      okBtn.addEventListener('click', async () => {
+        okBtn.disabled = true;
+        const res = await call('summary.approve', { chapterId: item.chapterId });
+        if (res.ok) await refreshPending();
+        else okBtn.disabled = false;
+      });
+      row.append(body, okBtn);
+      sumDetail.append(row);
+    }
+  }
+  sumRefreshBtn.addEventListener('click', refreshPending);
+
+  a.append(sumBox);
 
   // ── Context Engine 面板（STEP 5） ──
   const ctxBox = el('div', 'form form--rail');

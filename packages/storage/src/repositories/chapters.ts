@@ -21,6 +21,9 @@ export interface ChapterRow extends Timestamped {
   readonly review_json?: string | null;
   /** 审阅推导状态 PASSED / NEEDS_REVISION / BLOCKED；NULL 表示未审阅 */
   readonly review_status?: string | null;
+  /** 摘要是否经作者确认（ADR-0006 约束 C）；0 表示待确认 */
+  readonly summary_approved?: number | null;
+  readonly summary_approved_at?: string | null;
 }
 
 export class ChapterRepository {
@@ -149,6 +152,79 @@ export class ChapterRepository {
     const row = this.get(id);
     if (row.review_status === null || row.review_status === undefined) return true; // 未审阅 → 阻塞
     return row.review_status === 'BLOCKED';
+  }
+
+  // ── 摘要人工确认（ADR-0006 约束 C） ──────────────────────
+
+  /**
+   * 作者确认摘要（可同时修改内容）。
+   *
+   * ⚠ 只有确认后的摘要才进 FTS 与后续 Context —— 见 listApprovedSummaries。
+   *   "摘要是长程记忆的源头，错一条污染后面几百章"。
+   */
+  approveSummary(id: string, edited?: string): ChapterRow {
+    const chapter = this.get(id);
+    if (chapter.summary === null) {
+      throw new AppError(
+        ErrorCode.TOOL_VALIDATION_ERROR,
+        `第 ${chapter.chapter_number} 章还没有摘要，无法确认`,
+      );
+    }
+    const ts = now();
+    if (edited !== undefined && edited !== chapter.summary) {
+      // 作者改过内容 → 更新并记录确认时间
+      this.db.run(
+        'UPDATE chapters SET summary = ?, summary_approved = 1, summary_approved_at = ?, updated_at = ? WHERE id = ?',
+        edited,
+        ts,
+        ts,
+        id,
+      );
+    } else {
+      this.db.run(
+        'UPDATE chapters SET summary_approved = 1, summary_approved_at = ?, updated_at = ? WHERE id = ?',
+        ts,
+        ts,
+        id,
+      );
+    }
+    return this.get(id);
+  }
+
+  /** 撤回确认（作者发现摘要有问题时） */
+  revokeSummaryApproval(id: string): ChapterRow {
+    this.db.run(
+      'UPDATE chapters SET summary_approved = 0, summary_approved_at = NULL, updated_at = ? WHERE id = ?',
+      now(),
+      id,
+    );
+    return this.get(id);
+  }
+
+  /**
+   * 已确认摘要的章节（**唯一**允许进入 FTS / Context 的摘要来源）。
+   *
+   * ⚠ 刻意只返回 approved=1 的：未确认摘要不进记忆链路。
+   */
+  listApprovedSummaries(bookId: string): ChapterRow[] {
+    return this.db.all<ChapterRow>(
+      `SELECT * FROM chapters
+        WHERE book_id = ? AND status = 'COMMITTED'
+          AND summary IS NOT NULL AND summary_approved = 1
+        ORDER BY chapter_number`,
+      bookId,
+    );
+  }
+
+  /** 待确认摘要的章节（UI 展示用；可见才不会静默丢失） */
+  listPendingSummaries(bookId: string): ChapterRow[] {
+    return this.db.all<ChapterRow>(
+      `SELECT * FROM chapters
+        WHERE book_id = ? AND status = 'COMMITTED'
+          AND summary IS NOT NULL AND summary_approved = 0
+        ORDER BY chapter_number`,
+      bookId,
+    );
   }
 
   /**

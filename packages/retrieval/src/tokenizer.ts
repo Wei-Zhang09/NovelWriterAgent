@@ -58,12 +58,43 @@ export function createJiebaTokenizer(cut: (text: string) => string[]): Tokenizer
  *
  * 每个词元用双引号包裹（防止 FTS5 保留字注入），以 AND 连接
  * —— 多词元用空格连接会被解析为"短语"，要求相邻，是常见错误。
+ *
+ * ## ⚠ bigram 下的 AND 过严问题（补缺口时实测发现）
+ *
+ * 用**单字词元**（1-gram）而非全部词元构造表达式。
+ *
+ * 为什么：bigram 分词把「母亲缝衣」切成
+ *   ["母","亲","缝","衣","母亲","亲缝","缝衣"]
+ * 其中「亲缝」「缝衣」是**跨词边界的假词元** —— 原文是「母亲坐在灯下缝补衣裳」，
+ * 并不含「亲缝」。若把全部 7 个词元 AND 起来，查询「缝衣」会**查不到**
+ * 明明相关的段落（实测命中 0，而仅用 1-gram 时命中 1）。
+ *
+ * 这在 jieba 下不存在：jieba 输出的是真实词（母亲 / 缝补 / 衣裳），
+ * AND 成立。ADR-0004 的 8/8 实测是基于 jieba 的。
+ *
+ * 因此：**只要查询串里所有字符都出现**即可（用去重后的 1-gram AND），
+ * 相邻性交给 bm25 排序去体现 —— 命中全部字符的文档自然排更前。
+ * 这既避免了假词元导致的漏召回，又保留了"多字都要出现"的精确性。
  */
 export function buildMatchExpression(tokens: readonly string[]): string {
-  const safe = tokens
+  // 提取 1-gram：长度为 1 的词元即为单字；从长词元中也能拆出单字
+  const singles = new Set<string>();
+  for (const t of tokens) {
+    const s = t.replace(/"/g, '').trim();
+    if (s.length === 0) continue;
+    // 只取长度 1 的词元作为"必须出现的字符"
+    // （长度 ≥2 的词元在 bigram 下是组合产物，会引入跨边界假词元）
+    if (s.length === 1) singles.add(s);
+  }
+
+  // 若查询里没有任何单字词元（例如纯 jieba 词），退回到使用原词元
+  const use = singles.size > 0 ? [...singles] : tokens.map((t) => t.replace(/"/g, '').trim());
+
+  const safe = use
     .map((t) => t.replace(/"/g, '""').trim())
     .filter((t) => t.length > 0)
     .slice(0, 64); // 研究报告 §1.2 决策 7：限制 64 个词元
+
   if (safe.length === 0) {
     throw new AppError(ErrorCode.STORAGE_QUERY_FAILED, '查询词元为空，拒绝构造 MATCH 表达式');
   }

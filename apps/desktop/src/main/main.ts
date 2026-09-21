@@ -579,6 +579,45 @@ function createWindow(): void {
               }
             }
 
+            // 16) 检索面板（补缺口：FTS 可用）
+            const searchForm = [...document.querySelectorAll('.form')]
+              .find(f => f.querySelector('h3')?.textContent.includes('检索'));
+            rec('检索面板存在', !!searchForm, '');
+            if (searchForm) {
+              const inp = searchForm.querySelector('input');
+              rec('有检索输入框', !!inp, '');
+              if (inp) {
+                inp.value = '测试';
+                const sBtn = btnByText(searchForm, '检索');
+                if (sBtn) {
+                  sBtn.click();
+                  let msg = '';
+                  for (let i = 0; i < 40; i++) {
+                    await sleep(250);
+                    const m = searchForm.querySelector('.form-msg')?.textContent || '';
+                    if (m.includes('章节') || m.includes('请输入') || m.includes('STORAGE')) {
+                      msg = m;
+                      break;
+                    }
+                  }
+                  rec('⚠ 检索返回结果或明确错误',
+                      msg.includes('章节') || msg.includes('请输入'), msg.slice(0, 80));
+                }
+              }
+            }
+
+            // 17) 摘要确认面板（ADR-0006 约束 C）
+            const sumForm = [...document.querySelectorAll('.form')]
+              .find(f => f.querySelector('h3')?.textContent.includes('摘要确认'));
+            rec('摘要确认面板存在', !!sumForm, '');
+            if (sumForm) {
+              // 必须说明"未确认不进检索"的理由
+              rec('⚠ 标注未确认摘要不进检索',
+                  sumForm.textContent.includes('不进检索'), '');
+              const rBtn2 = btnByText(sumForm, '刷新待确认');
+              rec('有待确认刷新按钮', !!rBtn2, '');
+            }
+
             return { steps };
           })()`;
 
