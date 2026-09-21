@@ -13,10 +13,18 @@
  */
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { Logger, AppError, ErrorCode, bookId } from '@nwa/core';
 import { Database, MIGRATIONS, createRepositories, type Repositories } from '@nwa/storage';
-import { ToolRegistry, createAllTools } from '@nwa/harness';
+import {
+  ToolRegistry,
+  createAllTools,
+  ModelGateway,
+  type CryptoBackend,
+  type ModelProfile,
+  type ModelSlot,
+  type SecretStore,
+} from '@nwa/harness';
 import type { ToolContext } from '@nwa/shared';
 
 const logger = new Logger('core');
@@ -26,6 +34,20 @@ const parentPort = process.parentPort;
 
 /** 请求处理方法表。 */
 type RawResult = { readonly __raw: true; readonly payload: unknown };
+
+interface CryptoResponse {
+  readonly kind: 'crypto-response';
+  readonly requestId: string;
+  readonly ok: boolean;
+  readonly value?: unknown;
+  readonly error?: string;
+}
+
+/** main 告知的加密后端状态（safeStorage 只有 main 能查询） */
+interface EncryptionInfo {
+  readonly kind: 'encryption-info';
+  readonly available: boolean;
+}
 
 interface CoreRequest {
   readonly kind: 'request';
@@ -43,6 +65,145 @@ interface OpenProject {
 }
 
 let opened: OpenProject | null = null;
+
+/**
+ * 加密后端：通过 IPC 委托给 main 进程的 Electron safeStorage。
+ *
+ * ⚠ 架构约束（ADR-0001）：`safeStorage` 是 **main 进程**模块，
+ *   utilityProcess 拿不到它（实测报 "The requested module 'electron'
+ *   does not provide an export named 'safeStorage'"）。因此加解密必须由
+ *   main 提供，core 侧只做异步代理。
+ *
+ * 实测（STEP 3，在 main 侧）：Windows 后端为 DPAPI，
+ * isEncryptionAvailable() === true，加解密往返正确且密文不含明文。
+ *
+ * ⚠ 若不可用，FileSecretStore 会**拒绝写入**而不是明文落盘 ——
+ *   静默降级会让用户误以为已经加密（§38 的意图正是"不放明文"）。
+ */
+/**
+ * 加密可用性由 main 在启动时告知（safeStorage 只有 main 能查询）。
+ * null 表示尚未收到告知。
+ */
+let encryptionAvailable: boolean | null = null;
+
+/** main 在启动时通过 event 告知加密可用性 */
+function setEncryptionAvailable(v: boolean): void {
+  encryptionAvailable = v;
+}
+
+async function callMain<T>(op: string, payload: unknown): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const requestId = `crypto-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const timer = setTimeout(() => {
+      cryptoPending.delete(requestId);
+      reject(new AppError(ErrorCode.MODEL_AUTH_FAILED, `主进程未响应加密请求：${op}`));
+    }, 10_000);
+    cryptoPending.set(requestId, { resolve: resolve as (v: unknown) => void, reject, timer });
+    parentPort.postMessage({ kind: 'crypto-request', requestId, op, payload });
+  });
+}
+
+const cryptoPending = new Map<
+  string,
+  { resolve: (v: unknown) => void; reject: (e: unknown) => void; timer: NodeJS.Timeout }
+>();
+
+/** main 侧回传加密结果时调用 */
+function resolveCrypto(requestId: string, ok: boolean, value: unknown, error?: string): void {
+  const entry = cryptoPending.get(requestId);
+  if (!entry) return;
+  cryptoPending.delete(requestId);
+  clearTimeout(entry.timer);
+  if (ok) entry.resolve(value);
+  else entry.reject(new AppError(ErrorCode.MODEL_AUTH_FAILED, error ?? '加密操作失败'));
+}
+
+/**
+ * 注意：FileSecretStore 的 CryptoBackend 接口是同步的，
+ * 而 IPC 天然异步。因此这里**不使用** FileSecretStore，
+ * 改用下方 AsyncSecretStore —— 由 main 进程直接持有密钥文件。
+ */
+const cryptoBackend: CryptoBackend = {
+  name: 'main:electron-safeStorage',
+  available: () => encryptionAvailable === true,
+  encrypt: () => {
+    throw new AppError(
+      ErrorCode.MODEL_AUTH_FAILED,
+      '加密在 main 进程执行；core 侧请使用 secretGet/secretSet 等异步接口',
+    );
+  },
+  decrypt: () => {
+    throw new AppError(
+      ErrorCode.MODEL_AUTH_FAILED,
+      '解密在 main 进程执行；core 侧请使用 secretGet/secretSet 等异步接口',
+    );
+  },
+};
+
+/** 模型配置存在项目目录下的 models.json（不含密钥，只含引用名） */
+interface ModelsConfig {
+  slots: Record<ModelSlot, string>;
+  profiles: ModelProfile[];
+}
+
+function modelsConfigPath(dir: string): string {
+  return join(dir, 'models.json');
+}
+
+function loadModelsConfig(dir: string): ModelsConfig | null {
+  const p = modelsConfigPath(dir);
+  if (!existsSync(p)) return null;
+  try {
+    const raw = JSON.parse(readFileSync(p, 'utf8')) as ModelsConfig;
+    if (!raw || typeof raw !== 'object' || !Array.isArray(raw.profiles)) return null;
+    return raw;
+  } catch (err) {
+    logger.warn('models.json 解析失败，忽略', { error: String(err) });
+    return null;
+  }
+}
+
+function saveModelsConfig(dir: string, cfg: ModelsConfig): void {
+  writeFileSync(modelsConfigPath(dir), JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+}
+
+/**
+ * 密钥存储代理：真正的文件读写与加解密都在 main 进程完成。
+ *
+ * 为什么这样切：safeStorage 不可在 utilityProcess 使用（见上）。
+ * core 只持有引用名，永远不接触密钥文件路径，也就无法绕过加密直接读盘。
+ */
+const secretsProxy: SecretStore = {
+  get backend() {
+    return 'main:electron-safeStorage';
+  },
+  get: (ref) => callMain<string | undefined>('get', { ref }),
+  set: (ref, value) => callMain<void>('set', { ref, value }),
+  delete: (ref) => callMain<void>('delete', { ref }),
+};
+
+/** 列出已保存的引用名（不含值） */
+async function secretRefs(): Promise<string[]> {
+  return callMain<string[]>('listRefs', {});
+}
+
+/** Model Gateway（有配置才构造；没有配置时相关 handler 返回友好错误） */
+function gateway(): ModelGateway {
+  const p = requireProject();
+  const cfg = loadModelsConfig(p.dir);
+  if (!cfg || cfg.profiles.length === 0) {
+    throw new AppError(
+      ErrorCode.MODEL_AUTH_FAILED,
+      '尚未配置任何模型。请在「模型设置」中填写 endpoint、模型名与密钥。',
+    );
+  }
+  return new ModelGateway({
+    profiles: cfg.profiles,
+    slots: cfg.slots,
+    secrets: secretsProxy,
+    logger: logger.child('models'),
+  });
+}
 
 function requireProject(): OpenProject {
   if (!opened) {
@@ -248,6 +409,155 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
   },
 
   'tool.list': () => requireProject().tools.list(),
+
+  // ── 模型设置（§38：密钥与配置分离） ────────────────────────
+
+  /** 返回配置与密钥状态；**绝不返回密钥值** */
+  'model.config.get': async () => {
+    const p = requireProject();
+    const cfg = loadModelsConfig(p.dir);
+    const refs = await secretRefs();
+    return {
+      configured: (cfg?.profiles.length ?? 0) > 0,
+      profiles: (cfg?.profiles ?? []).map((x) => ({
+        id: x.id,
+        provider: x.provider,
+        endpoint: x.endpoint,
+        model: x.model,
+        apiKeyRef: x.apiKeyRef ?? null,
+        temperature: x.temperature,
+        maxTokens: x.maxTokens,
+        timeoutMs: x.timeoutMs,
+        maxAttempts: x.retryPolicy.maxAttempts,
+        structuredFallbackProfileId: x.retryPolicy.structuredFallbackProfileId ?? null,
+      })),
+      slots: cfg?.slots ?? { architect: '', writer: '', reviewer: '', utility: '' },
+      /** 已保存的密钥引用名（值不可读） */
+      savedKeyRefs: refs,
+      /** 加密后端状态 —— 由 main 告知（safeStorage 只有 main 能查询） */
+      encryption: {
+        available: encryptionAvailable === true,
+        backend: 'electron-safeStorage (main process)',
+      },
+      configPath: modelsConfigPath(p.dir),
+    };
+  },
+
+  /**
+   * 保存一个模型 profile。
+   *
+   * 密钥分离：apiKey（明文）只进入 SecretStore 加密存储，
+   * models.json 里只留 apiKeyRef —— 这样配置文件可以安全地被人查看。
+   */
+  'model.config.save': async (params: {
+    profile: {
+      id: string;
+      endpoint: string;
+      model: string;
+      temperature?: number;
+      maxTokens?: number;
+      timeoutMs?: number;
+      maxAttempts?: number;
+      structuredFallbackProfileId?: string | null;
+    };
+    /** 明文密钥；空/未提供表示不修改已存的密钥 */
+    apiKey?: string | null;
+    /** 是否把它设为全部槽位的默认 */
+    useForAllSlots?: boolean;
+    /** 指定槽位 */
+    slots?: Partial<Record<ModelSlot, string>>;
+  }) => {
+    const p = requireProject();
+    const prof = params.profile;
+    if (!prof?.id || !prof.endpoint || !prof.model) {
+      throw new AppError(ErrorCode.TOOL_VALIDATION_ERROR, 'profile 的 id / endpoint / model 均为必填');
+    }
+
+    const apiKeyRef = `profile:${prof.id}`;
+    if (params.apiKey && params.apiKey.trim().length > 0) {
+      await secretsProxy.set(apiKeyRef, params.apiKey.trim());
+      logger.info('已加密保存密钥', { ref: apiKeyRef, backend: cryptoBackend.name });
+    }
+
+    const existing = loadModelsConfig(p.dir);
+    const next: ModelProfile = {
+      id: prof.id,
+      provider: 'openai-compatible',
+      endpoint: prof.endpoint.replace(/\/+$/, ''),
+      model: prof.model,
+      apiKeyRef,
+      temperature: prof.temperature ?? 0.8,
+      maxTokens: prof.maxTokens ?? 4096,
+      contextWindow: 128000,
+      timeoutMs: prof.timeoutMs ?? 60000,
+      retryPolicy: {
+        maxAttempts: prof.maxAttempts ?? 3,
+        ...(prof.structuredFallbackProfileId
+          ? { structuredFallbackProfileId: prof.structuredFallbackProfileId }
+          : {}),
+      },
+    };
+
+    const profiles = [...(existing?.profiles ?? []).filter((x) => x.id !== next.id), next];
+    const slots: Record<ModelSlot, string> = params.useForAllSlots
+      ? { architect: next.id, writer: next.id, reviewer: next.id, utility: next.id }
+      : {
+          architect: params.slots?.architect ?? existing?.slots.architect ?? next.id,
+          writer: params.slots?.writer ?? existing?.slots.writer ?? next.id,
+          reviewer: params.slots?.reviewer ?? existing?.slots.reviewer ?? next.id,
+          utility: params.slots?.utility ?? existing?.slots.utility ?? next.id,
+        };
+
+    saveModelsConfig(p.dir, { slots, profiles });
+    logger.info('模型配置已保存', { profileId: next.id, slots, configPath: modelsConfigPath(p.dir) });
+    return { ok: true, profileId: next.id, apiKeyRef, slots };
+  },
+
+  /** 删除密钥引用（不删除 profile 配置） */
+  'model.secret.delete': async (params: { ref: string }) => {
+    await secretsProxy.delete(params.ref);
+    return { ok: true, ref: params.ref };
+  },
+
+  /**
+   * 连通性测试：发一条最小的真实请求。
+   *
+   * 这是 STEP 3 的验收手段 —— 只有真实调用成功才算接通。
+   * 返回值不回显任何密钥内容。
+   */
+  'model.test': async (params: { slot?: ModelSlot; prompt?: string }) => {
+    const slot = params.slot ?? 'utility';
+    const gw = gateway();
+    const profile = gw.profileFor(slot);
+    const started = Date.now();
+    try {
+      const res = await gw.chat(slot, {
+        messages: [{ role: 'user', content: params.prompt ?? '请只回复两个字：连通' }],
+        temperature: 0,
+        maxTokens: 32,
+      });
+      return {
+        ok: true,
+        slot,
+        profileId: profile.id,
+        model: res.model,
+        text: res.text.slice(0, 200),
+        usage: res.usage,
+        latencyMs: Date.now() - started,
+        finishReason: res.finishReason,
+      };
+    } catch (err) {
+      const e = AppError.from(err);
+      logger.error('模型连通性测试失败', err, { slot, profileId: profile.id });
+      return {
+        ok: false,
+        slot,
+        profileId: profile.id,
+        latencyMs: Date.now() - started,
+        error: { code: e.code, message: e.message, retryable: e.retryable, details: e.details },
+      };
+    }
+  },
 };
 
 async function handle(req: CoreRequest): Promise<void> {
@@ -286,8 +596,18 @@ function bootstrap(): void {
   opened = { dir: PROJECTS_ROOT, db, repos, tools };
   logger.info('迁移完成', { applied: MIGRATIONS.map((m) => m.id), tools: tools.list().length });
 
-  parentPort.on('message', (e: { data: CoreRequest }) => {
-    void handle(e.data);
+  parentPort.on('message', (e: { data: CoreRequest | CryptoResponse | EncryptionInfo }) => {
+    const msg = e.data;
+    if (msg && msg.kind === 'crypto-response') {
+      resolveCrypto(msg.requestId, msg.ok, msg.value, msg.error);
+      return;
+    }
+    if (msg && msg.kind === 'encryption-info') {
+      setEncryptionAvailable(msg.available);
+      logger.info('加密后端状态已同步', { available: msg.available });
+      return;
+    }
+    void handle(msg as CoreRequest);
   });
 
   parentPort.postMessage({
@@ -295,6 +615,8 @@ function bootstrap(): void {
     requestId: 'boot',
     payload: { type: 'CORE_READY', projectsRoot: PROJECTS_ROOT, toolCount: tools.list().length },
   });
+  // 单独发一个 ready 信号，main 收到后会把加密后端状态告知我们
+  parentPort.postMessage({ kind: 'ready' });
 }
 
 bootstrap();

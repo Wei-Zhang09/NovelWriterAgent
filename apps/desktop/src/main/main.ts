@@ -8,11 +8,13 @@
  * 理由（施工文档 §66）：单章长任务「允许几十分钟级」，
  * 若在主进程执行会阻塞 IPC 与窗口事件响应。
  */
-import { app, BrowserWindow, ipcMain, utilityProcess, type UtilityProcess } from 'electron';
+import { app, BrowserWindow, ipcMain, safeStorage, utilityProcess, type UtilityProcess } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { homedir } from 'node:os';
 import { writeFileSync } from 'node:fs';
 import { Logger } from '@nwa/core';
+import { FileSecretStore, defaultCredentialsPath } from '@nwa/harness';
 import { IPC } from '../shared/ipc.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -38,6 +40,14 @@ function startCoreProcess(): void {
   core.stderr?.on('data', (d: Buffer) => process.stderr.write(`[core] ${d.toString()}`));
 
   core.on('message', (msg: CoreMessage) => {
+    if (msg.kind === 'ready') {
+      // core 就绪时告知加密后端状态（safeStorage 只有 main 能查询）
+      core?.postMessage({
+        kind: 'encryption-info',
+        available: safeStorage.isEncryptionAvailable(),
+      });
+      return;
+    }
     if (msg.kind === 'response') {
       const resolve = pending.get(msg.requestId);
       if (resolve) {
@@ -51,6 +61,12 @@ function startCoreProcess(): void {
       win?.webContents.send(IPC.CORE_EVENT, msg.payload);
       return;
     }
+    if (msg.kind === 'crypto-request') {
+      // safeStorage 只有 main 进程能用（ADR-0001 的进程边界）。
+      // core 侧发来加密请求，这里执行并把结果回传。
+      void handleCryptoRequest(msg.requestId, msg.op, msg.payload);
+      return;
+    }
   });
 
   core.on('exit', (code) => {
@@ -62,9 +78,64 @@ function startCoreProcess(): void {
 }
 
 interface CoreMessage {
-  readonly kind: 'response' | 'event';
+  readonly kind: 'response' | 'event' | 'crypto-request' | 'ready';
   readonly requestId: string;
   readonly payload: unknown;
+  readonly op?: string;
+}
+
+/**
+ * 主进程侧的密钥存储。
+ *
+ * ⚠ 为什么密钥文件由 main 进程持有而不是 core：
+ *   `safeStorage` 是 main 进程模块，utilityProcess 拿不到。
+ *   因此加解密与文件读写都放在这里，core 只持有引用名。
+ *   这同时带来一个安全收益：core（跑 LLM 调用的地方）无法绕过解密直接读盘。
+ */
+let secretStore: FileSecretStore | null = null;
+
+function getSecretStore(): FileSecretStore {
+  if (!secretStore) {
+    secretStore = new FileSecretStore(defaultCredentialsPath(homedir()), {
+      name: 'electron-safeStorage',
+      available: () => safeStorage.isEncryptionAvailable(),
+      encrypt: (plain) => safeStorage.encryptString(plain),
+      decrypt: (cipher) => safeStorage.decryptString(cipher),
+    });
+  }
+  return secretStore;
+}
+
+async function handleCryptoRequest(requestId: string, op: string | undefined, payload: unknown): Promise<void> {
+  const reply = (ok: boolean, value?: unknown, error?: string) => {
+    core?.postMessage({ kind: 'crypto-response', requestId, ok, value, error });
+  };
+  try {
+    const store = getSecretStore();
+    const p = (payload ?? {}) as { ref?: string; value?: string };
+    switch (op) {
+      case 'get':
+        reply(true, await store.get(String(p.ref)));
+        break;
+      case 'set':
+        await store.set(String(p.ref), String(p.value));
+        reply(true, undefined);
+        break;
+      case 'delete':
+        await store.delete(String(p.ref));
+        reply(true, undefined);
+        break;
+      case 'listRefs':
+        reply(true, await store.listRefs());
+        break;
+      default:
+        reply(false, undefined, `未知的加密操作：${op}`);
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error('加密请求失败', err, { op });
+    reply(false, undefined, message);
+  }
 }
 
 function createWindow(): void {
@@ -211,6 +282,26 @@ function createWindow(): void {
             const detailText = $('center')?.textContent ?? '';
             rec('章节详情可打开', detailText.includes('第 1 章'), '');
             rec('未提交章节无正式正文', detailText.includes('未提交的章节不产生正式正文'), '');
+
+            // 7) 模型设置面板（STEP 3）—— 常驻右栏，故在章节详情打开后仍应存在
+            const modelForm = [...document.querySelectorAll('.form')]
+              .find(f => f.querySelector('h3')?.textContent.includes('模型设置'));
+            rec('模型设置面板常驻（章节详情打开后仍在）', !!modelForm, '');
+            if (modelForm) {
+              const labels = [...modelForm.querySelectorAll('.form-label')].map(l => l.textContent);
+              rec('含 endpoint / 模型名 / API Key 三项',
+                  labels.some(l => l.includes('Endpoint')) &&
+                  labels.some(l => l.includes('模型名')) &&
+                  labels.some(l => l.includes('API Key')),
+                  labels.join('/'));
+              const pwd = [...modelForm.querySelectorAll('input')].find(i => i.type === 'password');
+              rec('API Key 为密码输入框', !!pwd, '');
+              const encText = modelForm.textContent;
+              rec('显示密钥加密状态',
+                  encText.includes('已启用') || encText.includes('不可用'), '');
+              const testBtn = btnByText(modelForm, '测试连通');
+              rec('有连通测试按钮', !!testBtn, '');
+            }
 
             return { steps };
           })()`;

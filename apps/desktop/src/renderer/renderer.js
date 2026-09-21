@@ -1,10 +1,10 @@
 /**
  * 渲染进程（纯 JS，无构建步骤）
  *
- * STEP 2 范围：把三栏工作台做成**可用**的，而不是自检面板。
+ * STEP 3 范围：在 STEP 2 的三栏工作台之上加「模型设置」。
  *   左栏 = 切对象（项目 / 书 / 章节列表）
- *   中栏 = 主体内容（项目信息 / 新建表单 / 章节详情）
- *   右栏 = 动作 + 诊断（工具清单、权限分布、最近一次调用）
+ *   中栏 = 主体内容（项目信息 / 新建表单 / 章节详情 / 模型设置）
+ *   右栏 = 动作 + 诊断（工具清单、权限分布、模型状态、最近一次调用）
  *
  * 约定（研究报告 §3.1 决策 1）：**状态必须由产物事实驱动，不由任务状态驱动**。
  * 因此章节状态直接来自 DB 行，而非任何「任务进度」字段。
@@ -26,6 +26,8 @@ const state = {
   tools: [],
   permissions: {},
   lastCall: null,
+  modelConfig: null,
+  lastModelTest: null,
 };
 
 async function call(method, params) {
@@ -187,6 +189,159 @@ function renderCenter() {
   if (state.selectedBookId) c.append(renderNewChapterForm());
 }
 
+// ─────────────────────────────────────────────────────────────
+// 模型设置（STEP 3）
+// ─────────────────────────────────────────────────────────────
+
+async function loadModelConfig() {
+  const r = await call('model.config.get');
+  state.modelConfig = r.ok ? r.data : null;
+}
+
+/**
+ * 模型设置面板。
+ *
+ * 关键设计：密钥输入框是 type=password，提交后立刻清空，
+ * 且**任何读取路径都不回显密钥**（core 只返回引用名 savedKeyRefs）。
+ */
+function renderModelSettings() {
+  const box = el('div', 'form form--rail');
+  box.append(el('h3', null, '模型设置'));
+
+  const cfg = state.modelConfig;
+
+  // 加密后端状态（§38 的关键提示）
+  const enc = el('div', 'kv-row');
+  enc.append(el('span', 'kv-k', '密钥加密'));
+  if (cfg) {
+    const ok = cfg.encryption?.available;
+    enc.append(
+      el('span', `chip ${ok ? 'chip--ok' : 'chip--err'}`,
+        ok ? `已启用（${cfg.encryption.backend}）` : '不可用 —— 拒绝保存密钥'),
+    );
+  } else {
+    enc.append(el('span', 'chip chip--muted', '读取中…'));
+  }
+  box.append(enc);
+
+  if (cfg?.configured) {
+    const list = el('div', 'kv');
+    for (const p of cfg.profiles) {
+      list.append(kv(`${p.id}`, `${p.model} @ ${p.endpoint}`));
+      list.append(kv('　temperature', String(p.temperature)));
+      list.append(kv('　maxTokens', String(p.maxTokens)));
+      list.append(kv('　重试次数', String(p.maxAttempts)));
+      list.append(kv('　密钥引用', cfg.savedKeyRefs.includes(p.apiKeyRef) ? `${p.apiKeyRef} ✓ 已保存` : `${p.apiKeyRef} ✗ 未设置`));
+    }
+    box.append(list);
+    const slotLine = el('div', 'kv-row');
+    slotLine.append(el('span', 'kv-k', '槽位'));
+    slotLine.append(el('span', 'kv-v', Object.entries(cfg.slots).map(([k, v]) => `${k}→${v}`).join('  ')));
+    box.append(slotLine);
+  } else {
+    box.append(el('div', 'callout', '尚未配置模型。填写下面的表单即可开始。'));
+  }
+
+  // ── 表单 ──
+  const makeRow = (label, placeholder, type = 'text') => {
+    const row = el('div', 'form-row');
+    row.append(el('label', 'form-label', label));
+    const inp = el('input');
+    inp.type = type;
+    inp.placeholder = placeholder;
+    row.append(inp);
+    box.append(row);
+    return inp;
+  };
+
+  const id = makeRow('Profile ID', '例如 default（自定义标识）');
+  const endpoint = makeRow('Endpoint', '例如 https://api.deepseek.com/v1');
+  const model = makeRow('模型名', '例如 deepseek-chat');
+  const apiKey = makeRow('API Key', 'sk-… （留空则不修改已保存的密钥）', 'password');
+  const temperature = makeRow('temperature', '0.8');
+  const maxTokens = makeRow('maxTokens', '4096');
+  const maxAttempts = makeRow('最大重试次数', '3');
+
+  if (cfg?.profiles?.length) {
+    const p = cfg.profiles[0];
+    id.value = p.id;
+    endpoint.value = p.endpoint;
+    model.value = p.model;
+    temperature.value = String(p.temperature);
+    maxTokens.value = String(p.maxTokens);
+    maxAttempts.value = String(p.maxAttempts);
+  } else {
+    id.value = 'default';
+    temperature.value = '0.8';
+    maxTokens.value = '4096';
+    maxAttempts.value = '3';
+  }
+
+  const saveBtn = el('button', 'btn btn--primary', '保存配置');
+  const testBtn = el('button', 'btn', '测试连通');
+  const btnRow = el('div', 'btn-row');
+  btnRow.append(saveBtn, testBtn);
+  box.append(btnRow);
+
+  const msg = el('div', 'form-msg');
+  box.append(msg);
+
+  saveBtn.addEventListener('click', async () => {
+    saveBtn.disabled = true;
+    msg.className = 'form-msg';
+    msg.textContent = '保存中…';
+    // 明文密钥只在这一条 IPC 里出现一次，之后立刻从 DOM 清掉
+    const payload = {
+      profile: {
+        id: id.value.trim(),
+        endpoint: endpoint.value.trim(),
+        model: model.value.trim(),
+        temperature: Number(temperature.value) || 0.8,
+        maxTokens: Number(maxTokens.value) || 4096,
+        maxAttempts: Number(maxAttempts.value) || 3,
+      },
+      apiKey: apiKey.value.length > 0 ? apiKey.value : null,
+      useForAllSlots: true,
+    };
+    apiKey.value = '';
+    const r = await call('model.config.save', payload);
+    saveBtn.disabled = false;
+    if (r.ok) {
+      msg.className = 'form-msg form-msg--ok';
+      msg.textContent = `已保存 profile ${r.data.profileId}，密钥引用 ${r.data.apiKeyRef}`;
+      await loadModelConfig();
+      renderCenter();
+      renderAgent();
+    } else {
+      msg.className = 'form-msg form-msg--err';
+      msg.textContent = r.error.message;
+    }
+  });
+
+  testBtn.addEventListener('click', async () => {
+    testBtn.disabled = true;
+    msg.className = 'form-msg';
+    msg.textContent = '正在发送真实请求…';
+    const r = await call('model.test', { slot: 'utility' });
+    testBtn.disabled = false;
+    state.lastModelTest = r.ok ? r.data : { ok: false, error: r.error };
+    if (r.ok && r.data.ok) {
+      msg.className = 'form-msg form-msg--ok';
+      msg.textContent =
+        `连通成功：${r.data.model} 用时 ${r.data.latencyMs}ms，` +
+        `tokens in=${r.data.usage.inputTokens} out=${r.data.usage.outputTokens}，` +
+        `回复「${r.data.text.trim()}」`;
+    } else {
+      msg.className = 'form-msg form-msg--err';
+      const e = r.ok ? r.data.error : r.error;
+      msg.textContent = `失败 ${e.code}：${e.message}`;
+    }
+    renderAgent();
+  });
+
+  return box;
+}
+
 function renderNewProjectForm() {
   const box = el('div', 'form');
   box.append(el('h3', null, '新建项目'));
@@ -310,7 +465,10 @@ function renderChapterDetail(c) {
   ctr.append(note);
 
   const back = el('button', 'btn', '返回');
-  back.addEventListener('click', renderCenter);
+  back.addEventListener('click', () => {
+    renderCenter();
+    renderAgent();
+  });
   ctr.append(back);
 }
 
@@ -341,6 +499,35 @@ function renderAgent() {
   }
   a.append(perms);
 
+  // 模型状态（STEP 3）
+  a.append(el('h3', null, '模型'));
+  const modelBox = el('div', 'model-status');
+  const mc = state.modelConfig;
+  if (!mc) {
+    modelBox.append(el('div', 'empty', '未读取'));
+  } else if (!mc.configured) {
+    modelBox.append(el('div', 'perm-line', '未配置 —— 见中栏「模型设置」'));
+  } else {
+    for (const p of mc.profiles) {
+      modelBox.append(el('div', 'perm-line', `${p.id}: ${p.model}`));
+      const hasKey = mc.savedKeyRefs.includes(p.apiKeyRef);
+      modelBox.append(el('div', 'perm-line', `  密钥：${hasKey ? '已保存' : '未设置'}`));
+    }
+    modelBox.append(el('div', 'perm-line',
+      `加密：${mc.encryption?.available ? '已启用' : '不可用'}`));
+  }
+  if (state.lastModelTest) {
+    const t = state.lastModelTest;
+    modelBox.append(el('div', 'perm-line',
+      t.ok ? `连通 ✓ ${t.latencyMs}ms  in=${t.usage?.inputTokens} out=${t.usage?.outputTokens}`
+           : `连通 ✗ ${t.error?.code}`));
+  }
+  a.append(modelBox);
+
+  // 模型设置常驻右栏 —— 不放在中栏，因为中栏会被章节详情替换，
+  // 那会让用户"点进章节后再也找不到模型设置"（曾在本流程验证中暴露）。
+  a.append(renderModelSettings());
+
   a.append(el('h3', null, '最近一次工具调用'));
   const diag = el('div', 'diag');
   if (!state.lastCall) {
@@ -370,6 +557,7 @@ async function boot() {
     $('center').replaceChildren(el('div', 'empty', `打开项目失败：${open.error.message}`));
     return;
   }
+  await loadModelConfig();
   await loadProjects();
 }
 

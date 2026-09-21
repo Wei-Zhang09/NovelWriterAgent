@@ -55,23 +55,44 @@ export interface LoggerOptions {
  */
 export function redactSecret(value: unknown): unknown {
   if (typeof value === 'string') {
-    return value
-      .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-***')
-      .replace(/\bsk-ant-[A-Za-z0-9_-]{8,}\b/g, 'sk-ant-***')
-      .replace(/\bBearer\s+[A-Za-z0-9._-]{8,}/gi, 'Bearer ***')
-      .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, 'jwt-***');
+    return (
+      value
+        // ⚠ 顺序要紧：更具体的规则必须放在更宽泛的前面。
+        //   否则 `sk-ant-xxx` 会先被 `sk-` 规则匹配成 `sk-***`，
+        //   导致专用的 sk-ant 规则成为永不生效的死代码（实测发现）。
+        .replace(/\bsk-ant-[A-Za-z0-9_-]{8,}\b/g, 'sk-ant-***')
+        .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-***')
+        .replace(/\bBearer\s+[A-Za-z0-9._-]{8,}/gi, 'Bearer ***')
+        .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, 'jwt-***')
+    );
   }
   if (Array.isArray(value)) return value.map(redactSecret);
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
-      out[k] = /key|token|secret|password|authorization|credential/i.test(k)
-        ? '***'
-        : redactSecret(v);
+      out[k] = isSecretLikeKey(k) ? '***' : redactSecret(v);
     }
     return out;
   }
   return value;
+}
+
+/**
+ * 判断字段名是否像「承载密钥的字段」。
+ *
+ * ⚠ 必须排除计量类字段：`inputTokens` / `outputTokens` / `totalTokens` / `maxTokens`
+ *   这些是 §57 要求记录的观测数据，数值本身就是日志内容。
+ *   早期版本用 `/token/i` 粗暴匹配，把 token **计数**也打成了 `***`，
+ *   直接破坏了「Token 使用」这一可观测性指标（实测发现）。
+ */
+function isSecretLikeKey(key: string): boolean {
+  // 计量字段白名单：即便含 token 字样也不是密钥
+  if (/^(inputTokens|outputTokens|totalTokens|maxTokens|contextWindow|tokenBudget)$/i.test(key)) {
+    return false;
+  }
+  return /^(api[_-]?key|.*[_-]?key|token|.*token|secret|.*secret|password|authorization|credential|bearer)$/i.test(
+    key,
+  );
 }
 
 export class Logger {

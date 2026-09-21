@@ -45,6 +45,10 @@ export const ErrorCode = {
   STORAGE_MIGRATION_FAILED: 'STORAGE_MIGRATION_FAILED',
   STORAGE_QUERY_FAILED: 'STORAGE_QUERY_FAILED',
 
+  // ---- 运行控制（§40：长任务必须支持 pause / resume / cancel） ----
+  /** 用户主动取消：与超时语义不同，重试没有意义 */
+  RUN_CANCELLED: 'RUN_CANCELLED',
+
   // ---- 通用 ----
   NOT_IMPLEMENTED: 'NOT_IMPLEMENTED',
 } as const;
@@ -97,6 +101,8 @@ const ERROR_SEMANTICS: Record<ErrorCodeValue, { recoverable: boolean; retryable:
 
   STORAGE_MIGRATION_FAILED: { recoverable: false, retryable: false },
   STORAGE_QUERY_FAILED: { recoverable: false, retryable: true },
+
+  RUN_CANCELLED: { recoverable: true, retryable: false },
 
   NOT_IMPLEMENTED: { recoverable: false, retryable: false },
 };

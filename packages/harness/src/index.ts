@@ -5,8 +5,8 @@
  * Context Engine / Skill Engine / Workflow Engine / Event Bus / Checkpoint /
  * Verification / Artifact Manager。
  *
- * 当前进度（STEP 2）：Tool Registry + 前 8 个工具。
- * 待实现：Model Gateway（STEP 3）、Agent Runtime / Workflow / Event Bus（STEP 4）。
+ * 当前进度：Tool Registry（STEP 2）+ Model Gateway（STEP 3）。
+ * 待实现：Agent Runtime / Workflow / Event Bus（STEP 4）。
  *
  * 关键约束：
  *   - 结构化输出走「单次工具调用提交」，宿主**绝不**从 assistant 文本抠 JSON
@@ -19,3 +19,28 @@ export { ToolRegistry } from './tools/registry.js';
 export type { RegisteredTool } from './tools/registry.js';
 export { createProjectTools, createChapterTools, createAllTools } from './tools/project-tools.js';
 export type { AnyToolDefinition } from '@nwa/shared';
+
+// ── Model Gateway（STEP 3） ──────────────────────────────────
+export { ModelGateway, extractJson } from './models/gateway.js';
+export type { ModelSlot, GatewayOptions, ModelCallRecord } from './models/gateway.js';
+export { OpenAiCompatibleProvider, normalizeBearer } from './models/openai-compatible.js';
+export {
+  FileSecretStore,
+  InMemorySecretStore,
+  defaultCredentialsPath,
+} from './models/secret-store.js';
+export type { CryptoBackend } from './models/secret-store.js';
+export { classifyHttpFailure, isRetryable, backoffDelayMs } from './models/errors.js';
+export type {
+  ChatMessage,
+  ChatRequest,
+  ChatResponse,
+  ChatUsage,
+  EmbedRequest,
+  EmbedResponse,
+  ModelProfile,
+  ModelProvider,
+  SecretStore,
+  StructuredRequest,
+  StructuredResult,
+} from './models/types.js';
