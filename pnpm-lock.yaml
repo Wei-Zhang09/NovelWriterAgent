@@ -47,6 +47,9 @@ importers:
       '@nwa/storage':
         specifier: workspace:*
         version: link:../../packages/storage
+      '@nwa/writing':
+        specifier: workspace:*
+        version: link:../../packages/writing
     devDependencies:
       electron:
         specifier: ^44.4.3

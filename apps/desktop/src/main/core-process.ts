@@ -33,6 +33,7 @@ import {
   type SecretStore,
 } from '@nwa/harness';
 import { z } from 'zod';
+import { Planner } from '@nwa/writing';
 import type { ToolContext } from '@nwa/shared';
 import type { AgentHandler, ContextEntry, SlotName } from '@nwa/harness';
 
@@ -500,6 +501,135 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
   },
 
   'tool.list': () => requireProject().tools.list(),
+
+  // ── Planner（STEP 6） ─────────────────────────────────────
+
+  /**
+   * 用真实上下文规划一章。
+   *
+   * 链路：Context Engine 装配上下文 → Planner 结构化调用 → 语义校验
+   *      → 有阻塞问题则自我修复重试 → 落库为章节计划。
+   *
+   * ⚠ 全程不写正文：只写 chapters.plan_json（由 chapter.plan 工具保证）。
+   */
+  'planner.planChapter': async (params: { chapterId: string; userInstruction?: string }) => {
+    const p = requireProject();
+    if (!p.runtime) {
+      throw new AppError(ErrorCode.MODEL_AUTH_FAILED, '尚未配置模型，无法规划');
+    }
+    const chapter = p.repos.chapters.get(params.chapterId);
+
+    // 1) Context Engine 装配上下文（沿用 STEP 5 的保护式预算）
+    const engine = new ContextEngine({ logger: logger.child('context') });
+    const slots: Partial<Record<SlotName, ContextEntry[]>> = {
+      system: [
+        {
+          id: 'sys_identity',
+          sourceType: 'PROFILE',
+          sourceRef: 'system/identity.md',
+          content: '你是长篇小说写作助手。Canon 是事实来源，不确定时不要自行创造。',
+          priority: 100,
+          isProtected: true,
+        },
+      ],
+      chapterPlan: [
+        {
+          id: `plan_target_${chapter.chapter_number}`,
+          sourceType: 'PLAN',
+          sourceRef: chapter.id,
+          content: `本次要为第 ${chapter.chapter_number} 章生成计划。`,
+          priority: 100,
+          isProtected: true,
+        },
+      ],
+      protectedCanon: [],
+      topMemory: [],
+    };
+
+    const bookId = p.repos.books.listByProject(
+      p.repos.projects.list()[0]!.id,
+    )[0]?.id;
+    if (bookId) {
+      for (const f of p.repos.facts.listByStatus(bookId, 'CANON').slice(0, 50)) {
+        slots.protectedCanon!.push({
+          id: f.id,
+          sourceType: 'FACT',
+          sourceRef: f.evidence_id ?? f.id,
+          content: `${f.subject_type}:${f.subject_id ?? '-'} ${f.predicate} = ${f.object_value}`,
+          priority: Math.round(f.confidence * 10),
+          isProtected: true,
+        });
+      }
+      for (const c of p.repos.chapters.listByStatus(bookId, 'COMMITTED')) {
+        if (!c.summary || c.chapter_number >= chapter.chapter_number) continue;
+        slots.topMemory!.push({
+          id: `summary_${c.chapter_number}`,
+          sourceType: 'SUMMARY',
+          sourceRef: c.body_path ?? `chapters/${c.chapter_number}.md`,
+          content: `第 ${c.chapter_number} 章摘要：${c.summary}`,
+          priority: c.chapter_number,
+        });
+      }
+    }
+
+    const assembled = engine.assemble({
+      budget: { inputTokens: 128_000, outputReserveTokens: 16_000, protectedMaxTokens: 64_000 },
+      slots,
+    });
+
+    // 2) Planner：结构化输出 + 语义自我修复
+    const planner = new Planner({
+      structured: (req) => p.runtime!.plannerStructured(req),
+      logger: logger.child('planner'),
+    });
+
+    const prevSummary = p.repos.chapters
+      .listByStatus(bookId ?? '', 'COMMITTED')
+      .filter((c) => c.chapter_number < chapter.chapter_number)
+      .sort((a, b) => b.chapter_number - a.chapter_number)[0]?.summary;
+
+    const res = await planner.plan({
+      chapterNumber: chapter.chapter_number,
+      contextText: assembled.text,
+      ...(prevSummary ? { previousSummary: prevSummary } : {}),
+      ...(params.userInstruction ? { userInstruction: params.userInstruction } : {}),
+    });
+
+    if (!res.ok || !res.plan) {
+      return {
+        ok: false,
+        attempts: res.attempts,
+        issues: res.issues ?? [],
+        error: res.error ?? { code: ErrorCode.MODEL_STRUCTURED_EMPTY, message: '规划失败' },
+        contextTokens: assembled.report.totalTokens,
+      };
+    }
+
+    // 3) 落库（经 chapter.plan 工具，受权限与 schema 双重校验）
+    const saved = await p.tools.invoke(
+      'chapter.plan',
+      { chapterId: chapter.id, plan: res.plan },
+      toolContext('ADMIN'),
+    );
+
+    return {
+      ok: saved.ok,
+      attempts: res.attempts,
+      issues: res.issues ?? [],
+      contextTokens: assembled.report.totalTokens,
+      brief: res.plan.brief,
+      scenes: res.plan.scenes.map((sc) => ({ sceneId: sc.sceneId, purpose: sc.purpose })),
+      saveResult: saved.ok ? saved.data : null,
+      ...(saved.ok ? {} : { saveError: saved.error }),
+    };
+  },
+
+  /** 读取已保存的章节计划（UI 展示） */
+  'planner.getPlan': (params: { chapterId: string }) => {
+    const p = requireProject();
+    const plan = p.repos.chapters.readPlan<unknown>(params.chapterId);
+    return { chapterId: params.chapterId, hasPlan: plan !== null, plan };
+  },
 
   // ── Context Engine（STEP 5） ──────────────────────────────
 

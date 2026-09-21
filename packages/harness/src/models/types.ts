@@ -95,7 +95,16 @@ export type StructuredResult<T> =
     };
 
 export interface StructuredRequest<T> {
-  readonly schema: z.ZodType<T>;
+  /**
+   * ⚠ 输入类型必须是 unknown（而不是 T）。
+   *
+   * 原因：`z.ZodType<T>` 会把 Input 与 Output 都约束成 T，
+   * 但带 `.default()` / `.transform()` 的 schema 两者并不相等 ——
+   * 例如 `z.array(z.string()).default([])` 的 Input 是 `string[] | undefined`，
+   * Output 是 `string[]`。用 `ZodType<T>` 会导致调用方无法传递这类 schema
+   * （实测在 Planner 上触发类型错误）。
+   */
+  readonly schema: z.ZodType<T, z.ZodTypeDef, unknown>;
   readonly schemaName: string;
   readonly messages: readonly ChatMessage[];
   readonly temperature?: number;

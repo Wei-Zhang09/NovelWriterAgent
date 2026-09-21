@@ -32,6 +32,7 @@ const state = {
   lastRunEvents: null,
   contextReport: null,
   contextSlots: null,
+  lastPlan: null,
 };
 
 async function call(method, params) {
@@ -632,6 +633,66 @@ function renderAgent() {
            : `连通 ✗ ${t.error?.code}`));
   }
   a.append(modelBox);
+
+  // ── Planner 面板（STEP 6） ──
+  const planBox = el('div', 'form form--rail');
+  planBox.append(el('h3', null, '章节规划'));
+  const planMsg = el('div', 'form-msg');
+
+  const planRow = el('div', 'btn-row');
+  const planBtn = el('button', 'btn btn--primary', '规划当前章节');
+  planRow.append(planBtn);
+  planBox.append(planRow, planMsg);
+
+  const planDetail = el('div', 'model-status');
+  planBox.append(planDetail);
+
+  planBtn.addEventListener('click', async () => {
+    // 需要一个目标章节：取左栏第一个章节
+    const first = state.chapters[0];
+    if (!first) {
+      planMsg.className = 'form-msg form-msg--err';
+      planMsg.textContent = '还没有章节 —— 请先在中栏创建一章';
+      return;
+    }
+    planBtn.disabled = true;
+    planMsg.className = 'form-msg';
+    planMsg.textContent = `正在规划第 ${first.chapterNumber} 章…（会真实调用模型）`;
+
+    const r = await call('planner.planChapter', { chapterId: first.id });
+    planBtn.disabled = false;
+
+    if (!r.ok) {
+      planMsg.className = 'form-msg form-msg--err';
+      planMsg.textContent = `${r.error.code}: ${r.error.message}`;
+      return;
+    }
+    const d = r.data;
+    if (!d.ok) {
+      planMsg.className = 'form-msg form-msg--err';
+      planMsg.textContent = `规划失败（尝试 ${d.attempts} 次）`
+        + (d.error ? ` ${d.error.code}: ${d.error.message.slice(0, 80)}` : '')
+        + (d.issues?.length ? ` | 问题：${d.issues.join('；').slice(0, 100)}` : '');
+      planDetail.replaceChildren();
+      return;
+    }
+
+    state.lastPlan = d;
+    planMsg.className = 'form-msg form-msg--ok';
+    planMsg.textContent = `规划成功：${d.scenes.length} 个场景，尝试 ${d.attempts} 次，上下文 ${d.contextTokens} tokens`
+      + (d.issues?.length ? `（提示 ${d.issues.length} 条）` : '');
+
+    planDetail.replaceChildren();
+    planDetail.append(el('div', 'perm-line', `目的：${d.brief.purpose}`));
+    planDetail.append(el('div', 'perm-line', `状态：${d.brief.previousState} → ${d.brief.targetState}`));
+    planDetail.append(el('div', 'perm-line', `角色：${d.brief.mainCharacters.join('、')}`));
+    planDetail.append(el('div', 'perm-line', `钩子：${d.brief.hook}`));
+    for (const sc of d.scenes) {
+      planDetail.append(el('div', 'perm-line', `  · ${sc.sceneId}: ${sc.purpose}`));
+    }
+  });
+
+  a.append(planBox);
 
   // ── Context Engine 面板（STEP 5） ──
   const ctxBox = el('div', 'form form--rail');

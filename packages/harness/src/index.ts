@@ -9,7 +9,8 @@
  *   STEP 2  Tool Registry
  *   STEP 3  Model Gateway + 加密密钥
  *   STEP 4  Agent Runtime + Event Bus + 状态机
- *   STEP 5  Context Engine（当前）
+ *   STEP 5  Context Engine
+ *   STEP 6  Plan 工具（当前）
  *   待办    Workflow 编排、Verification
  *
  * 关键约束（每条都有对应实现，不靠约定）：
@@ -22,6 +23,7 @@
 export { ToolRegistry } from './tools/registry.js';
 export type { RegisteredTool } from './tools/registry.js';
 export { createProjectTools, createChapterTools, createAllTools } from './tools/project-tools.js';
+export { createPlanTools } from './tools/plan-tools.js';
 export type { AnyToolDefinition } from '@nwa/shared';
 
 // ── Model Gateway（STEP 3） ──────────────────────────────────

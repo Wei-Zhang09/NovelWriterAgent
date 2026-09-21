@@ -2,7 +2,8 @@
  * Tool Registry 集成测试（STEP 2 验收核心）
  *
  * 重点验证 Registry 的四道关卡，以及 InkOS 因缺这些能力而审计困难的问题
- * （研究报告 §1.3 差异 1）：
+ * （研究报告 §1.3 差异 1）。工具数随 STEP 递增：STEP 2 为 8 个，STEP 6 起为 10 个。
+ * 关卡：
  *   1. 存在性   —— 未注册工具被拒
  *   2. 权限     —— 显式分级，单点判定（不靠"工具在不在数组里"）
  *   3. 输入校验 —— schema 不通过即拒绝，不进入 execute
@@ -38,7 +39,7 @@ function makeRegistry(repos: NonNullable<TestProject['repos']>): ToolRegistry {
 }
 
 describe('注册', () => {
-  it('注册 8 个 MVP 工具', () => {
+  it('注册 10 个工具（8 个基础 + STEP 6 的 2 个计划工具）', () => {
     t = createTestProject();
     const reg = makeRegistry(t.repos);
     const names = reg.list().map((x) => x.name);
@@ -46,7 +47,9 @@ describe('注册', () => {
       'chapter.countCommitted',
       'chapter.create',
       'chapter.get',
+      'chapter.getPlan',
       'chapter.list',
+      'chapter.plan',
       'project.create',
       'project.get',
       'project.list',
@@ -90,9 +93,12 @@ describe('注册', () => {
     t = createTestProject();
     const report = makeRegistry(t.repos).permissionReport();
     expect(report.READ).toEqual([
-      'chapter.countCommitted', 'chapter.get', 'chapter.list', 'project.get', 'project.list',
+      'chapter.countCommitted', 'chapter.get', 'chapter.getPlan', 'chapter.list',
+      'project.get', 'project.list',
     ]);
     expect(report.WRITE).toEqual(['chapter.create', 'project.create', 'project.update']);
+    // STEP 6：计划是"提议"，不是"提交"，故归 PROPOSE_WRITE
+    expect(report.PROPOSE_WRITE).toEqual(['chapter.plan']);
     expect(report.COMMIT).toEqual([]);
   });
 });

@@ -56,7 +56,8 @@ export interface AgentExecutionContext {
   readonly toolContext: import('@nwa/shared').ToolContext;
   /** 结构化输出请求器（内部走 Model Gateway 的三级降级） */
   readonly structured: <T>(req: {
-    schema: import('zod').ZodType<T>;
+    // 同 StructuredRequest：Input 必须是 unknown，否则带 default 的 schema 传不进来
+    schema: import('zod').ZodType<T, import('zod').ZodTypeDef, unknown>;
     schemaName: string;
     messages: readonly import('../models/types.js').ChatMessage[];
   }) => Promise<import('../models/types.js').StructuredResult<T>>;

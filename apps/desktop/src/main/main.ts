@@ -400,6 +400,32 @@ function createWindow(): void {
               }
             }
 
+            // 10) Planner 面板（STEP 6）
+            const planForm = [...document.querySelectorAll('.form')]
+              .find(f => f.querySelector('h3')?.textContent.includes('章节规划'));
+            rec('Planner 面板存在', !!planForm, '');
+            if (planForm) {
+              const pBtn = btnByText(planForm, '规划当前章节');
+              rec('有规划按钮', !!pBtn, '');
+              if (pBtn) {
+                pBtn.click();
+                // 轮询等待结果（未配置模型时应给出明确的 MODEL_AUTH_FAILED，
+                // 而不是静默失败或崩溃 —— 这是"诚实失败"的验证）
+                let msg = '';
+                for (let i = 0; i < 40; i++) {
+                  await sleep(250);
+                  const m = planForm.querySelector('.form-msg')?.textContent || '';
+                  if (m.includes('规划成功') || m.includes('规划失败') || m.includes('MODEL_') || m.includes('还没有章节')) {
+                    msg = m;
+                    break;
+                  }
+                }
+                rec('⚠ 未配置模型时给出明确错误（不静默失败）',
+                    msg.includes('MODEL_AUTH_FAILED') || msg.includes('规划成功') || msg.includes('还没有章节'),
+                    msg.slice(0, 80));
+              }
+            }
+
             return { steps };
           })()`;
 

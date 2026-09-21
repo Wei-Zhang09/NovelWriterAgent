@@ -5,7 +5,9 @@
  *   enums   —— 集中定义的枚举（研究报告 R8：禁止散落字符串）
  *   domain  —— 领域对象 Schema（camelCase，与 DB 行分离）
  *   tool    —— Tool 契约（Rule 4 的 input/output/permission/errorCode）
+ *   plan    —— ChapterBrief / ScenePlan（§29 / §30）
  */
 export * from './schemas/enums.js';
 export * from './schemas/domain.js';
 export * from './schemas/tool.js';
+export * from './schemas/plan.js';

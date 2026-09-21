@@ -19,6 +19,7 @@ import type { RunRepository, CheckpointRow } from '@nwa/storage';
 import { EventBus, type EmittedEvent } from '../events/event-bus.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import type { ModelGateway, ModelSlot } from '../models/gateway.js';
+import type { StructuredRequest, StructuredResult } from '../models/types.js';
 import { AGENT_PERMISSIONS, type AgentHandler, type AgentRunInput, type AgentRunResult, type AgentRunStatus } from './types.js';
 
 export interface AgentRuntimeOptions {
@@ -282,6 +283,22 @@ export class AgentRuntime {
   /** 读取某个 Run 的全部事件（测试与 UI） */
   eventsFor(runId: string): EmittedEvent[] {
     return this.events.list(runId);
+  }
+
+  /**
+   * 供 Planner 等「非 Agent Run」场景使用的结构化输出器。
+   *
+   * 为什么需要它：Planner 目前由 UI 直接触发（不经 Agent Runtime 的 run 循环），
+   * 但仍需要 Model Gateway 的三级降级能力。这里把 gateway 的能力原样暴露，
+   * **不**注入任何 Agent 上下文 —— 调用方自己决定权限与事件记录。
+   */
+  plannerStructured<T>(req: StructuredRequest<T>): Promise<StructuredResult<T>> {
+    return this.models.structured('architect', req);
+  }
+
+  /** 通用结构化输出（指定槽位） */
+  structured<T>(slot: ModelSlot, req: StructuredRequest<T>): Promise<StructuredResult<T>> {
+    return this.models.structured(slot, req);
   }
 
   /** 最近一次 checkpoint（恢复入口的只读查询） */

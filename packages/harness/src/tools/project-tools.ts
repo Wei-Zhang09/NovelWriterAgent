@@ -8,6 +8,7 @@
  */
 import { z } from 'zod';
 import { AppError, ErrorCode, chapterId, projectId } from '@nwa/core';
+import { createPlanTools } from './plan-tools.js';
 import {
   ChapterSchema,
   CreateChapterInputSchema,
@@ -190,5 +191,10 @@ export function createChapterTools(repos: Repositories): AnyToolDefinition[] {
 }
 
 export function createAllTools(repos: Repositories): AnyToolDefinition[] {
-  return [...createProjectTools(repos), ...createChapterTools(repos)];
+  return [
+    ...createProjectTools(repos),
+    ...createChapterTools(repos),
+    // STEP 6：计划相关工具（chapter.plan / chapter.getPlan）
+    ...createPlanTools(repos),
+  ];
 }
