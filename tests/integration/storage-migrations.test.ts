@@ -47,7 +47,7 @@ describe('迁移', () => {
   it('首次打开应用全部迁移', () => {
     const db = open('a.db');
     const applied = db.all<{ id: string }>('SELECT id FROM schema_migrations ORDER BY id');
-    expect(applied.map((r) => r.id)).toEqual(['0001_init']);
+    expect(applied.map((r) => r.id)).toEqual(['0001_init', '0002_checkpoint_seq']);
   });
 
   it('⚠ 幂等：重复打开同一库不会重复执行迁移', () => {
@@ -66,7 +66,7 @@ describe('迁移', () => {
     expect(second).toEqual(first);
   });
 
-  it('表与索引数量符合迁移声明（22 表 / 26 索引）', () => {
+  it('表与索引数量符合迁移声明（22 表 / 27 索引）', () => {
     const db = open('c.db');
     const tables = db.all<{ name: string }>(
       "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
@@ -75,7 +75,7 @@ describe('迁移', () => {
       "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'",
     );
     expect(tables.length).toBe(22);
-    expect(indexes.length).toBe(26);
+    expect(indexes.length).toBe(27);
   });
 
   it('连接级 PRAGMA 全部生效', () => {

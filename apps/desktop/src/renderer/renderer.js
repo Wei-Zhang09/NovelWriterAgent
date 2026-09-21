@@ -28,6 +28,8 @@ const state = {
   lastCall: null,
   modelConfig: null,
   lastModelTest: null,
+  runStatus: null,
+  lastRunEvents: null,
 };
 
 async function call(method, params) {
@@ -187,6 +189,111 @@ function renderCenter() {
   c.append(renderNewProjectForm());
   if (state.project && state.books.length === 0) c.append(renderNewBookForm());
   if (state.selectedBookId) c.append(renderNewChapterForm());
+}
+
+// ─────────────────────────────────────────────────────────────
+// Agent Runtime 与状态机（STEP 4）
+// ─────────────────────────────────────────────────────────────
+
+async function loadRunStatus() {
+  const r = await call('run.status');
+  state.runStatus = r.ok ? r.data : null;
+}
+
+/**
+ * Agent Runtime 面板。
+ *
+ * 展示三件在 STEP 4 才成立的事：
+ *   1. 各 Agent 类型的权限上限（谁只读）—— 权限由代码下发，不由调用方决定
+ *   2. 状态机的合法迁移目标 —— UI 只应显示能点的按钮
+ *   3. Run 的事件流 —— 让「为什么走到这一步」可查（§39）
+ */
+function renderRuntimePanel() {
+  const box = el('div', 'form form--rail');
+  box.append(el('h3', null, 'Agent 与状态机'));
+
+  const rs = state.runStatus;
+
+  const readyRow = el('div', 'kv-row');
+  readyRow.append(el('span', 'kv-k', 'Agent 可用'));
+  readyRow.append(
+    el('span', `chip ${rs?.agentReady ? 'chip--ok' : 'chip--muted'}`,
+      rs?.agentReady ? '就绪' : (rs ? '需先配置模型' : '读取中…')),
+  );
+  box.append(readyRow);
+
+  // 各 Agent 类型的权限（只读的用中性色，不是危险色）
+  if (rs?.agentPermissions) {
+    box.append(el('div', 'kv-row', ''));
+    const plist = el('div', 'kv');
+    for (const [agent, perm] of Object.entries(rs.agentPermissions)) {
+      const row = el('div', 'kv-row');
+      row.append(el('span', 'kv-k', agent));
+      row.append(el('span', `perm perm--${String(perm).toLowerCase()}`, String(perm)));
+      plist.append(row);
+    }
+    box.append(plist);
+  }
+
+  // 运行探针
+  const goal = el('input');
+  goal.placeholder = '探针目标（可选）';
+  goal.value = '请回复 ok';
+  const runBtn = el('button', 'btn btn--primary', '运行探针 Agent');
+  const msg = el('div', 'form-msg');
+  box.append(goal, runBtn, msg);
+
+  runBtn.addEventListener('click', async () => {
+    runBtn.disabled = true;
+    msg.className = 'form-msg';
+    msg.textContent = '运行中…';
+    const r = await call('agent.runProbe', { agentType: 'reviewer', goal: goal.value });
+    runBtn.disabled = false;
+    if (r.ok) {
+      const d = r.data;
+      state.lastRunEvents = d.events ?? [];
+      msg.className = d.status === 'SUCCEEDED' ? 'form-msg form-msg--ok' : 'form-msg form-msg--err';
+      msg.textContent = `Run ${d.status}（${d.runId}），事件 ${state.lastRunEvents.length} 条`
+        + (d.error ? ` — ${d.error.code}: ${d.error.message}` : '');
+    } else {
+      msg.className = 'form-msg form-msg--err';
+      msg.textContent = `${r.error.code}: ${r.error.message}`;
+    }
+    await loadRunStatus();
+    renderAgent();
+  });
+
+  // 状态机可视化：展示 DRAFT 下的合法迁移（证明非法迁移在 UI 层也不可达）
+  box.append(el('div', 'kv-row', ''));
+  const stBtn = el('button', 'btn', '查看状态机（DRAFT）');
+  const stBox = el('div', 'model-status');
+  stBtn.addEventListener('click', async () => {
+    const r = await call('state.allowedTargets', { from: 'DRAFT' });
+    if (r.ok) {
+      stBox.replaceChildren(
+        el('div', 'perm-line', `DRAFT → ${r.data.allowed.join(', ')}`),
+      );
+      // 同时演示一个非法迁移被拒
+      const bad = await call('state.canTransition', { from: 'DRAFT', to: 'COMMITTED' });
+      if (bad.ok) {
+        stBox.append(el('div', 'perm-line', `DRAFT → COMMITTED 被拒：${bad.data.allowed ? '允许（异常）' : bad.data.message}`));
+      }
+    }
+  });
+  box.append(stBtn, stBox);
+
+  // 事件流
+  if (state.lastRunEvents?.length) {
+    box.append(el('div', 'kv-row', ''));
+    const evBox = el('div', 'model-status');
+    evBox.append(el('div', 'perm-line', '最近 Run 的事件流：'));
+    for (const e of state.lastRunEvents.slice(0, 12)) {
+      evBox.append(el('div', 'perm-line', `  [${e.category}] ${e.type}`));
+    }
+    box.append(evBox);
+  }
+
+  return box;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -524,8 +631,9 @@ function renderAgent() {
   }
   a.append(modelBox);
 
-  // 模型设置常驻右栏 —— 不放在中栏，因为中栏会被章节详情替换，
-  // 那会让用户"点进章节后再也找不到模型设置"（曾在本流程验证中暴露）。
+  // 模型设置与 Runtime 面板常驻右栏 —— 不放在中栏，因为中栏会被章节详情替换，
+  // 那会让用户"点进章节后再也找不到它们"（曾在本流程验证中暴露）。
+  a.append(renderRuntimePanel());
   a.append(renderModelSettings());
 
   a.append(el('h3', null, '最近一次工具调用'));
@@ -559,6 +667,7 @@ async function boot() {
   }
   await loadModelConfig();
   await loadProjects();
+  await loadRunStatus();
 }
 
 window.nwa.onCoreExited((p) => {

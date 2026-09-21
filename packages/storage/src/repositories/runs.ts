@@ -38,6 +38,8 @@ export interface CheckpointRow {
   readonly id: string;
   readonly run_id: string;
   readonly stage: string;
+  /** per-run 单调递增序号，用于可靠排序（见 0002 迁移的理由） */
+  readonly seq: number;
   readonly state_json: string;
   readonly artifact_manifest_json: string;
   readonly schema_version: string;
@@ -162,6 +164,10 @@ export class RunRepository {
    *
    * InkOS 的 `resumeCursor` 字段存在但无读取代码，崩溃后任务直接丢失。
    * 我们要求恢复时能从最近完成的阶段继续，**不重跑已完成的昂贵 LLM 调用**。
+   *
+   * ⚠ 排序不能依赖 `created_at` 的毫秒精度 —— 同一毫秒内写入的两个
+   *   checkpoint 会导致 latestCheckpoint 返回不确定的那一条（实测复现）。
+   *   因此引入 per-run 单调递增的 `seq`，排序以它为准。
    */
   saveCheckpoint(input: {
     id: string;
@@ -171,16 +177,23 @@ export class RunRepository {
     artifactManifest: unknown;
     schemaVersion: string;
   }): CheckpointRow {
+    const next = this.db.get<{ m: number | null }>(
+      'SELECT MAX(seq) AS m FROM checkpoints WHERE run_id = ?',
+      input.runId,
+    );
+    const seq = (next?.m ?? 0) + 1;
+
     this.db.run(
       `INSERT INTO checkpoints
-         (id, run_id, stage, state_json, artifact_manifest_json, schema_version, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (id, run_id, stage, state_json, artifact_manifest_json, schema_version, seq, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       input.id,
       input.runId,
       input.stage,
       JSON.stringify(input.state),
       JSON.stringify(input.artifactManifest),
       input.schemaVersion,
+      seq,
       now(),
     );
     return requireRow(
@@ -190,10 +203,15 @@ export class RunRepository {
     );
   }
 
-  /** 取最近 checkpoint（恢复入口） */
+  /**
+   * 取最近 checkpoint（恢复入口）。
+   *
+   * 用 `seq DESC` 而非 `created_at DESC`：后者在同毫秒写入时不可靠。
+   * `created_at DESC` 作为次序键保留，处理 seq 相同（历史数据）的情况。
+   */
   latestCheckpoint(runId: string): CheckpointRow | undefined {
     return this.db.get<CheckpointRow>(
-      'SELECT * FROM checkpoints WHERE run_id = ? ORDER BY created_at DESC LIMIT 1',
+      'SELECT * FROM checkpoints WHERE run_id = ? ORDER BY seq DESC, created_at DESC LIMIT 1',
       runId,
     );
   }

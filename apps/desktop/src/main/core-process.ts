@@ -20,12 +20,19 @@ import {
   ToolRegistry,
   createAllTools,
   ModelGateway,
+  AgentRuntime,
+  EventBus,
+  AGENT_PERMISSIONS,
+  canTransition,
+  allowedTargets,
   type CryptoBackend,
   type ModelProfile,
   type ModelSlot,
   type SecretStore,
 } from '@nwa/harness';
+import { z } from 'zod';
 import type { ToolContext } from '@nwa/shared';
+import type { AgentHandler } from '@nwa/harness';
 
 const logger = new Logger('core');
 
@@ -62,6 +69,9 @@ interface OpenProject {
   readonly db: Database;
   readonly repos: Repositories;
   readonly tools: ToolRegistry;
+  /** STEP 4：Event Bus 与 Agent Runtime（模型未配置时 runtime 为 null） */
+  readonly events: EventBus;
+  runtime: AgentRuntime | null;
 }
 
 let opened: OpenProject | null = null;
@@ -205,6 +215,81 @@ function gateway(): ModelGateway {
   });
 }
 
+/** 当前 schema 版本（写入 checkpoint，恢复时校验兼容性） */
+const SCHEMA_VERSION = '0002_checkpoint_seq';
+
+/**
+ * 构建 Agent Runtime。
+ *
+ * 模型未配置时返回 null —— 而不是塞一个坏掉的 gateway，
+ * 这样 UI 能区分「没配模型」与「配了但连不上」。
+ */
+function buildRuntime(project: OpenProject): AgentRuntime | null {
+  const cfg = loadModelsConfig(project.dir);
+  if (!cfg || cfg.profiles.length === 0) return null;
+
+  const gateway = new ModelGateway({
+    profiles: cfg.profiles,
+    slots: cfg.slots,
+    secrets: secretsProxy,
+    logger: logger.child('models'),
+  });
+
+  const rt = new AgentRuntime({
+    runs: project.repos.runs,
+    tools: project.tools,
+    models: gateway,
+    events: project.events,
+    logger: logger.child('agent'),
+    schemaVersion: SCHEMA_VERSION,
+  });
+
+  // 注册内置 Agent：STEP 4 只做「连通性 Agent」验证链路，
+  // 真正的 Planner / Writer / Reviewer 在 STEP 6-8 实现。
+  for (const h of createProbeAgents()) rt.register(h);
+  return rt;
+}
+
+/**
+ * STEP 4 的内置探针 Agent。
+ *
+ * 用途：在不实现写作逻辑的前提下，验证 Runtime 的四条约束真的生效
+ * （权限下发、异常落事件、checkpoint、cancel/pause）。
+ * STEP 6 起会被真正的 Planner/Writer 替换，探针保留用于自检。
+ */
+function createProbeAgents(): AgentHandler[] {
+  return [
+    {
+      agentType: 'reviewer', // 只读 Agent：用于验证「审查类不能写」这条约束
+      execute: async (ctx) => {
+        const res = await ctx.structured({
+          schema: z.object({ echo: z.string(), tokens: z.number().optional() }),
+          schemaName: 'ProbeReview',
+          messages: [
+            { role: 'system', content: '你是审稿探针。只输出 JSON：{"echo": "ok"}' },
+            { role: 'user', content: ctx.input.goal },
+          ],
+        });
+        if (!res.ok) {
+          throw new AppError(
+            (res.error.code as never) ?? ErrorCode.MODEL_STRUCTURED_EMPTY,
+            `审稿探针结构化输出失败：${res.error.message}`,
+            {
+              details: {
+                attempts: res.attempts,
+                usedFallback: res.usedFallback,
+                rawText: res.rawText.slice(0, 300),
+              },
+            },
+          );
+        }
+        ctx.checkpoint('REVIEWED', { ok: true }, { artifacts: [] });
+        return { output: res.data, artifacts: [] };
+      },
+    },
+  ];
+}
+
 function requireProject(): OpenProject {
   if (!opened) {
     throw new AppError(ErrorCode.WORKSPACE_CORRUPTED, '尚未打开项目');
@@ -335,12 +420,16 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const tools = new ToolRegistry(logger.child('tools'));
     for (const tool of createAllTools(repos)) tools.register(tool);
 
-    opened = { dir, db, repos, tools };
-    logger.info('项目已打开', { dir, tables: tools.list().length });
+    const events = new EventBus({ runs: repos.runs, logger: logger.child('events') });
+    const project: OpenProject = { dir, db, repos, tools, events, runtime: null };
+    project.runtime = buildRuntime(project);
+    opened = project;
+    logger.info('项目已打开', { dir, tools: tools.list().length, agentReady: project.runtime !== null });
 
     return {
       dir,
       toolCount: tools.list().length,
+      agentReady: project.runtime !== null,
       projectCount: repos.projects.list().length,
       bookCount: repos.projects.list().length === 0 ? 0 : repos.books.listByProject(repos.projects.list()[0]!.id).length,
     };
@@ -409,6 +498,81 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
   },
 
   'tool.list': () => requireProject().tools.list(),
+
+  // ── Agent Runtime / Run 可观测性（STEP 4） ────────────────
+
+  /** Run 与 Agent 的当前状态（UI 右栏） */
+  'run.status': () => {
+    const p = requireProject();
+    return {
+      agentReady: p.runtime !== null,
+      /** 各 Agent 类型的权限上限 —— UI 展示「谁只读」 */
+      agentPermissions: AGENT_PERMISSIONS,
+      active: p.runtime?.listActive() ?? [],
+      recentRuns: p.repos.runs.listActive(p.repos.projects.list()[0]?.id ?? '').map((r) => ({
+        id: r.id,
+        workflowType: r.workflow_type,
+        status: r.status,
+        startedAt: r.started_at,
+      })),
+    };
+  },
+
+  /** 状态机的可迁移目标（UI 只显示能点的按钮） */
+  'state.allowedTargets': (params: { from: string }) => ({
+    from: params.from,
+    allowed: allowedTargets(params.from as never),
+  }),
+
+  /** 预检一次状态迁移（不执行，仅告知是否允许） */
+  'state.canTransition': (params: { from: string; to: string; reason?: string }) =>
+    canTransition({
+      from: params.from as never,
+      to: params.to as never,
+      reason: params.reason ?? 'precheck',
+    }),
+
+  /**
+   * 触发一次探针 Agent Run（STEP 4 的端到端验证入口）。
+   *
+   * 会真实调用模型（若已配置），并产生可直接在右栏查看的事件流。
+   */
+  'agent.runProbe': async (params: { agentType?: string; goal?: string }) => {
+    const p = requireProject();
+    if (!p.runtime) {
+      throw new AppError(ErrorCode.MODEL_AUTH_FAILED, '尚未配置模型，无法运行 Agent 探针');
+    }
+    const projectId = p.repos.projects.list()[0]?.id;
+    if (!projectId) {
+      throw new AppError(ErrorCode.TOOL_VALIDATION_ERROR, '还没有项目，请先创建');
+    }
+    const agentType = (params.agentType ?? 'reviewer') as AgentHandler['agentType'];
+    const res = await p.runtime.run({
+      runId: '',
+      agentType,
+      goal: params.goal ?? '请回复 ok',
+      projectId,
+      mode: 'interactive',
+    });
+    return { ...res, events: p.runtime.eventsFor(res.runId) };
+  },
+
+  /** 读取某 Run 的事件流（UI 展示「为什么走到这一步」） */
+  'run.events': (params: { runId: string }) => {
+    const p = requireProject();
+    return { runId: params.runId, events: p.events.list(params.runId) };
+  },
+
+  /** 最近一次 checkpoint（恢复入口） */
+  'run.lastCheckpoint': (params: { runId: string }) => {
+    const p = requireProject();
+    const ck = p.runtime?.lastCheckpoint(params.runId);
+    if (!ck) return { runId: params.runId, checkpoint: null };
+    return {
+      runId: params.runId,
+      checkpoint: { id: ck.id, stage: ck.stage, seq: ck.seq, createdAt: ck.created_at },
+    };
+  },
 
   // ── 模型设置（§38：密钥与配置分离） ────────────────────────
 
@@ -593,8 +757,15 @@ function bootstrap(): void {
   const repos = createRepositories(db);
   const tools = new ToolRegistry(logger.child('tools'));
   for (const tool of createAllTools(repos)) tools.register(tool);
-  opened = { dir: PROJECTS_ROOT, db, repos, tools };
-  logger.info('迁移完成', { applied: MIGRATIONS.map((m) => m.id), tools: tools.list().length });
+  const events = new EventBus({ runs: repos.runs, logger: logger.child('events') });
+  const project: OpenProject = { dir: PROJECTS_ROOT, db, repos, tools, events, runtime: null };
+  project.runtime = buildRuntime(project);
+  opened = project;
+  logger.info('迁移完成', {
+    applied: MIGRATIONS.map((m) => m.id),
+    tools: tools.list().length,
+    agentReady: project.runtime !== null,
+  });
 
   parentPort.on('message', (e: { data: CoreRequest | CryptoResponse | EncryptionInfo }) => {
     const msg = e.data;

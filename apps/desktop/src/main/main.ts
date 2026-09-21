@@ -303,6 +303,32 @@ function createWindow(): void {
               rec('有连通测试按钮', !!testBtn, '');
             }
 
+            // 8) Agent Runtime 面板（STEP 4）
+            const rtForm = [...document.querySelectorAll('.form')]
+              .find(f => f.querySelector('h3')?.textContent.includes('Agent 与状态机'));
+            rec('Agent Runtime 面板存在', !!rtForm, '');
+            if (rtForm) {
+              const txt = rtForm.textContent;
+              rec('显示 Agent 可用状态', txt.includes('就绪') || txt.includes('需先配置模型'), '');
+              // 权限表：reviewer 应为 READ
+              const permRows = [...rtForm.querySelectorAll('.perm')].map(p => p.textContent.trim());
+              rec('展示各 Agent 权限', permRows.length >= 4, permRows.join(','));
+              rec('⚠ 审查类 Agent 权限为 READ', permRows.includes('READ'), permRows.join(','));
+              const probeBtn = btnByText(rtForm, '运行探针 Agent');
+              rec('有探针运行按钮', !!probeBtn, '');
+              const smBtn = btnByText(rtForm, '查看状态机（DRAFT）');
+              rec('有状态机查看按钮', !!smBtn, '');
+              if (smBtn) {
+                smBtn.click();
+                await sleep(800);
+                const smTxt = rtForm.textContent;
+                // 状态机面板应展示 DRAFT 的合法目标，并证明非法迁移被拒
+                rec('状态机展示合法迁移', smTxt.includes('DRAFT →'), '');
+                rec('⚠ 非法迁移被拒并说明原因',
+                    smTxt.includes('被拒') || smTxt.includes('非法状态迁移'), '');
+              }
+            }
+
             return { steps };
           })()`;
 

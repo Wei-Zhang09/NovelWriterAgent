@@ -5,15 +5,18 @@
  * Context Engine / Skill Engine / Workflow Engine / Event Bus / Checkpoint /
  * Verification / Artifact Manager。
  *
- * 当前进度：Tool Registry（STEP 2）+ Model Gateway（STEP 3）。
- * 待实现：Agent Runtime / Workflow / Event Bus（STEP 4）。
+ * 进度：
+ *   STEP 2  Tool Registry
+ *   STEP 3  Model Gateway + 加密密钥
+ *   STEP 4  Agent Runtime + Event Bus + 状态机（当前）
+ *   待办    Context Engine（5）、Workflow 编排（4 后半）、Verification
  *
- * 关键约束：
- *   - 结构化输出走「单次工具调用提交」，宿主**绝不**从 assistant 文本抠 JSON
- *     （研究报告 §1.2 决策 4）
- *   - 审查类 Agent（Reviewer / Continuity）**只读**，不给 Write 权限
- *     （研究报告 §2.1 采纳 5）
- *   - 状态迁移由代码执行，模型只能 request_transition（§8.2）
+ * 关键约束（每条都有对应实现，不靠约定）：
+ *   - 状态迁移由代码执行，模型只能 request_transition（§8.2 → state-machine.ts）
+ *   - 审查类 Agent 只读（研究报告 §2.1 → AGENT_PERMISSIONS）
+ *   - 异常必写 run_events，绝不吞（§55 Rule 8 → event-bus.ts）
+ *   - 结构化输出走工具提交，宿主绝不从 assistant 文本抠 JSON（研究报告 §1.2 决策 4）
+ *   - checkpoint 是阶段级的，resume 不重跑已完成调用（研究报告 R2 → runtime.ts）
  */
 export { ToolRegistry } from './tools/registry.js';
 export type { RegisteredTool } from './tools/registry.js';
@@ -44,3 +47,31 @@ export type {
   StructuredRequest,
   StructuredResult,
 } from './models/types.js';
+
+// ── Event Bus（STEP 4） ──────────────────────────────────────
+export { EventBus } from './events/event-bus.js';
+export type { EmittedEvent, EventBusOptions } from './events/event-bus.js';
+
+// ── 状态机（STEP 4） ────────────────────────────────────────
+export {
+  canTransition,
+  assertTransition,
+  allowedTargets,
+  isTerminal,
+  isAbnormal,
+} from './workflow/state-machine.js';
+export type { TransitionRequest, TransitionDecision } from './workflow/state-machine.js';
+
+// ── Agent Runtime（STEP 4） ──────────────────────────────────
+export { AgentRuntime } from './agent/runtime.js';
+export type { AgentRuntimeOptions } from './agent/runtime.js';
+export { AGENT_TYPES, AGENT_PERMISSIONS } from './agent/types.js';
+export type {
+  AgentType,
+  AgentHandler,
+  AgentExecutionContext,
+  AgentExecutionResult,
+  AgentRunInput,
+  AgentRunResult,
+  AgentRunStatus,
+} from './agent/types.js';
