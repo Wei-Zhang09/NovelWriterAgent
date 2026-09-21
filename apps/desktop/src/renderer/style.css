@@ -195,3 +195,7 @@ body {
 }
 .tag--err { background: #7f1d1d; color: #fecaca; }
 .tag--warn { background: #78350f; color: #fed7aa; }
+
+/* 门禁预检结果（STEP 8） */
+.perm-line--ok { color: #4ade80; }
+.perm-line--err { color: #fca5a5; }

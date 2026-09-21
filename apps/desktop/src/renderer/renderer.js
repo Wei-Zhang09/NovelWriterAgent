@@ -35,6 +35,7 @@ const state = {
   lastPlan: null,
   lastDraft: null,
   lastContinuity: null,
+  lastReview: null,
 };
 
 async function call(method, params) {
@@ -817,6 +818,76 @@ function renderAgent() {
   });
 
   a.append(contBox);
+
+  // ── 审阅面板（STEP 8） ──
+  const revBox = el('div', 'form form--rail');
+  revBox.append(el('h3', null, '审稿'));
+  const revMsg = el('div', 'form-msg');
+
+  const revRow = el('div', 'btn-row');
+  const revBtn = el('button', 'btn btn--primary', '审阅当前章');
+  revRow.append(revBtn);
+  revBox.append(revRow, revMsg);
+  revBox.append(el('div', 'perm-line', '确定性检查 + 模型审阅；只有 BLOCKING = 0 才能提交'));
+  const gateLine = el('div', 'perm-line');
+  revBox.append(gateLine);
+
+  const revDetail = el('div', 'model-status');
+  revBox.append(revDetail);
+
+  revBtn.addEventListener('click', async () => {
+    const first = state.chapters[0];
+    if (!first) {
+      revMsg.className = 'form-msg form-msg--err';
+      revMsg.textContent = '还没有章节';
+      return;
+    }
+    revBtn.disabled = true;
+    revMsg.className = 'form-msg';
+    revMsg.textContent = '正在审阅…（确定性检查 + 模型）';
+
+    const r = await call('review.run', { chapterId: first.id });
+    revBtn.disabled = false;
+
+    if (!r.ok) {
+      revMsg.className = 'form-msg form-msg--err';
+      revMsg.textContent = `${r.error.code}: ${r.error.message}`;
+      revDetail.replaceChildren();
+      return;
+    }
+    const d = r.data;
+    state.lastReview = d;
+    revMsg.className = d.canCommit ? 'form-msg form-msg--ok' : 'form-msg form-msg--err';
+    revMsg.textContent = `${d.status}：${d.issueCount} 个问题`
+      + `（阻塞 ${d.blockingCount}）`
+      + (d.modelOk ? '' : '｜模型未参与') + (d.modelNote || '');
+
+    revDetail.replaceChildren();
+    for (const i of d.issues) {
+      const row = el('div', 'issue-row');
+      const cls = i.severity === 'BLOCKING' ? 'tag tag--err' : 'tag tag--warn';
+      row.append(el('span', cls, i.severity === 'BLOCKING' ? '阻塞' : i.severity));
+      const body = el('div', 'issue-body');
+      body.append(el('div', 'issue-msg', `[${i.category}] ${i.claim}`));
+      if (i.evidence.length > 0) {
+        body.append(el('div', 'issue-src', `依据：${i.evidence.join('、')}`));
+      }
+      row.append(body);
+      revDetail.append(row);
+    }
+
+    // 门禁预检：明确告诉用户"还差什么"
+    const g = await call('gate.check', { chapterId: first.id });
+    if (g.ok) {
+      const gd = g.data;
+      gateLine.textContent = gd.met
+        ? '门禁：✅ 可以提交'
+        : `门禁：❌ 还差 —— ${gd.missing.join('；')}`;
+      gateLine.className = gd.met ? 'perm-line perm-line--ok' : 'perm-line perm-line--err';
+    }
+  });
+
+  a.append(revBox);
 
   // ── Context Engine 面板（STEP 5） ──
   const ctxBox = el('div', 'form form--rail');

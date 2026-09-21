@@ -17,6 +17,10 @@ export interface ChapterRow extends Timestamped {
   readonly plan_json: string | null;
   readonly body_path: string | null;
   readonly summary: string | null;
+  /** 审阅结果 JSON（§32 ReviewOutput）；迁移 0004 引入 */
+  readonly review_json?: string | null;
+  /** 审阅推导状态 PASSED / NEEDS_REVISION / BLOCKED；NULL 表示未审阅 */
+  readonly review_status?: string | null;
 }
 
 export class ChapterRepository {
@@ -109,6 +113,42 @@ export class ChapterRepository {
   readPlan<T>(id: string): T | null {
     const row = this.get(id);
     return parseJsonColumn<T>(row.plan_json, 'plan_json', id);
+  }
+
+  /**
+   * 保存审阅结果（§32）。
+   *
+   * ⚠ `status` 由调用方（review.run 工具）用 deriveStatus() 机械推导后传入，
+   *   **不是**模型填的 overallStatus —— 见 STEP 8 的设计说明。
+   *   冗余存到 review_status 列，便于状态机门禁在不解析 JSON 的情况下判断。
+   */
+  saveReview(id: string, review: unknown, status: string): ChapterRow {
+    this.db.run(
+      'UPDATE chapters SET review_json = ?, review_status = ?, updated_at = ? WHERE id = ?',
+      serializeJsonColumn(review),
+      status,
+      now(),
+      id,
+    );
+    return this.get(id);
+  }
+
+  readReview<T>(id: string): T | null {
+    const row = this.get(id);
+    return parseJsonColumn<T>(row.review_json ?? null, 'review_json', id);
+  }
+
+  /**
+   * 是否有阻塞级审阅问题。
+   *
+   * 状态机门禁用它判断"能否进入 Commit"（§33：只有 BLOCKING = 0 才允许）。
+   * ⚠ 未审阅（review_status 为 NULL）视为**不可提交** —— 宁严不宽：
+   *   没审过就提交等于跳过质量关口。
+   */
+  hasBlockingReview(id: string): boolean {
+    const row = this.get(id);
+    if (row.review_status === null || row.review_status === undefined) return true; // 未审阅 → 阻塞
+    return row.review_status === 'BLOCKED';
   }
 
   /**

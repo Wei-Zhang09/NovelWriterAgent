@@ -489,6 +489,36 @@ function createWindow(): void {
               }
             }
 
+            // 13) 审阅面板（STEP 8）
+            const revForm = [...document.querySelectorAll('.form')]
+              .find(f => f.querySelector('h3')?.textContent.includes('审稿'));
+            rec('审稿面板存在', !!revForm, '');
+            if (revForm) {
+              // 必须写明"只有 BLOCKING = 0 才能提交"—— 把 §33 变成可见约束
+              rec('⚠ 标注 BLOCKING = 0 提交门槛',
+                  revForm.textContent.includes('BLOCKING = 0'), '');
+
+              const rBtn = btnByText(revForm, '审阅当前章');
+              rec('有审阅按钮', !!rBtn, '');
+              if (rBtn) {
+                rBtn.click();
+                let msg = '';
+                for (let i = 0; i < 40; i++) {
+                  await sleep(250);
+                  const m = revForm.querySelector('.form-msg')?.textContent || '';
+                  if (m.includes('PASSED') || m.includes('BLOCKED') || m.includes('NEEDS_REVISION')
+                      || m.includes('还没有') || m.includes('TOOL_') || m.includes('仍未')) {
+                    msg = m;
+                    break;
+                  }
+                }
+                rec('⚠ 无草稿时给出明确提示',
+                    msg.includes('还没有草稿') || msg.includes('还没有章节')
+                    || msg.includes('PASSED') || msg.includes('BLOCKED') || msg.includes('NEEDS_REVISION'),
+                    msg.slice(0, 90));
+              }
+            }
+
             return { steps };
           })()`;
 

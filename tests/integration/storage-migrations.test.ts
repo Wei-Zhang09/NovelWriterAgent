@@ -51,6 +51,7 @@ describe('迁移', () => {
       '0001_init',
       '0002_checkpoint_seq',
       '0003_foreshadow_payoff',
+      '0004_chapter_review',
     ]);
   });
 

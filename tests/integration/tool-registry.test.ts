@@ -39,24 +39,23 @@ function makeRegistry(repos: NonNullable<TestProject['repos']>): ToolRegistry {
 }
 
 describe('注册', () => {
-  it('注册 12 个工具（8 基础 + 2 计划 + 2 一致性）', () => {
+  it('注册全部工具（按前缀分组断言，抓漏注册）', () => {
     t = createTestProject();
     const reg = makeRegistry(t.repos);
     const names = reg.list().map((x) => x.name);
-    expect(names).toEqual([
-      'chapter.countCommitted',
-      'chapter.create',
-      'chapter.get',
-      'chapter.getPlan',
-      'chapter.list',
-      'chapter.plan',
-      'continuity.check',
-      'continuity.dimensions',
-      'project.create',
-      'project.get',
-      'project.list',
-      'project.update',
+
+    // 按前缀分组 —— 比"总数等于 N"更能定位"哪个工具没注册上"
+    const byPrefix = (p: string) => names.filter((n) => n.startsWith(p)).sort();
+    expect(byPrefix('project.')).toEqual([
+      'project.create', 'project.get', 'project.list', 'project.update',
     ]);
+    expect(byPrefix('chapter.')).toEqual([
+      'chapter.countCommitted', 'chapter.create', 'chapter.get',
+      'chapter.getPlan', 'chapter.list', 'chapter.plan',
+    ]);
+    expect(byPrefix('continuity.')).toEqual(['continuity.check', 'continuity.dimensions']);
+    expect(byPrefix('review.')).toEqual(['review.categories', 'review.get', 'review.run']);
+    expect(names).toHaveLength(15);
   });
 
   it('拒绝重复注册（静默覆盖会让"注册了哪个版本"不可知）', () => {
@@ -97,10 +96,11 @@ describe('注册', () => {
     expect(report.READ).toEqual([
       'chapter.countCommitted', 'chapter.get', 'chapter.getPlan', 'chapter.list',
       'continuity.check', 'continuity.dimensions', 'project.get', 'project.list',
+      'review.categories', 'review.get',
     ]);
     expect(report.WRITE).toEqual(['chapter.create', 'project.create', 'project.update']);
-    // STEP 6：计划是"提议"，不是"提交"，故归 PROPOSE_WRITE
-    expect(report.PROPOSE_WRITE).toEqual(['chapter.plan']);
+    // 计划与审阅都是"提议"，不是"提交"，故归 PROPOSE_WRITE
+    expect(report.PROPOSE_WRITE).toEqual(['chapter.plan', 'review.run']);
     expect(report.COMMIT).toEqual([]);
   });
 });

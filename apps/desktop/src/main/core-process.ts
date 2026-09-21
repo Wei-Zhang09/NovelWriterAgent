@@ -33,8 +33,10 @@ import {
   type SecretStore,
 } from '@nwa/harness';
 import { z } from 'zod';
-import { Planner, Writer } from '@nwa/writing';
+import { Planner, Writer, Reviewer } from '@nwa/writing';
 import { ChapterWorkspace, ContinuityChecker } from '@nwa/story';
+import type { ReviewIssue } from '@nwa/shared';
+import { TransitionGate } from '@nwa/harness';
 import type { ToolContext } from '@nwa/shared';
 import type { AgentHandler, ContextEntry, SlotName } from '@nwa/harness';
 
@@ -756,7 +758,124 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     };
   },
 
-  // ── Context Engine（STEP 5） ──────────────────────────────
+  /**
+   * 审阅当前章（STEP 8）。
+   *
+   * 链路：确定性检查（Continuity Checker）→ 模型审阅 → 合并 → 落库。
+   * ⚠ 状态由 issues 机械推导，不采信模型填的 overallStatus。
+   */
+  'review.run': async (params: { chapterId: string }) => {
+    const p = requireProject();
+    const projectId = p.repos.projects.list()[0]?.id;
+    const bookId = projectId ? p.repos.books.listByProject(projectId)[0]?.id : undefined;
+    if (!bookId) throw new AppError(ErrorCode.STORAGE_QUERY_FAILED, '当前项目还没有书');
+
+    const chapter = p.repos.chapters.get(params.chapterId);
+    const ws = new ChapterWorkspace({
+      rootDir: p.dir,
+      chapterNumber: chapter.chapter_number,
+      logger: logger.child('workspace'),
+    });
+    const draft = ws.readText('draft');
+    if (draft === null) {
+      throw new AppError(
+        ErrorCode.TOOL_VALIDATION_ERROR,
+        `第 ${chapter.chapter_number} 章还没有草稿 —— 请先点「生成草稿」`,
+      );
+    }
+
+    // 1) 确定性检查（不需要模型，结论可直接采信）
+    const checker = new ContinuityChecker({
+      repos: p.repos,
+      logger: logger.child('continuity'),
+      bookId,
+    });
+    const plan = p.repos.chapters.readPlan<unknown>(params.chapterId);
+    const cReport = checker.check({
+      chapterNumber: chapter.chapter_number,
+      draftText: draft,
+      ...(plan !== null ? { plan: plan as never } : {}),
+    });
+    const deterministic: ReviewIssue[] = cReport.issues.map((i) => ({
+      id: i.id,
+      severity: i.severity === 'BLOCKING' ? 'BLOCKING' : 'MAJOR',
+      category: 'CONTINUITY' as const,
+      claim: i.message,
+      evidence: [i.sourceRef],
+      suggestions: [],
+    }));
+
+    // 2) 模型审阅（需要配模型才有）
+    let modelNote = '';
+    if (!p.runtime) {
+      modelNote = '（未配置模型，本次仅做确定性检查）';
+    }
+    const reviewer = new Reviewer({
+      structured: p.runtime
+        ? (req) => p.runtime!.structured('reviewer', req)
+        : async () => ({
+            ok: false as const,
+            error: { code: ErrorCode.MODEL_AUTH_FAILED, message: '尚未配置模型' },
+            attempts: 0,
+            usedFallback: false,
+          }),
+      logger: logger.child('reviewer'),
+    });
+
+    const review = await reviewer.review({
+      chapterNumber: chapter.chapter_number,
+      draftText: draft,
+      contextText: '',
+      deterministicIssues: deterministic,
+    });
+
+    // 3) 落库（经 review.run 工具，受 schema 校验）
+    const saved = await p.tools.invoke(
+      'review.run',
+      { chapterId: chapter.id, review: { overallStatus: review.status, issues: review.issues } },
+      toolContext('ADMIN'),
+    );
+
+    return {
+      ok: review.ok,
+      modelOk: review.modelOk,
+      status: review.status,
+      canCommit: review.canCommit,
+      issueCount: review.issues.length,
+      blockingCount: review.summary.bySeverity.BLOCKING,
+      bySeverity: review.summary.bySeverity,
+      byCategory: review.summary.byCategory,
+      issues: review.issues.map((i) => ({
+        id: i.id,
+        severity: i.severity,
+        category: i.category,
+        claim: i.claim,
+        evidence: i.evidence,
+      })),
+      deterministicChecked: cReport.checked,
+      modelNote,
+      saved: saved.ok ? saved.data : null,
+      ...(saved.ok ? {} : { saveError: saved.error }),
+    };
+  },
+
+  /** 读取已保存的审阅结果 + 门禁判定 */
+  'review.get': (params: { chapterId: string }) => {
+    const p = requireProject();
+    const chapter = p.repos.chapters.get(params.chapterId);
+    const review = p.repos.chapters.readReview<unknown>(params.chapterId);
+    return {
+      chapterId: chapter.id,
+      review,
+      reviewStatus: chapter.review_status ?? null,
+      hasBlocking: p.repos.chapters.hasBlockingReview(params.chapterId),
+      canCommit: !p.repos.chapters.hasBlockingReview(params.chapterId),
+    };
+  },
+
+  /**
+   * 迁移门禁预检（STEP 8）：告诉 UI「现在还差什么才能提交」。
+   * ⚠ 只判断，不执行迁⟪HERMES-CONTEXT-COMPRESSION: 452 of 652 chars omitted here by Hermes's context compressor. This is NOT part of the original tool call and must never be reproduced in new output — always write full, never truncate.⟫
 
   /** 各槽位规格与默认预算（UI 展示与调参用） */
   'context.slots': () => {
@@ -897,6 +1016,28 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       const e = AppError.from(err);
       return { ok: true, rejected: true, error: { code: e.code, message: e.message, details: e.details } };
     }
+  },
+
+  /**
+   * 迁移门禁预检（STEP 8）：告诉 UI「还差什么才能提交」。
+   * ⚠ 只判断，不执行迁移 —— 执行由 WorkflowEngine 负责。
+   */
+  'gate.check': (params: { chapterId: string; from?: string; to?: string }) => {
+    const p = requireProject();
+    const chapter = p.repos.chapters.get(params.chapterId);
+    const ws = new ChapterWorkspace({
+      rootDir: p.dir,
+      chapterNumber: chapter.chapter_number,
+      logger: logger.child('workspace'),
+    });
+    const gate = new TransitionGate({
+      repos: p.repos,
+      logger: logger.child('gate'),
+      hasDraft: () => ws.has('draft'),
+    });
+    const from = (params.from ?? chapter.status) as never;
+    const to = (params.to ?? 'COMMITTING') as never;
+    return { chapterId: chapter.id, from, to, ...gate.check({ chapterId: chapter.id, from, to }) };
   },
 
   // ── Agent Runtime / Run 可观测性（STEP 4） ────────────────

@@ -10,7 +10,7 @@
  *   STEP 3  Model Gateway + 加密密钥
  *   STEP 4  Agent Runtime + Event Bus + 状态机
  *   STEP 5  Context Engine
- *   STEP 6  Plan 工具（当前）
+ *   STEP 6  Plan 工具
  *   待办    Workflow 编排、Verification
  *
  * 关键约束（每条都有对应实现，不靠约定）：
@@ -25,6 +25,7 @@ export type { RegisteredTool } from './tools/registry.js';
 export { createProjectTools, createChapterTools, createAllTools } from './tools/project-tools.js';
 export { createPlanTools } from './tools/plan-tools.js';
 export { createContinuityTools } from './tools/continuity-tools.js';
+export { createReviewTools } from './tools/review-tools.js';
 export type { AnyToolDefinition } from '@nwa/shared';
 
 // ── Model Gateway（STEP 3） ──────────────────────────────────
@@ -65,6 +66,10 @@ export {
   isAbnormal,
 } from './workflow/state-machine.js';
 export type { TransitionRequest, TransitionDecision } from './workflow/state-machine.js';
+
+// ── 迁移门禁（STEP 8 + STEP 10） ────────────────────────────
+export { TransitionGate } from './workflow/transition-gate.js';
+export type { GateResult, GateContext } from './workflow/transition-gate.js';
 
 // ── Context Engine（STEP 5） ────────────────────────────────
 export { ContextEngine } from './context/engine.js';
