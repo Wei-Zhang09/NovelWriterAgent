@@ -49,8 +49,22 @@ desktop.ini
 .tmp/
 .cache/
 
-# 参考项目克隆（本地研究用，不入库；研究结论放 docs/research/）
+# 参考项目克隆（本地研究用，不入库）
 research/inkos/
 research/webnovel-writer/
 research/AI-Novel-Writing-Assistant/
 research/deepwrite/
+
+# ─────────────────────────────────────────────────────────────
+# 文档全部本地保留，不进版本控制（用户决定：仓库只放代码）
+#   docs/                                     工程文档（ADR/计划/研究/运维）
+#   HANDOVER.md                               交接记录
+#   NovelWriter_Agent_v1.0_开发施工文档.md      需求来源（作者规范）
+#   参考项目规范.md                             需求来源（作者规范）
+# 如需恢复纳入版本控制，删除下列规则即可。
+# ─────────────────────────────────────────────────────────────
+docs/
+HANDOVER.md
+NovelWriter_Agent_v1.0_开发施工文档.md
+参考项目规范.md
+
