@@ -47,7 +47,11 @@ describe('迁移', () => {
   it('首次打开应用全部迁移', () => {
     const db = open('a.db');
     const applied = db.all<{ id: string }>('SELECT id FROM schema_migrations ORDER BY id');
-    expect(applied.map((r) => r.id)).toEqual(['0001_init', '0002_checkpoint_seq']);
+    expect(applied.map((r) => r.id)).toEqual([
+      '0001_init',
+      '0002_checkpoint_seq',
+      '0003_foreshadow_payoff',
+    ]);
   });
 
   it('⚠ 幂等：重复打开同一库不会重复执行迁移', () => {

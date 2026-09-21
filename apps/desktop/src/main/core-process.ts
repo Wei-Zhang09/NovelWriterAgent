@@ -34,7 +34,7 @@ import {
 } from '@nwa/harness';
 import { z } from 'zod';
 import { Planner, Writer } from '@nwa/writing';
-import { ChapterWorkspace } from '@nwa/story';
+import { ChapterWorkspace, ContinuityChecker } from '@nwa/story';
 import type { ToolContext } from '@nwa/shared';
 import type { AgentHandler, ContextEntry, SlotName } from '@nwa/harness';
 
@@ -695,6 +695,64 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       preview: d.text.slice(0, 300),
       // 本次生成只进工作区 —— 明确回报，避免误解为已落库
       committed: false,
+    };
+  },
+
+  /**
+   * 一致性检查（STEP 8）。
+   *
+   * 读工作区草稿 + 已保存计划 → 与 Canon 对账。
+   * ⚠ 纯只读：不修改草稿、不写库。修复是后续步骤的职责。
+   */
+  'continuity.check': (params: { chapterId: string }) => {
+    const p = requireProject();
+    const projectId = p.repos.projects.list()[0]?.id;
+    const bookId = projectId ? p.repos.books.listByProject(projectId)[0]?.id : undefined;
+    if (!bookId) {
+      throw new AppError(ErrorCode.STORAGE_QUERY_FAILED, '当前项目还没有书');
+    }
+    const chapter = p.repos.chapters.get(params.chapterId);
+
+    const ws = new ChapterWorkspace({
+      rootDir: p.dir,
+      chapterNumber: chapter.chapter_number,
+      logger: logger.child('workspace'),
+    });
+    const draft = ws.readText('draft');
+    if (draft === null) {
+      throw new AppError(
+        ErrorCode.TOOL_VALIDATION_ERROR,
+        `第 ${chapter.chapter_number} 章还没有草稿 —— 请先点「生成草稿」`,
+      );
+    }
+
+    const plan = p.repos.chapters.readPlan<unknown>(params.chapterId);
+    const checker = new ContinuityChecker({
+      repos: p.repos,
+      logger: logger.child('continuity'),
+      bookId,
+    });
+    const report = checker.check({
+      chapterNumber: chapter.chapter_number,
+      draftText: draft,
+      ...(plan !== null ? { plan: plan as never } : {}),
+    });
+
+    return {
+      chapterNumber: report.chapterNumber,
+      ok: report.ok,
+      blockingCount: report.blockingCount,
+      warningCount: report.warningCount,
+      checked: report.checked,
+      issues: report.issues.map((i) => ({
+        code: i.code,
+        dimension: i.dimension,
+        severity: i.severity,
+        message: i.message,
+        sourceRef: i.sourceRef,
+      })),
+      // 明确回报"未修改任何数据"，避免误解为已自动修复
+      mutated: false,
     };
   },
 

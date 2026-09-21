@@ -83,6 +83,9 @@ importers:
       '@nwa/storage':
         specifier: workspace:*
         version: link:../storage
+      '@nwa/story':
+        specifier: workspace:*
+        version: link:../story
       zod:
         specifier: ^3.24.1
         version: 3.24.1

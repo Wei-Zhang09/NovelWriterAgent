@@ -39,7 +39,7 @@ function makeRegistry(repos: NonNullable<TestProject['repos']>): ToolRegistry {
 }
 
 describe('注册', () => {
-  it('注册 10 个工具（8 个基础 + STEP 6 的 2 个计划工具）', () => {
+  it('注册 12 个工具（8 基础 + 2 计划 + 2 一致性）', () => {
     t = createTestProject();
     const reg = makeRegistry(t.repos);
     const names = reg.list().map((x) => x.name);
@@ -50,6 +50,8 @@ describe('注册', () => {
       'chapter.getPlan',
       'chapter.list',
       'chapter.plan',
+      'continuity.check',
+      'continuity.dimensions',
       'project.create',
       'project.get',
       'project.list',
@@ -94,7 +96,7 @@ describe('注册', () => {
     const report = makeRegistry(t.repos).permissionReport();
     expect(report.READ).toEqual([
       'chapter.countCommitted', 'chapter.get', 'chapter.getPlan', 'chapter.list',
-      'project.get', 'project.list',
+      'continuity.check', 'continuity.dimensions', 'project.get', 'project.list',
     ]);
     expect(report.WRITE).toEqual(['chapter.create', 'project.create', 'project.update']);
     // STEP 6：计划是"提议"，不是"提交"，故归 PROPOSE_WRITE

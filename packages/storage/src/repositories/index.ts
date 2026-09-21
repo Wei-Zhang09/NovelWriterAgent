@@ -13,6 +13,7 @@ import { CharacterRepository } from './characters.js';
 import { EvidenceRepository } from './evidence.js';
 import { FactRepository } from './facts.js';
 import { RunRepository } from './runs.js';
+import { ForeshadowingRepository } from './foreshadowing.js';
 
 export interface Repositories {
   readonly projects: ProjectRepository;
@@ -22,6 +23,8 @@ export interface Repositories {
   readonly evidence: EvidenceRepository;
   readonly facts: FactRepository;
   readonly runs: RunRepository;
+  /** 伏笔账目（§14 六态机）—— STEP 8 引入 */
+  readonly foreshadowing: ForeshadowingRepository;
 }
 
 export function createRepositories(db: Database): Repositories {
@@ -33,6 +36,7 @@ export function createRepositories(db: Database): Repositories {
     evidence: new EvidenceRepository(db),
     facts: new FactRepository(db),
     runs: new RunRepository(db),
+    foreshadowing: new ForeshadowingRepository(db),
   };
 }
 
@@ -42,6 +46,8 @@ export { CharacterRepository } from './characters.js';
 export { EvidenceRepository } from './evidence.js';
 export { FactRepository } from './facts.js';
 export { RunRepository } from './runs.js';
+export { ForeshadowingRepository, FORESHADOW_STATUSES, FORESHADOW_TIERS } from './foreshadowing.js';
+export type { ForeshadowingRow, ForeshadowStatus, ForeshadowTier } from './foreshadowing.js';
 export type { ProjectRow, BookRow, CreateProjectInput } from './projects.js';
 export type { ChapterRow } from './chapters.js';
 export type { CharacterRow, CharacterStateRow } from './characters.js';

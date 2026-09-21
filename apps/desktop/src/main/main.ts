@@ -458,6 +458,37 @@ function createWindow(): void {
               }
             }
 
+            // 12) 一致性检查面板（STEP 8）
+            const contForm = [...document.querySelectorAll('.form')]
+              .find(f => f.querySelector('h3')?.textContent.includes('一致性检查'));
+            rec('一致性检查面板存在', !!contForm, '');
+            if (contForm) {
+              // 必须标注只读 —— 避免误以为会自动修复
+              rec('⚠ 明确标注只读（不自动修复）',
+                  contForm.textContent.includes('只读') && contForm.textContent.includes('不修改草稿'), '');
+
+              const cBtn = btnByText(contForm, '检查当前章');
+              rec('有检查按钮', !!cBtn, '');
+              if (cBtn) {
+                cBtn.click();
+                let msg = '';
+                for (let i = 0; i < 40; i++) {
+                  await sleep(250);
+                  const m = contForm.querySelector('.form-msg')?.textContent || '';
+                  if (m.includes('通过：') || m.includes('发现') || m.includes('还没有')
+                      || m.includes('还没有草稿') || m.includes('TOOL_') || m.includes('STORAGE_')) {
+                    msg = m;
+                    break;
+                  }
+                }
+                // 没草稿时应明确提示"请先生成草稿"，而不是静默失败
+                rec('⚠ 无草稿时给出明确提示',
+                    msg.includes('还没有草稿') || msg.includes('还没有章节')
+                    || msg.includes('通过：') || msg.includes('发现'),
+                    msg.slice(0, 80));
+              }
+            }
+
             return { steps };
           })()`;
 

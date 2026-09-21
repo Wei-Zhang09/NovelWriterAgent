@@ -24,6 +24,7 @@ export { ToolRegistry } from './tools/registry.js';
 export type { RegisteredTool } from './tools/registry.js';
 export { createProjectTools, createChapterTools, createAllTools } from './tools/project-tools.js';
 export { createPlanTools } from './tools/plan-tools.js';
+export { createContinuityTools } from './tools/continuity-tools.js';
 export type { AnyToolDefinition } from '@nwa/shared';
 
 // ── Model Gateway（STEP 3） ──────────────────────────────────

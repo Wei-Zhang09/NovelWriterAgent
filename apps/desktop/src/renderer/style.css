@@ -170,3 +170,28 @@ body {
   white-space: pre-wrap;
   color: var(--muted-foreground);
 }
+
+/* 一致性检查问题列表（STEP 8） */
+.issue-row {
+  display: flex;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  align-items: flex-start;
+}
+.issue-body { flex: 1; min-width: 0; }
+.issue-msg { font-size: 12px; line-height: 1.6; }
+.issue-src {
+  font-size: 11px;
+  color: var(--muted-foreground);
+  margin-top: 2px;
+  word-break: break-all;
+}
+.tag {
+  flex: 0 0 auto;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+.tag--err { background: #7f1d1d; color: #fecaca; }
+.tag--warn { background: #78350f; color: #fed7aa; }

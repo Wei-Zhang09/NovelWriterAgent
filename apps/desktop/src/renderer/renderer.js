@@ -34,6 +34,7 @@ const state = {
   contextSlots: null,
   lastPlan: null,
   lastDraft: null,
+  lastContinuity: null,
 };
 
 async function call(method, params) {
@@ -758,6 +759,64 @@ function renderAgent() {
   });
 
   a.append(writeBox);
+
+  // ── 一致性检查面板（STEP 8） ──
+  const contBox = el('div', 'form form--rail');
+  contBox.append(el('h3', null, '一致性检查'));
+  const contMsg = el('div', 'form-msg');
+
+  const contRow = el('div', 'btn-row');
+  const contBtn = el('button', 'btn btn--primary', '检查当前章');
+  contRow.append(contBtn);
+  contBox.append(contRow, contMsg);
+  contBox.append(el('div', 'perm-line', '只读：只报告问题，不修改草稿'));
+
+  const contDetail = el('div', 'model-status');
+  contBox.append(contDetail);
+
+  contBtn.addEventListener('click', async () => {
+    const first = state.chapters[0];
+    if (!first) {
+      contMsg.className = 'form-msg form-msg--err';
+      contMsg.textContent = '还没有章节';
+      return;
+    }
+    contBtn.disabled = true;
+    contMsg.className = 'form-msg';
+    contMsg.textContent = '正在与 Canon 对账…';
+
+    const r = await call('continuity.check', { chapterId: first.id });
+    contBtn.disabled = false;
+
+    if (!r.ok) {
+      contMsg.className = 'form-msg form-msg--err';
+      contMsg.textContent = `${r.error.code}: ${r.error.message}`;
+      contDetail.replaceChildren();
+      return;
+    }
+    const d = r.data;
+    state.lastContinuity = d;
+    contMsg.className = d.ok ? 'form-msg form-msg--ok' : 'form-msg form-msg--err';
+    contMsg.textContent = d.ok
+      ? `通过：无阻塞问题（${d.warningCount} 条提示，对账 ${d.checked.canonFacts} 条 Canon / ${d.checked.characters} 个角色）`
+      : `发现 ${d.blockingCount} 个阻塞问题、${d.warningCount} 条提示`;
+
+    contDetail.replaceChildren();
+    for (const i of d.issues) {
+      const row = el('div', 'issue-row');
+      const tag = el('span', i.severity === 'BLOCKING' ? 'tag tag--err' : 'tag tag--warn',
+        i.severity === 'BLOCKING' ? '阻塞' : '提示');
+      row.append(tag);
+      const body = el('div', 'issue-body');
+      body.append(el('div', 'issue-msg', `${i.code}【${i.dimension}】${i.message}`));
+      // 出处必须展示 —— 每条问题都能被人独立复核
+      body.append(el('div', 'issue-src', `出处：${i.sourceRef}`));
+      row.append(body);
+      contDetail.append(row);
+    }
+  });
+
+  a.append(contBox);
 
   // ── Context Engine 面板（STEP 5） ──
   const ctxBox = el('div', 'form form--rail');

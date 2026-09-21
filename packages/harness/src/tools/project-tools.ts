@@ -7,8 +7,9 @@
  *   chapter.plan    → PROPOSE_WRITE（产出计划但不落正式正文）
  */
 import { z } from 'zod';
-import { AppError, ErrorCode, chapterId, projectId } from '@nwa/core';
+import { AppError, ErrorCode, Logger, chapterId, projectId } from '@nwa/core';
 import { createPlanTools } from './plan-tools.js';
+import { createContinuityTools } from './continuity-tools.js';
 import {
   ChapterSchema,
   CreateChapterInputSchema,
@@ -190,11 +191,40 @@ export function createChapterTools(repos: Repositories): AnyToolDefinition[] {
   return [chapterList, chapterGet, chapterCreate, chapterCountCommitted];
 }
 
-export function createAllTools(repos: Repositories): AnyToolDefinition[] {
+export function createAllTools(
+  repos: Repositories,
+  opts?: {
+    /** 解析当前书 id（Continuity 检查需要）；缺省时用第一个书 */
+    resolveBookId?: () => string;
+    logger?: import('@nwa/core').Logger;
+  },
+): AnyToolDefinition[] {
+  /**
+   * ⚠ 惰性解析：默认实现里**不**预先抛错。
+   *   若在这里就检查"有没有书"，会让所有工具注册失败 ——
+   *   而没有书的项目仍然应该能用 project.create 等工具建书。
+   *   检查推迟到 continuity 工具真正执行时。
+   */
+  const resolveBookId =
+    opts?.resolveBookId ??
+    (() => {
+      const project = repos.projects.list()[0];
+      const book = project ? repos.books.listByProject(project.id)[0] : undefined;
+      if (!book) {
+        throw new AppError(ErrorCode.STORAGE_QUERY_FAILED, '当前项目还没有书，无法做一致性检查');
+      }
+      return book.id;
+    });
+
   return [
     ...createProjectTools(repos),
     ...createChapterTools(repos),
     // STEP 6：计划相关工具（chapter.plan / chapter.getPlan）
     ...createPlanTools(repos),
+    // STEP 8：一致性检查（continuity.check / continuity.dimensions）—— 只读
+    ...createContinuityTools(repos, {
+      resolveBookId,
+      logger: opts?.logger ?? new Logger('harness:continuity'),
+    }),
   ];
 }

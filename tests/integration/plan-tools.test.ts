@@ -197,10 +197,10 @@ describe('chapter.getPlan', () => {
 });
 
 describe('工具总数（STEP 6 后）', () => {
-  it('共 10 个工具（8 + chapter.plan + chapter.getPlan）', () => {
+  it('共 12 个工具（8 基础 + 2 计划 + 2 一致性）', () => {
     t = createTestProject();
     const names = registry(t).list().map((x) => x.name);
-    expect(names).toHaveLength(10);
+    expect(names).toHaveLength(12);
     expect(names).toContain('chapter.plan');
     expect(names).toContain('chapter.getPlan');
   });
