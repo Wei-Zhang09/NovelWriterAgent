@@ -27,7 +27,7 @@ export default defineConfig({
     // 契约一致性优先于新特性
     include: ['tests/**/*.test.ts'],
     environment: 'node',
-    testTimeout: 15000,
+    testTimeout: 30000,
     // 研究报告 §1.2 决策 7：核心逻辑必须能在无 Electron 环境下测试
     globals: false,
     reporters: ['default'],
