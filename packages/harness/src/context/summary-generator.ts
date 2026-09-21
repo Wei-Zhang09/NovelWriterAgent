@@ -76,7 +76,13 @@ export interface SummaryResult {
 export interface SummaryGeneratorOptions {
   readonly structured: SummaryStructuredCaller;
   readonly logger: Logger;
-  /** 摘要字数上限（默认 300）。过长会挤占后续章节的上下文预算 */
+  /**
+   * 摘要字数上限（默认 500）。
+   *
+   * ⚠ 这个值要与 prompt 里的要求**一致**。实测踩到：prompt 写"100-250 字"
+   * 而校验是 300 —— 模型给了 444 字，直接被拒。中文摘要要同时容纳
+   * 人名/地名/物品/时间跨度/已改变处境，300 字确实偏紧。
+   */
   readonly maxChars?: number;
 }
 
@@ -99,7 +105,7 @@ export class SummaryGenerator {
   constructor(opts: SummaryGeneratorOptions) {
     this.structured = opts.structured;
     this.logger = opts.logger;
-    this.maxChars = opts.maxChars ?? 300;
+    this.maxChars = opts.maxChars ?? 500;
   }
 
   /**
@@ -218,7 +224,7 @@ function buildMessages(req: SummaryRequest): { role: 'system' | 'user'; content:
     '- 不要写"待确认""TODO"这类占位符。',
     '',
     '格式：',
-    '- summary：一段话（100-250 字），按事件顺序叙述。',
+    '- summary：一段话（200-400 字），按事件顺序叙述。务必控制在 400 字以内。',
     '- keyFacts：本章确立或改变的**具体事实**（如"林渊的妹妹林溪已失踪四天"），',
     '  每条一句话，只写正文明确写出的。',
     '- endState：本章结束时主角所处的新状态（下一章从这里继续）。',

@@ -137,19 +137,20 @@ describe('⚠ 摘要只抽取不创作（ADR-0006："错一条污染几百章"�
   });
 
   it('拒绝超长摘要（会挤占后续章节的上下文预算）', async () => {
-    const g = genWith(goodSummary({ summary: '林'.repeat(400) + '渊的故事' }));
+    // 上限现在是 500，用 600 字测试
+    const g = genWith(goodSummary({ summary: '林'.repeat(600) + '渊的故事' }));
     const r = await g.generate({ chapterNumber: 1, draftText: DRAFT });
     expect(r.ok).toBe(false);
     expect(r.error!.message).toContain('超出上限');
   });
 
   it('endState 也拒绝未来时', async () => {
-    const v = validateSummary(goodSummary({ endState: '接下来会遇到老乔' }), DRAFT, 300);
+    const v = validateSummary(goodSummary({ endState: '接下来会遇到老乔' }), DRAFT, 500);
     expect(v.some((x) => x.includes('未来时'))).toBe(true);
   });
 
   it('合法摘要无违规', () => {
-    expect(validateSummary(goodSummary(), DRAFT, 300)).toEqual([]);
+    expect(validateSummary(goodSummary(), DRAFT, 500)).toEqual([]);
   });
 });
 

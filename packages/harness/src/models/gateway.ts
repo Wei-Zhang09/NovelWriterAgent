@@ -13,6 +13,7 @@
  */
 import { AppError, ErrorCode, Logger } from '@nwa/core';
 import type { z } from 'zod';
+import { buildStructuredContract } from './structured-contract.js';
 import { backoffDelayMs, isRetryable } from './errors.js';
 import { OpenAiCompatibleProvider } from './openai-compatible.js';
 import type {
@@ -185,13 +186,23 @@ export class ModelGateway {
       const provider = this.providerFor(profile);
       const res = await provider.chat({
         model: profile.model,
-        messages: req.messages,
+        // ⚠ 注入输出契约（见 structured-contract.ts）：
+        //   小模型不会主动输出 JSON，靠"每个调用方自己写清楚"不可靠 ——
+        //   实测 Planner 的 prompt 写了契约所以成功，Reviewer/Summary 没写就失败。
+        //   结构化调用必然要 JSON，这是**调用的性质**，因此在 gateway 层统一注入。
+        messages: injectContract(req.messages, req.schemaName, req.schema),
         temperature: req.temperature ?? profile.temperature,
         maxTokens: req.maxTokens ?? profile.maxTokens,
         ...(req.signal ? { signal: req.signal } : {}),
       });
       lastRaw = res.text;
-      return req.schema.safeParse(extractJson(res.text));
+      const parsed = req.schema.safeParse(extractJson(res.text));
+      // ⚠ 失败时把**原始输出**带进错误详情 —— 否则只看到
+      //   "(root): Required" 完全无法定位模型到底返回了什么
+      if (!parsed.success) {
+        lastRaw = res.text.slice(0, 1500);
+      }
+      return parsed;
     };
 
     const primary = this.profileFor(slot);
@@ -204,6 +215,9 @@ export class ModelGateway {
         lastErr = {
           code: ErrorCode.MODEL_STRUCTURED_EMPTY,
           message: `${req.schemaName} 校验失败：${describeIssues(parsed.error)}`,
+          // ⚠ 带上模型原始输出：否则只看到 "(root): Required"
+          //   无法判断是模型没返回 JSON、字段名写错、还是被截断
+          details: { rawTextHead: (lastRaw ?? '').slice(0, 800) },
         };
       } catch (err) {
         const e = AppError.from(err);
@@ -293,6 +307,29 @@ export class ModelGateway {
  * 允许剥离 markdown 代码围栏（```json ... ```）—— 这是**格式噪声**，
  * 不是「从散文里抠 JSON」。若文本里没有完整 JSON 对象，返回 undefined 让校验失败。
  */
+
+/**
+ * 把输出契约追加到最后一条 user 消息（或新建一条 user 消息）。
+ *
+ * ⚠ 追加到末尾而不是插到 system：契约是"本次输出"的要求，
+ *   放在离生成最近的位置，小模型的遵从度明显更高。
+ */
+function injectContract<T>(
+  messages: readonly { role: 'system' | 'user' | 'assistant'; content: string }[],
+  schemaName: string,
+  schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+): { role: 'system' | 'user' | 'assistant'; content: string }[] {
+  const contract = buildStructuredContract(schemaName, schema as z.ZodTypeAny);
+  const out = [...messages];
+  const last = out[out.length - 1];
+  if (last && last.role === 'user') {
+    out[out.length - 1] = { role: 'user', content: `${last.content}\n${contract}` };
+  } else {
+    out.push({ role: 'user', content: contract });
+  }
+  return out;
+}
+
 export function extractJson(text: string): unknown {
   const trimmed = text.trim();
   if (trimmed.length === 0) return undefined;

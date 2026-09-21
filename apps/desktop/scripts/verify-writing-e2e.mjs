@@ -298,6 +298,18 @@ app.whenReady().then(async () => {
           : `${rd.error?.code}：${String(rd.error?.message ?? '').slice(0, 100)}`,
       );
 
+      // 摘要生成（长程记忆的唯一入口）—— 提交前必须完成
+      const sgen = await call('summary.generate', { chapterId }, 300_000);
+      const sd = sgen.ok ? (sgen.data ?? {}) : { ok: false, error: sgen.error };
+      rec(
+        `第 ${n} 章摘要生成`,
+        sd.ok === true,
+        sd.ok ? `${String(sd.summary ?? '').slice(0, 60)}…` : `${sd.error?.code}：${String(sd.error?.message ?? '').slice(0, 100)}`,
+      );
+      if (!sd.ok) break;
+      // 作者确认（真实使用中由人在「摘要确认」面板点；验证脚本自动确认）
+      await call('summary.approve', { chapterId });
+
       // 提交
       const commit = await call('commit.run', { chapterId }, 300_000);
       const cd = commit.ok ? (commit.data ?? {}) : { ok: false, error: commit.error };
@@ -312,9 +324,6 @@ app.whenReady().then(async () => {
         continue;
       }
       rec(`第 ${n} 章提交`, true, `${cd.status}（${cd.appliedCount} 产物）`);
-
-      // 摘要确认 → 进检索索引（ADR-0006 约束 C）
-      await call('summary.approve', { chapterId });
 
       perChapter.push({ n, chapterId, chars, ctxTokens, memCount, committed: true });
 
