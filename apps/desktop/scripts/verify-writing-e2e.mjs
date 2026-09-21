@@ -298,6 +298,29 @@ app.whenReady().then(async () => {
           : `${rd.error?.code}：${String(rd.error?.message ?? '').slice(0, 100)}`,
       );
 
+      // 改稿（仅当审稿有问题时）—— 补缺口后新增的环节
+      if (rd.ok && rd.issueCount > 0) {
+        const rev = await call('revision.run', { chapterId }, 300_000);
+        const rvd = rev.ok ? (rev.data ?? {}) : { ok: false, error: rev.error };
+        rec(
+          `第 ${n} 章改稿`,
+          rvd.ok === true,
+          rvd.ok
+            ? `改 ${rvd.revisedCount}/${rvd.totalTargets} 处（${rvd.deltaChars >= 0 ? '+' : ''}${rvd.deltaChars} 字）`
+            : `${rvd.error?.code}：${String(rvd.error?.message ?? '').slice(0, 100)}`,
+        );
+        if (rvd.ok && rvd.revisedCount > 0) {
+          // ⚠ 改完必须重新审稿 —— 改稿可能引入新问题
+          const redo = await call('review.run', { chapterId }, 300_000);
+          const rdd = redo.ok ? (redo.data ?? {}) : {};
+          rec(
+            `第 ${n} 章复审`,
+            rdd.ok === true,
+            rdd.ok ? `${rdd.status}：${rdd.issueCount} 问题（阻塞 ${rdd.blockingCount}）` : '复审失败',
+          );
+        }
+      }
+
       // 摘要生成（长程记忆的唯一入口）—— 提交前必须完成
       const sgen = await call('summary.generate', { chapterId }, 300_000);
       const sd = sgen.ok ? (sgen.data ?? {}) : { ok: false, error: sgen.error };

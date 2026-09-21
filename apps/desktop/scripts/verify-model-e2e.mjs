@@ -12,13 +12,20 @@
 import { app, utilityProcess, safeStorage } from 'electron';
 import { createServer } from 'node:http';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const OUT = join(here, '..', 'dist', 'model-e2e-result.json');
 const coreEntry = join(here, '..', 'dist', 'main', 'core-process.js');
+
+// ⚠ 隔离：本验证会写 models.json 并在结束时清理。
+//   早先它清理的是**用户真实目录**下的 models.json —— 实测把用户
+//   辛苦配好的模型配置删掉了（注释还写着"避免污染真实项目目录"，
+//   但事实相反）。现在全部指向临时目录。
+const ISOLATED_ROOT = join(tmpdir(), 'nwa-verify-model');
+const ISOLATED_MODELS = join(ISOLATED_ROOT, 'models.json');
 
 const steps = [];
 const rec = (name, ok, detail) => {
@@ -85,7 +92,16 @@ function call(method, params) {
 
 async function startCore() {
   return new Promise((resolve, reject) => {
-    core = utilityProcess.fork(coreEntry, [], { serviceName: 'novel-core', stdio: 'pipe' });
+    core = utilityProcess.fork(coreEntry, [], {
+      serviceName: 'novel-core',
+      stdio: 'pipe',
+      // ⚠ 隔离：让 core 把项目与模型配置都写到临时目录
+      env: {
+        ...process.env,
+        NWA_PROJECTS_ROOT: ISOLATED_ROOT,
+        NWA_USER_MODELS_PATH: ISOLATED_MODELS,
+      },
+    });
     core.stdout?.on('data', (d) => process.stdout.write(`[core] ${d}`));
     core.stderr?.on('data', (d) => process.stderr.write(`[core:err] ${d}`));
     core.on('message', async (msg) => {
@@ -135,7 +151,10 @@ app.whenReady().then(async () => {
   const harness = await import(
     `file://${join(here, '..', '..', '..', 'packages', 'harness', 'dist', 'index.js').replace(/\\/g, '/')}`
   );
-  const credPath = join(homedir(), '.config', 'novelwriter-agent', 'credentials.json');
+  // ⚠ 凭据也必须隔离。早先这里用的是真实路径 ——
+  //   实测它把用户的 profile:default 密钥**覆盖**成了测试用的 profile:e2e，
+  //   导致真实写作验证报"找不到密钥引用 profile:default"。
+  const credPath = join(ISOLATED_ROOT, 'credentials.json');
   store = new harness.FileSecretStore(credPath, {
     name: 'electron-safeStorage',
     available: () => safeStorage.isEncryptionAvailable(),
@@ -187,7 +206,7 @@ app.whenReady().then(async () => {
     rec('密文可解析且非明文', cipherOk, '');
 
     // 3) models.json 里不含密钥，只有引用名
-    const modelsJson = join(homedir(), 'NovelWriterProjects', 'models.json');
+    const modelsJson = ISOLATED_MODELS;
     const mj = existsSync(modelsJson) ? readFileSync(modelsJson, 'utf8') : '';
     rec('models.json 已生成', mj.length > 0, modelsJson);
     rec('⚠ models.json 不含明文密钥', !mj.includes(SECRET), '');
@@ -224,11 +243,11 @@ app.whenReady().then(async () => {
 
   server?.close();
   core?.kill();
-  // 清理测试产物，避免污染真实项目目录
+  // 清理本验证自己在**隔离目录**产生的产物。
+  // ⚠ 绝不碰用户真实目录 —— 之前的版本会删掉用户的 models.json。
   try {
-    if (existsSync(credPath)) rmSync(credPath);
-    const modelsJson = join(homedir(), 'NovelWriterProjects', 'models.json');
-    if (existsSync(modelsJson)) rmSync(modelsJson);
+    if (existsSync(ISOLATED_MODELS)) rmSync(ISOLATED_MODELS);
+    rmSync(ISOLATED_ROOT, { recursive: true, force: true });
   } catch {
     /* 清理失败不影响判定 */
   }
