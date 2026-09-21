@@ -34,6 +34,10 @@ const child = spawn(
       NWA_GUI_FLOW: '1',
       // ⚠ 隔离项目目录：GUI 流程验证会真实建书/建章，不得污染用户项目。
       NWA_PROJECTS_ROOT: join(tmpdir(), 'nwa-verify-flow'),
+      // ⚠ 界面结构验证不应真实调用 LLM（会消耗配额、拖慢、且引入超时假失败）。
+      //   指向不存在的路径 → agentReady=false → 界面显示"需先配置模型"，
+      //   正好也是我们要断言的"诚实失败"路径。
+      NWA_USER_MODELS_PATH: join(tmpdir(), 'nwa-verify-flow-no-model.json'),
     },
     stdio: 'inherit',
   },

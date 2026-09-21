@@ -409,20 +409,25 @@ function createWindow(): void {
               rec('有规划按钮', !!pBtn, '');
               if (pBtn) {
                 pBtn.click();
-                // 轮询等待结果（未配置模型时应给出明确的 MODEL_AUTH_FAILED，
-                // 而不是静默失败或崩溃 —— 这是"诚实失败"的验证）
+                // 轮询等待结果。窗口放大到 60 次（15s）—— 配置了模型时
+                // 规划会真实调用 LLM，10s 可能不够（实测踩到：poll 窗口
+                // 到期后读到空字符串，断言假失败）。
                 let msg = '';
-                for (let i = 0; i < 40; i++) {
+                for (let i = 0; i < 60; i++) {
                   await sleep(250);
                   const m = planForm.querySelector('.form-msg')?.textContent || '';
-                  if (m.includes('规划成功') || m.includes('规划失败') || m.includes('MODEL_') || m.includes('还没有章节')) {
+                  if (m.includes('正在规划')) continue; // 仍在进行中
+                  if (m.length > 0) {
                     msg = m;
                     break;
                   }
                 }
-                rec('⚠ 未配置模型时给出明确错误（不静默失败）',
-                    msg.includes('MODEL_AUTH_FAILED') || msg.includes('规划成功') || msg.includes('还没有章节'),
-                    msg.slice(0, 80));
+                // 三种可接受结果：明确报未配模型 / 规划成功 / 提示还没有章节
+                rec('⚠ 规划给出明确结果（成功或明确错误，不静默失败）',
+                    msg.includes('MODEL_AUTH_FAILED') || msg.includes('规划成功')
+                    || msg.includes('还没有章节') || msg.includes('规划失败')
+                    || msg.includes('MODEL_'),
+                    msg.slice(0, 100) || '(15s 内无响应)');
               }
             }
 

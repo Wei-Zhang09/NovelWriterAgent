@@ -15,6 +15,13 @@ export * from './prompts/index.js';
 export { Planner } from './planner/planner.js';
 export { Writer, assembleChapter, extractDeviations, stripDeviationNotes } from './writer/writer.js';
 export { Reviewer } from './reviewer/reviewer.js';
+export { Reviser } from './reviser/reviser.js';
+export type {
+  RevisionCompleter,
+  RevisionOptions,
+  RevisionResult,
+  IssueOutcome,
+} from './reviser/reviser.js';
 export type {
   ReviewerOptions,
   ReviewStructuredCaller,

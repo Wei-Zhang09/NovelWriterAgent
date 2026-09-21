@@ -1019,6 +1019,56 @@ function renderAgent() {
 
   a.append(canonBox);
 
+  // ── 改稿面板（补缺口）──
+  const revBox2 = el('div', 'form form--rail');
+  revBox2.append(el('h3', null, '改稿'));
+  const revMsg2 = el('div', 'form-msg');
+  const revRow2 = el('div', 'btn-row');
+  const reviseBtn = el('button', 'btn btn--primary', '按审稿问题改稿');
+  revRow2.append(reviseBtn);
+  revBox2.append(revRow2, revMsg2);
+  revBox2.append(el('div', 'perm-line', '只改被指出的问题；写 revision.md，不覆盖原稿'));
+  revBox2.append(el('div', 'perm-line', '⚠ 改完必须重新审稿 —— 改稿可能引入新问题'));
+  const revDetail2 = el('div', 'model-status');
+  revBox2.append(revDetail2);
+
+  reviseBtn.addEventListener('click', async () => {
+    const c = firstCh();
+    if (!c) {
+      revMsg2.className = 'form-msg form-msg--err';
+      revMsg2.textContent = '还没有章节';
+      return;
+    }
+    reviseBtn.disabled = true;
+    revMsg2.className = 'form-msg';
+    revMsg2.textContent = '正在按审稿问题定向改稿（逐个问题修改）…';
+
+    const r = await call('revision.run', { chapterId: c.id });
+    reviseBtn.disabled = false;
+    if (!r.ok) {
+      revMsg2.className = 'form-msg form-msg--err';
+      revMsg2.textContent = `${r.error.code}: ${r.error.message}`;
+      return;
+    }
+    const d = r.data;
+    if (!d.ok) {
+      revMsg2.className = 'form-msg form-msg--err';
+      revMsg2.textContent = `改稿失败：${d.error ? d.error.message : ''}`;
+      return;
+    }
+    revMsg2.className = d.revisedCount > 0 ? 'form-msg form-msg--ok' : 'form-msg form-msg--err';
+    revMsg2.textContent = d.revisedCount > 0
+      ? `已修改 ${d.revisedCount}/${d.totalTargets} 处（${d.totalChars} 字，${d.deltaChars >= 0 ? '+' : ''}${d.deltaChars}） —— 请重新审稿`
+      : `未做修改：${d.totalTargets} 个问题都被判定无需修改`;
+    revDetail2.replaceChildren();
+    for (const o of d.outcomes) {
+      revDetail2.append(el('div', 'perm-line',
+        `${o.revised ? '✓ 已改' : '— 跳过'}［${o.category}/${o.severity}］${o.note || o.skippedReason || ''}`.slice(0, 110)));
+    }
+  });
+
+  a.append(revBox2);
+
   // ── 提交面板（STEP 11）【MVP 门槛】──
   const commitBox = el('div', 'form form--rail');
   commitBox.append(el('h3', null, '提交为正式章节'));

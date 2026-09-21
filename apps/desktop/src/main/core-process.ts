@@ -33,7 +33,7 @@ import {
   type SecretStore,
 } from '@nwa/harness';
 import { z } from 'zod';
-import { Planner, Writer, Reviewer } from '@nwa/writing';
+import { Planner, Writer, Reviewer, Reviser } from '@nwa/writing';
 import { ChapterWorkspace, ContinuityChecker, FactExtractor, CanonPromoter } from '@nwa/story';
 import { CommitEngine, SummaryIndexer, MemoryGatherer, SummaryGenerator } from '@nwa/harness';
 import { FtsIndex } from '@nwa/storage';
@@ -184,7 +184,10 @@ function modelsConfigPath(dir: string): string {
  * 写入仍写入项目目录（保持既有行为不变）。
  */
 function userModelsConfigPath(): string {
-  return join(homedir(), 'NovelWriterProjects', 'models.json');
+  // 允许覆盖：GUI 结构验证需要"无模型"的环境，避免为了测界面而真实调用 LLM
+  // （实测踩到：隔离目录仍回退到用户真实配置，导致界面验证消耗真实配额、
+  //   且 poll 窗口不够长而假失败）
+  return process.env['NWA_USER_MODELS_PATH'] ?? join(homedir(), 'NovelWriterProjects', 'models.json');
 }
 
 function loadModelsConfig(dir: string): ModelsConfig | null {
@@ -947,6 +950,84 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       modelNote,
       saved: saved.ok ? saved.data : null,
       ...(saved.ok ? {} : { saveError: saved.error }),
+    };
+  },
+
+  /**
+   * 按审稿问题定向改稿（补缺口）。
+   *
+   * ⚠ 写 revision.md，**不覆盖 draft.md** —— 改坏了要能退回去。
+   * ⚠ 改完**不自动通过**：必须重新审稿（改稿可能引入新问题），
+   *   由门禁决定能否提交。
+   */
+  'revision.run': async (params: { chapterId: string }) => {
+    const p = requireProject();
+    if (!p.runtime) {
+      throw new AppError(ErrorCode.MODEL_AUTH_FAILED, '尚未配置模型，无法改稿');
+    }
+    const chapter = p.repos.chapters.get(params.chapterId);
+
+    const ws = new ChapterWorkspace({
+      rootDir: p.dir,
+      chapterNumber: chapter.chapter_number,
+      logger: logger.child('workspace'),
+    });
+    const draft = ws.readText('revision') ?? ws.readText('draft');
+    if (draft === null) {
+      throw new AppError(
+        ErrorCode.TOOL_VALIDATION_ERROR,
+        `第 ${chapter.chapter_number} 章没有正文可改 —— 请先生成草稿`,
+      );
+    }
+
+    // 取审稿结果作为改稿依据
+    const review = p.repos.chapters.readReview<{ issues?: ReviewIssue[] }>(params.chapterId);
+    const issues = review?.issues ?? [];
+    if (issues.length === 0) {
+      throw new AppError(
+        ErrorCode.TOOL_VALIDATION_ERROR,
+        '本章还没有审稿结果，无法确定要改什么 —— 请先点「审阅当前章」',
+      );
+    }
+
+    const reviser = new Reviser({
+      complete: async (req) => {
+        const r = await p.runtime!.completeText('writer', {
+          messages: req.messages.map((m) => ({ role: m.role, content: m.content })),
+          temperature: req.temperature ?? 0.3,
+          maxTokens: req.maxTokens ?? 4096,
+        });
+        return { text: r.text, usage: { inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens } };
+      },
+      workspace: ws,
+      logger: logger.child('reviser'),
+    });
+
+    const res = await reviser.revise({
+      chapterNumber: chapter.chapter_number,
+      draftText: draft,
+      issues,
+    });
+
+    if (!res.ok) {
+      return { ok: false, error: res.error ?? { code: 'REVISION_FAILED', message: '改稿失败' } };
+    }
+
+    return {
+      ok: true,
+      revisedCount: res.outcomes.filter((o) => o.revised).length,
+      totalTargets: res.outcomes.length,
+      deltaChars: res.deltaChars ?? 0,
+      totalChars: res.totalChars ?? 0,
+      outcomes: res.outcomes.map((o) => ({
+        severity: o.severity,
+        category: o.category,
+        revised: o.revised,
+        note: o.note,
+        skippedReason: o.skippedReason ?? null,
+      })),
+      // ⚠ 明确标注：改完必须重新审稿
+      needsReReview: true,
     };
   },
 
