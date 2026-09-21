@@ -47,6 +47,9 @@ importers:
       '@nwa/storage':
         specifier: workspace:*
         version: link:../../packages/storage
+      '@nwa/story':
+        specifier: workspace:*
+        version: link:../../packages/story
       '@nwa/writing':
         specifier: workspace:*
         version: link:../../packages/writing

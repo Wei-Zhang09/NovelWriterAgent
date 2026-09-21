@@ -426,6 +426,38 @@ function createWindow(): void {
               }
             }
 
+            // 11) Writer 面板（STEP 7）
+            const writeForm = [...document.querySelectorAll('.form')]
+              .find(f => f.querySelector('h3')?.textContent.includes('正文生成'));
+            rec('Writer 面板存在', !!writeForm, '');
+            if (writeForm) {
+              // 必须明确告知产物去向 —— 避免误以为已写入正式章节
+              const notice = writeForm.textContent;
+              rec('⚠ 明确标注产物只进工作区',
+                  notice.includes('工作区') && notice.includes('不碰正式章节'), '');
+
+              const wBtn = btnByText(writeForm, '生成草稿');
+              rec('有生成草稿按钮', !!wBtn, '');
+              if (wBtn) {
+                wBtn.click();
+                let msg = '';
+                for (let i = 0; i < 40; i++) {
+                  await sleep(250);
+                  const m = writeForm.querySelector('.form-msg')?.textContent || '';
+                  if (m.includes('生成成功') || m.includes('生成失败') || m.includes('还没有章节')
+                      || m.includes('还没有计划') || m.includes('MODEL_')) {
+                    msg = m;
+                    break;
+                  }
+                }
+                // 未配置模型时应明确报错；若已配置则应提示"还没有计划"（因为本流程未真跑 Planner）
+                rec('⚠ 生成前置条件不满足时给出明确提示',
+                    msg.includes('MODEL_AUTH_FAILED') || msg.includes('还没有计划')
+                    || msg.includes('生成成功') || msg.includes('还没有章节'),
+                    msg.slice(0, 80));
+              }
+            }
+
             return { steps };
           })()`;
 

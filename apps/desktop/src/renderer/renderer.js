@@ -33,6 +33,7 @@ const state = {
   contextReport: null,
   contextSlots: null,
   lastPlan: null,
+  lastDraft: null,
 };
 
 async function call(method, params) {
@@ -693,6 +694,70 @@ function renderAgent() {
   });
 
   a.append(planBox);
+
+  // ── Writer 面板（STEP 7） ──
+  const writeBox = el('div', 'form form--rail');
+  writeBox.append(el('h3', null, '正文生成'));
+  const writeMsg = el('div', 'form-msg');
+
+  const writeRow = el('div', 'btn-row');
+  const writeBtn = el('button', 'btn btn--primary', '生成草稿');
+  writeRow.append(writeBtn);
+  writeBox.append(writeRow, writeMsg);
+
+  const writeDetail = el('div', 'model-status');
+  writeBox.append(writeDetail);
+
+  // 明确告知产物去向 —— 避免误以为已写入正式章节
+  writeBox.append(el('div', 'perm-line', '产物写入工作区 draft.md，不碰正式章节与 Canon'));
+
+  writeBtn.addEventListener('click', async () => {
+    const first = state.chapters[0];
+    if (!first) {
+      writeMsg.className = 'form-msg form-msg--err';
+      writeMsg.textContent = '还没有章节 —— 请先在中栏创建一章';
+      return;
+    }
+    if (!state.lastPlan) {
+      writeMsg.className = 'form-msg form-msg--err';
+      writeMsg.textContent = '该章还没有计划 —— 请先点上方「规划当前章节」';
+      return;
+    }
+    writeBtn.disabled = true;
+    writeMsg.className = 'form-msg';
+    writeMsg.textContent = `正在生成第 ${first.chapterNumber} 章草稿…（逐场景调用模型）`;
+
+    const r = await call('writer.draft', { chapterId: first.id });
+    writeBtn.disabled = false;
+
+    if (!r.ok) {
+      writeMsg.className = 'form-msg form-msg--err';
+      writeMsg.textContent = `${r.error.code}: ${r.error.message}`;
+      return;
+    }
+    const d = r.data;
+    if (!d.ok) {
+      writeMsg.className = 'form-msg form-msg--err';
+      writeMsg.textContent = d.failedSceneIndex !== null
+        ? `生成中断于第 ${d.failedSceneIndex + 1} 个场景（已完成部分已保留）：${d.error.code}`
+        : `生成失败：${d.error.code}`;
+      return;
+    }
+
+    state.lastDraft = d;
+    writeMsg.className = 'form-msg form-msg--ok';
+    writeMsg.textContent = `生成成功：${d.sceneCount} 个场景，${d.totalChars} 字`
+      + `（输入 ${d.usage.inputTokens} / 输出 ${d.usage.outputTokens} tokens）`;
+
+    writeDetail.replaceChildren();
+    writeDetail.append(el('div', 'perm-line', `工作区：${d.draftPath.replace(/\\/g, '/').split('/').slice(-3).join('/')}`));
+    writeDetail.append(el('div', 'perm-line', '状态：未提交（仅在工作区）'));
+    const prev = el('div', 'draft-preview');
+    prev.textContent = d.preview + (d.preview.length >= 300 ? '……' : '');
+    writeDetail.append(prev);
+  });
+
+  a.append(writeBox);
 
   // ── Context Engine 面板（STEP 5） ──
   const ctxBox = el('div', 'form form--rail');

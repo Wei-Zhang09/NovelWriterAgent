@@ -33,7 +33,8 @@ import {
   type SecretStore,
 } from '@nwa/harness';
 import { z } from 'zod';
-import { Planner } from '@nwa/writing';
+import { Planner, Writer } from '@nwa/writing';
+import { ChapterWorkspace } from '@nwa/story';
 import type { ToolContext } from '@nwa/shared';
 import type { AgentHandler, ContextEntry, SlotName } from '@nwa/harness';
 
@@ -629,6 +630,72 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const p = requireProject();
     const plan = p.repos.chapters.readPlan<unknown>(params.chapterId);
     return { chapterId: params.chapterId, hasPlan: plan !== null, plan };
+  },
+
+  /** 读取工作区快照（UI 展示用） */
+  'writer.workspace': (params: { chapterId: string }) => {
+    const p = requireProject();
+    const chapter = p.repos.chapters.get(params.chapterId);
+    const ws = new ChapterWorkspace({
+      rootDir: p.dir,
+      chapterNumber: chapter.chapter_number,
+      logger: logger.child('workspace'),
+    });
+    return ws.snapshot();
+  },
+
+  /**
+   * 按已保存的计划生成草稿（STEP 7）。
+   *
+   * ⚠ 产物只进工作区：正文写 workspace/chapter-NNN/draft.md，
+   *   正式章节与 Canon 都不会被碰（§9.1）。真正的迁移在 STEP 11 的 Commit。
+   */
+  'writer.draft': async (params: { chapterId: string; wordsPerScene?: number }) => {
+    const p = requireProject();
+    if (!p.runtime) {
+      throw new AppError(ErrorCode.MODEL_AUTH_FAILED, '尚未配置模型，无法生成正文');
+    }
+    const chapter = p.repos.chapters.get(params.chapterId);
+    const plan = p.repos.chapters.readPlan<unknown>(params.chapterId);
+    if (plan === null) {
+      throw new AppError(ErrorCode.TOOL_VALIDATION_ERROR, '该章节还没有计划，请先规划');
+    }
+
+    const workspace = new ChapterWorkspace({
+      rootDir: p.dir,
+      chapterNumber: chapter.chapter_number,
+      logger: logger.child('workspace'),
+    });
+    workspace.ensure();
+
+    const writer = new Writer({
+      complete: (req) => p.runtime!.completeText('writer', req),
+      workspace,
+      logger: logger.child('writer'),
+      ...(params.wordsPerScene ? { wordsPerScene: params.wordsPerScene } : {}),
+    });
+
+    const res = await writer.draft(plan as never);
+    if (!res.ok) {
+      return {
+        ok: false,
+        failedSceneIndex: res.failedSceneIndex ?? null,
+        error: res.error ?? { code: ErrorCode.MODEL_TIMEOUT, message: '生成失败' },
+      };
+    }
+
+    const d = res.draft!;
+    return {
+      ok: true,
+      chapterNumber: d.chapterNumber,
+      sceneCount: d.scenes.length,
+      totalChars: d.totalChars,
+      usage: d.usage,
+      draftPath: d.draftPath,
+      preview: d.text.slice(0, 300),
+      // 本次生成只进工作区 —— 明确回报，避免误解为已落库
+      committed: false,
+    };
   },
 
   // ── Context Engine（STEP 5） ──────────────────────────────

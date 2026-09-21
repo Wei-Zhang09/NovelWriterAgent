@@ -19,7 +19,12 @@ import type { RunRepository, CheckpointRow } from '@nwa/storage';
 import { EventBus, type EmittedEvent } from '../events/event-bus.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import type { ModelGateway, ModelSlot } from '../models/gateway.js';
-import type { StructuredRequest, StructuredResult } from '../models/types.js';
+import type {
+  StructuredRequest,
+  StructuredResult,
+  ChatRequest,
+  ChatResponse,
+} from '../models/types.js';
 import { AGENT_PERMISSIONS, type AgentHandler, type AgentRunInput, type AgentRunResult, type AgentRunStatus } from './types.js';
 
 export interface AgentRuntimeOptions {
@@ -299,6 +304,30 @@ export class AgentRuntime {
   /** 通用结构化输出（指定槽位） */
   structured<T>(slot: ModelSlot, req: StructuredRequest<T>): Promise<StructuredResult<T>> {
     return this.models.structured(slot, req);
+  }
+
+  /**
+   * 供 Writer 等场景使用的纯文本补全。
+   *
+   * 与 plannerStructured 同理：把 gateway 的能力原样暴露，
+   * 不做 Agent 上下文注入 —— Writer 只需要模型把文字写出来。
+   */
+  completeText(
+    slot: ModelSlot,
+    req: {
+      readonly messages: ChatRequest['messages'];
+      readonly maxTokens?: number | undefined;
+      readonly temperature?: number | undefined;
+    },
+  ): Promise<ChatResponse> {
+    // ChatRequest 把 temperature/maxTokens 声明为必填，但那是 gateway 内部
+    // 与 provider 之间的约定。调用方（Writer）只关心内容，不应被迫
+    // 知道模型的默认温度 —— 这里用与 gateway 一致的默认值补齐。
+    return this.models.chat(slot, {
+      messages: req.messages,
+      temperature: req.temperature ?? 0.7,
+      maxTokens: req.maxTokens ?? 4096,
+    });
   }
 
   /** 最近一次 checkpoint（恢复入口的只读查询） */

@@ -159,3 +159,6 @@ export class AppError extends Error implements AppErrorShape {
     return new AppError(fallbackCode, String(value), { details: value });
   }
 }
+
+/** 通用的「可能为 null」标注 —— 与 undefined 区分：null 表示"明确查过但没有" */
+export type Nullable<T> = T | null;

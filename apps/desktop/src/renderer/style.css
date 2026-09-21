@@ -156,3 +156,17 @@ body {
   font-size: 11px; padding: 5px 10px;
 }
 .btn--danger-soft:hover:not(:disabled) { border-color: var(--warn); }
+
+/* 草稿预览（STEP 7）：限制高度，避免长正文把右栏撑爆 */
+.draft-preview {
+  margin-top: 8px;
+  padding: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  color: var(--muted-foreground);
+}

@@ -29,6 +29,9 @@
       "path": "../../packages/storage"
     },
     {
+      "path": "../../packages/story"
+    },
+    {
       "path": "../../packages/writing"
     }
   ]
