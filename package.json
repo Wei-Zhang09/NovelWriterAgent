@@ -11,8 +11,8 @@
   "scripts": {
     "dev": "pnpm --filter @nwa/desktop dev",
     "build": "pnpm -r build",
-    "typecheck": "tsc -b --pretty",
-    "typecheck:clean": "tsc -b --clean && tsc -b --pretty",
+    "typecheck": "tsc -b --force --pretty",
+    "typecheck:clean": "tsc -b --clean && tsc -b --force --pretty",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "test": "vitest run",
@@ -32,7 +32,8 @@
     "build:packages": "pnpm -r --filter \"!@nwa/desktop\" build",
     "verify:flow": "node apps/desktop/scripts/verify-gui-flow.mjs",
     "verify:model": "node scripts/run-model-e2e.mjs",
-    "verify:all": "pnpm check && pnpm verify:smoke && pnpm verify:gui && pnpm verify:flow && pnpm verify:model"
+    "verify:all": "pnpm check && pnpm verify:smoke && pnpm verify:gui && pnpm verify:flow && pnpm verify:model",
+    "typecheck:incremental": "tsc -b --pretty"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

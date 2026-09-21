@@ -8,8 +8,9 @@
  * 进度：
  *   STEP 2  Tool Registry
  *   STEP 3  Model Gateway + 加密密钥
- *   STEP 4  Agent Runtime + Event Bus + 状态机（当前）
- *   待办    Context Engine（5）、Workflow 编排（4 后半）、Verification
+ *   STEP 4  Agent Runtime + Event Bus + 状态机
+ *   STEP 5  Context Engine（当前）
+ *   待办    Workflow 编排、Verification
  *
  * 关键约束（每条都有对应实现，不靠约定）：
  *   - 状态迁移由代码执行，模型只能 request_transition（§8.2 → state-machine.ts）
@@ -61,6 +62,22 @@ export {
   isAbnormal,
 } from './workflow/state-machine.js';
 export type { TransitionRequest, TransitionDecision } from './workflow/state-machine.js';
+
+// ── Context Engine（STEP 5） ────────────────────────────────
+export { ContextEngine } from './context/engine.js';
+export type { ContextEngineOptions } from './context/engine.js';
+export { defaultTokenCounter, conservativeTokenCounter } from './context/token-counter.js';
+export { SLOT_NAMES } from './context/types.js';
+export type {
+  AssembledContext,
+  AssemblyReport,
+  ContextEntry,
+  ContextRequest,
+  SlotName,
+  SlotReport,
+  SlotSpec,
+  TokenCounter,
+} from './context/types.js';
 
 // ── Agent Runtime（STEP 4） ──────────────────────────────────
 export { AgentRuntime } from './agent/runtime.js';

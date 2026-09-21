@@ -5,3 +5,4 @@
  * 检索结果类型中 sourceRef 为必填，缺失时抛错而非返回空来源。
  */
 export * from './tokenizer.js';
+export * from './retriever.js';

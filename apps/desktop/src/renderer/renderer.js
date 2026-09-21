@@ -30,6 +30,8 @@ const state = {
   lastModelTest: null,
   runStatus: null,
   lastRunEvents: null,
+  contextReport: null,
+  contextSlots: null,
 };
 
 async function call(method, params) {
@@ -630,6 +632,85 @@ function renderAgent() {
            : `连通 ✗ ${t.error?.code}`));
   }
   a.append(modelBox);
+
+  // ── Context Engine 面板（STEP 5） ──
+  const ctxBox = el('div', 'form form--rail');
+  // ⚠ 标题必须是 form 内的**第一个** h3 —— 流程验证与 UI 都按它定位面板
+  ctxBox.append(el('h3', null, '上下文装配'));
+  const ctxMsg = el('div', 'form-msg');
+
+  const ctxBtnRow = el('div', 'btn-row');
+  const asmBtn = el('button', 'btn btn--primary', '装配上下文');
+  const slotBtn = el('button', 'btn', '查看槽位');
+  ctxBtnRow.append(asmBtn, slotBtn);
+  ctxBox.append(ctxBtnRow, ctxMsg);
+
+  // 两个"必须被拒绝"的演示按钮 —— 让约束可见
+  const demoRow = el('div', 'btn-row');
+  const obBtn = el('button', 'btn btn--danger-soft', '演示：Protected 超预算');
+  const rlBtn = el('button', 'btn btn--danger-soft', '演示：无来源条目');
+  demoRow.append(obBtn, rlBtn);
+  ctxBox.append(demoRow);
+
+  const ctxDetail = el('div', 'model-status');
+  ctxBox.append(ctxDetail);
+
+  asmBtn.addEventListener('click', async () => {
+    asmBtn.disabled = true;
+    ctxMsg.className = 'form-msg';
+    ctxMsg.textContent = '装配中…';
+    const r = await call('context.assemble', {});
+    asmBtn.disabled = false;
+    if (!r.ok) {
+      ctxMsg.className = 'form-msg form-msg--err';
+      ctxMsg.textContent = `${r.error.code}: ${r.error.message}`;
+      return;
+    }
+    state.contextReport = r.data;
+    const rep = r.data.report;
+    ctxMsg.className = 'form-msg form-msg--ok';
+    ctxMsg.textContent = `成功：总 ${rep.totalTokens} tokens（预算 ${rep.budgetTokens}）`
+      + `，Protected ${rep.protectedTokens}/${rep.protectedBudgetTokens}`;
+
+    ctxDetail.replaceChildren();
+    ctxDetail.append(el('div', 'perm-line',
+      `Canon ${r.data.counts.canon} 条 · 记忆 ${r.data.counts.memory} 条`));
+    for (const sl of rep.slots) {
+      if (sl.includedCount === 0 && sl.budgetTokens === 0) continue;
+      const mark = sl.isProtected ? '🔒' : '  ';
+      ctxDetail.append(el('div', 'perm-line',
+        `${mark} ${sl.slot}: ${sl.includedCount} 入 / ${sl.droppedCount} 弃, ${sl.usedTokens}t`));
+    }
+  });
+
+  slotBtn.addEventListener('click', async () => {
+    const r = await call('context.slots', {});
+    if (!r.ok) return;
+    state.contextSlots = r.data.slots;
+    ctxDetail.replaceChildren();
+    for (const sl of r.data.slots) {
+      ctxDetail.append(el('div', 'perm-line',
+        `${sl.isProtected ? '🔒' : '  '} ${sl.name} (${sl.budgetTokens}t, ${sl.fillPolicy})`));
+    }
+  });
+
+  obBtn.addEventListener('click', async () => {
+    const r = await call('context.demoRejection', { kind: 'overBudget' });
+    ctxMsg.className = r.ok ? 'form-msg form-msg--ok' : 'form-msg form-msg--err';
+    ctxMsg.textContent = r.ok
+      ? `✓ 已被拒绝：${r.data.error.code} — ${r.data.error.message.slice(0, 90)}`
+      : `✗ 预期被拒但成功了：${r.error?.message ?? ''}`;
+  });
+
+  rlBtn.addEventListener('click', async () => {
+    const r = await call('context.demoRejection', { kind: 'rootless' });
+    ctxMsg.className = r.ok ? 'form-msg form-msg--ok' : 'form-msg form-msg--err';
+    ctxMsg.textContent = r.ok
+      ? `✓ 已被拒绝：${r.data.error.code} — ${r.data.error.message.slice(0, 90)}`
+      : `✗ 预期被拒但成功了：${r.error?.message ?? ''}`;
+  });
+
+  a.append(ctxBox);
 
   // 模型设置与 Runtime 面板常驻右栏 —— 不放在中栏，因为中栏会被章节详情替换，
   // 那会让用户"点进章节后再也找不到它们"（曾在本流程验证中暴露）。

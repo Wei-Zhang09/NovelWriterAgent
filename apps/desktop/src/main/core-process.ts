@@ -25,6 +25,8 @@ import {
   AGENT_PERMISSIONS,
   canTransition,
   allowedTargets,
+  ContextEngine,
+  conservativeTokenCounter,
   type CryptoBackend,
   type ModelProfile,
   type ModelSlot,
@@ -32,7 +34,7 @@ import {
 } from '@nwa/harness';
 import { z } from 'zod';
 import type { ToolContext } from '@nwa/shared';
-import type { AgentHandler } from '@nwa/harness';
+import type { AgentHandler, ContextEntry, SlotName } from '@nwa/harness';
 
 const logger = new Logger('core');
 
@@ -498,6 +500,149 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
   },
 
   'tool.list': () => requireProject().tools.list(),
+
+  // ── Context Engine（STEP 5） ──────────────────────────────
+
+  /** 各槽位规格与默认预算（UI 展示与调参用） */
+  'context.slots': () => {
+    const engine = new ContextEngine({ logger: logger.child('context') });
+    return {
+      slots: engine.slotSpecs().map((s) => ({
+        name: s.name,
+        isProtected: s.isProtected,
+        budgetTokens: s.budgetTokens,
+        fillPolicy: s.fillPolicy,
+        description: s.description,
+      })),
+    };
+  },
+
+  /**
+   * 用真实数据装配一次上下文（STEP 5 的端到端验证入口）。
+   *
+   * 数据来源：受保护的 Canon 来自真实 facts 表，记忆来自章节摘要。
+   * 这样可以直观看到「Protected 超预算会报错」与「无来源条目被拒」。
+   */
+  'context.assemble': (params: { budget?: { inputTokens?: number; outputReserveTokens?: number; protectedMaxTokens?: number } }) => {
+    const p = requireProject();
+    const bookId = p.repos.projects.list()[0]?.id
+      ? p.repos.books.listByProject(p.repos.projects.list()[0]!.id)[0]?.id
+      : undefined;
+
+    const canonEntries: ContextEntry[] = [];
+    const memoryEntries: ContextEntry[] = [];
+
+    if (bookId) {
+      // 受保护 Canon：已确认为 CANON 的事实（含来源引用 —— §11 要求）
+      for (const f of p.repos.facts.listByStatus(bookId, 'CANON').slice(0, 50)) {
+        canonEntries.push({
+          id: f.id,
+          sourceType: 'FACT',
+          sourceRef: f.evidence_id ?? f.id, // 有证据用证据，否则用事实自身 ID（仍可追溯）
+          content: `${f.subject_type}:${f.subject_id ?? '-'} ${f.predicate} = ${f.object_value}`,
+          priority: Math.round(f.confidence * 10),
+          isProtected: true, // 已是 CANON，属 §12.2 的受保护内容
+        });
+      }
+
+      // 可裁剪记忆：章节摘要
+      for (const c of p.repos.chapters.listByStatus(bookId, 'COMMITTED')) {
+        if (!c.summary) continue;
+        memoryEntries.push({
+          id: `summary_${c.chapter_number}`,
+          sourceType: 'SUMMARY',
+          sourceRef: c.body_path ?? `chapters/${c.chapter_number}.md`,
+          content: `第 ${c.chapter_number} 章摘要：${c.summary}`,
+          priority: c.chapter_number, // 越新越优先
+        });
+      }
+    }
+
+    const engine = new ContextEngine({ logger: logger.child('context') });
+    const budget = {
+      inputTokens: params.budget?.inputTokens ?? 128_000,
+      outputReserveTokens: params.budget?.outputReserveTokens ?? 16_000,
+      protectedMaxTokens: params.budget?.protectedMaxTokens ?? 32_000,
+    };
+
+    const slots: Partial<Record<SlotName, ContextEntry[]>> = {
+      system: [
+        {
+          id: 'sys_identity',
+          sourceType: 'PROFILE',
+          sourceRef: 'system/identity.md',
+          content: '你是长篇小说写作助手。Canon 是事实来源，不确定时不要自行创造。',
+          priority: 100,
+          isProtected: true,
+        },
+      ],
+      protectedCanon: canonEntries,
+      topMemory: memoryEntries,
+    };
+
+    const assembled = engine.assemble({ budget, slots });
+
+    return {
+      ok: true,
+      budget,
+      report: assembled.report,
+      textPreview: assembled.text.slice(0, 1200),
+      textTokens: conservativeTokenCounter.estimate(assembled.text),
+      counts: {
+        canon: canonEntries.length,
+        memory: memoryEntries.length,
+      },
+    };
+  },
+
+  /**
+   * 演示「Protected 超预算」与「无来源条目」如何被拒绝。
+   *
+   * 这两个是 §5 的核心约束，做成可点击的演示比写在文档里更有说服力。
+   */
+  'context.demoRejection': (params: { kind: 'overBudget' | 'rootless' }) => {
+    const engine = new ContextEngine({ logger: logger.child('context') });
+    const baseBudget = { inputTokens: 100_000, outputReserveTokens: 1_000, protectedMaxTokens: 50_000 };
+
+    try {
+      if (params.kind === 'overBudget') {
+        engine.assemble({
+          budget: { ...baseBudget },
+          slots: {
+            protectedCanon: [
+              {
+                id: 'huge',
+                sourceType: 'FACT',
+                sourceRef: 'fact_huge',
+                content: '字'.repeat(20_000), // 超过 protectedCanon 默认 16000 预算
+                priority: 1,
+                isProtected: true,
+              },
+            ],
+          },
+        });
+      } else {
+        engine.assemble({
+          budget: { ...baseBudget },
+          slots: {
+            topMemory: [
+              {
+                id: 'ghost',
+                sourceType: 'MEMORY',
+                sourceRef: '', // 无来源 → 必须被拒
+                content: '一条没有来源的记忆',
+                priority: 1,
+              },
+            ],
+          },
+        });
+      }
+      return { ok: false, error: { code: 'UNEXPECTED_PASS', message: '预期被拒绝，但装配成功了' } };
+    } catch (err) {
+      const e = AppError.from(err);
+      return { ok: true, rejected: true, error: { code: e.code, message: e.message, details: e.details } };
+    }
+  },
 
   // ── Agent Runtime / Run 可观测性（STEP 4） ────────────────
 

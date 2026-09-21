@@ -149,3 +149,10 @@ body {
 .btn-row { display: flex; gap: 8px; margin-top: 12px; }
 .model-status { font-size: 11px; color: var(--muted); }
 .model-status .perm-line { padding: 2px 0; font-family: Consolas, monospace; }
+
+/* 演示按钮：表达"这个操作会被拒绝"，不是真危险操作，故用柔和色 */
+.btn--danger-soft {
+  background: #2c2410; border-color: #4a3a12; color: var(--warn);
+  font-size: 11px; padding: 5px 10px;
+}
+.btn--danger-soft:hover:not(:disabled) { border-color: var(--warn); }

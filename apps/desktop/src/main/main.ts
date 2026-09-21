@@ -329,6 +329,77 @@ function createWindow(): void {
               }
             }
 
+            // 9) Context Engine 面板（STEP 5）
+            const ctxForm = [...document.querySelectorAll('.form')]
+              .find(f => f.querySelector('h3')?.textContent.includes('上下文装配'));
+            rec('Context 面板存在', !!ctxForm, '');
+            if (ctxForm) {
+              const asmBtn = btnByText(ctxForm, '装配上下文');
+              rec('有装配按钮', !!asmBtn, '');
+              if (asmBtn) {
+                asmBtn.click();
+                // 轮询等待结果文案出现，而不是固定 sleep —— 固定 sleep 会读到
+                // 点击前的文本（"装配中…"），产生假失败（实测踩到）
+                let msgText = '';
+                for (let i = 0; i < 30; i++) {
+                  await sleep(200);
+                  const m = ctxForm.querySelector('.form-msg')?.textContent ?? '';
+                  if (m.includes('成功') || m.includes('失败') || m.includes('CONTEXT_')) {
+                    msgText = m;
+                    break;
+                  }
+                }
+                // ⚠ 必须**重新查询**面板：前面的步骤调用过 renderAgent()，
+                //   它会重建右栏 DOM，使先前持有的 ctxForm 成为游离节点 ——
+                //   在游离节点上读 textContent 会拿不到新内容（实测踩到）。
+                const liveCtx = [...document.querySelectorAll('.form')]
+                  .find(f => f.querySelector('h3')?.textContent.includes('上下文装配'));
+                const t = liveCtx ? liveCtx.textContent : '';
+                // ⚠ 本段代码位于外层的模板字符串内，因此不能使用反引号或美元花括号插值，
+                //   否则会被外层模板提前求值（曾导致 TS 编译失败，且被 tsc -b 的
+                //   增量缓存掩盖成"typecheck 通过"）。故改用字符串拼接。
+                const snippet = (t.match(/总[^，]{0,40}/) || ['(未匹配到 总)'])[0];
+                // ⚠ 正则里不能写反斜杠转义：本段代码在外层模板字符串内，
+                //   \\s 会被传成字面量 "\\s"（在浏览器里匹配反斜杠+s，而非空白），
+                //   导致断言永远为 false（实测踩到，排查了多轮）。
+                //   改用不含反斜杠的等价写法。
+                const hasTotal = t.indexOf('总') >= 0 && t.indexOf('tokens') >= 0
+                  && /[0-9]+/.test(t);
+                rec('装配成功并显示 token 统计', hasTotal,
+                    'msg=' + msgText.slice(0, 50) + ' | panelSnip=' + snippet + ' | panelLen=' + t.length);
+                rec('显示 Protected 占用', t.includes('Protected'), '');
+              }
+
+              const slotBtn = btnByText(ctxForm, '查看槽位');
+              if (slotBtn) {
+                slotBtn.click();
+                await sleep(700);
+                const t = ctxForm.textContent;
+                rec('列出槽位规格', t.includes('protectedCanon') && t.includes('topMemory'), '');
+              }
+
+              // ⚠ 最关键的两项：演示「必须被拒绝」的两条约束
+              const obBtn = btnByText(ctxForm, '演示：Protected 超预算');
+              rec('有超预算演示按钮', !!obBtn, '');
+              if (obBtn) {
+                obBtn.click();
+                await sleep(900);
+                const t = ctxForm.textContent;
+                rec('⚠ Protected 超预算确实被拒绝',
+                    t.includes('已被拒绝') && t.includes('CONTEXT_BUDGET_EXCEEDED'), '');
+              }
+
+              const rlBtn = btnByText(ctxForm, '演示：无来源条目');
+              rec('有无来源演示按钮', !!rlBtn, '');
+              if (rlBtn) {
+                rlBtn.click();
+                await sleep(900);
+                const t = ctxForm.textContent;
+                rec('⚠ 无来源条目确实被拒绝',
+                    t.includes('已被拒绝') && t.includes('CONTEXT_BUILD_FAILED'), '');
+              }
+            }
+
             return { steps };
           })()`;
 
