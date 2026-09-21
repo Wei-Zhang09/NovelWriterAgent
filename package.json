@@ -34,7 +34,8 @@
     "verify:model": "node scripts/run-model-e2e.mjs",
     "verify:all": "pnpm check && pnpm verify:smoke && pnpm verify:gui && pnpm verify:flow && pnpm verify:model && pnpm verify:simulate",
     "typecheck:incremental": "tsc -b --pretty",
-    "verify:simulate": "tsx scripts/simulate-chapters.ts --count=20"
+    "verify:simulate": "tsx scripts/simulate-chapters.ts --count=20",
+    "verify:writing": "tsx scripts/verify-writing.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
