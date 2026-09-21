@@ -1,102 +1,389 @@
 /**
  * 渲染进程（纯 JS，无构建步骤）
  *
- * STEP 0 目标：验证「renderer → main → utilityProcess → storage」整条链路贯通。
- * 四栏自检项对应施工计划 STEP 0 的 spike 结论，UI 上直接可视化。
+ * STEP 2 范围：把三栏工作台做成**可用**的，而不是自检面板。
+ *   左栏 = 切对象（项目 / 书 / 章节列表）
+ *   中栏 = 主体内容（项目信息 / 新建表单 / 章节详情）
+ *   右栏 = 动作 + 诊断（工具清单、权限分布、最近一次调用）
+ *
+ * 约定（研究报告 §3.1 决策 1）：**状态必须由产物事实驱动，不由任务状态驱动**。
+ * 因此章节状态直接来自 DB 行，而非任何「任务进度」字段。
  */
 const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
 
-function renderCheck(label, state, value) {
-  const cls = state === 'ok' ? 'ok' : state === 'err' ? 'err' : 'wait';
-  return `<div class="check">
-    <span class="dot dot--${cls}"></span>
-    <span class="label">${label}</span>
-    <span class="value">${value}</span>
-  </div>`;
+/** 应用状态（v1.0 单项目） */
+const state = {
+  project: null,
+  books: [],
+  chapters: [],
+  selectedBookId: null,
+  tools: [],
+  permissions: {},
+  lastCall: null,
+};
+
+async function call(method, params) {
+  const r = await window.nwa.invoke(method, params);
+  if (!r) return { ok: false, error: { code: 'NO_RESPONSE', message: 'core 无响应' } };
+  return r;
 }
 
-async function invoke(method, params) {
-  return window.nwa.invoke(method, params);
+/** 经 Tool Registry 调用（统一走权限与 schema 门禁） */
+async function tool(name, input, permission) {
+  const r = await call('tool.invoke', { name, input, permission });
+  state.lastCall = { name, result: r, at: new Date().toISOString() };
+  return r;
 }
 
-async function run() {
-  const checks = [];
+// ─────────────────────────────────────────────────────────────
+// 左栏：项目 / 书 / 章节
+// ─────────────────────────────────────────────────────────────
 
-  // 1. 进程与版本
+async function loadChapters() {
+  if (!state.selectedBookId) {
+    state.chapters = [];
+    return;
+  }
+  const r = await tool('chapter.list', { bookId: state.selectedBookId });
+  state.chapters = r.ok ? r.data.chapters : [];
+}
+
+async function loadProjects() {
+  const r = await call('project.info');
+  if (!r.ok) {
+    $('nav').replaceChildren(el('div', 'empty', `加载失败：${r.error.message}`));
+    return;
+  }
+  state.tools = r.data.tools ?? [];
+  state.permissions = r.data.permissions ?? {};
+  const projects = r.data.projects ?? [];
+
+  if (projects.length === 0) {
+    state.project = null;
+    state.books = [];
+    state.chapters = [];
+  } else {
+    state.project = projects[0];
+    const b = await call('book.list', { projectId: state.project.id });
+    state.books = b.ok ? b.data.books : [];
+
+    // 选中书目：优先保留当前选择；若它已不存在（换了项目）则回退到第一本。
+    // 注意：不能在 books 为空时保留旧 selectedBookId，否则中栏会渲染出
+    // 一个指向不存在书目的"新建章节"表单（曾在本流程验证中暴露）。
+    const stillValid = state.books.some((x) => x.id === state.selectedBookId);
+    if (!stillValid) {
+      state.selectedBookId = state.books[0]?.id ?? null;
+    }
+    await loadChapters();
+  }
+
+  renderNav(projects);
+  renderCenter();
+  renderAgent();
+}
+
+function renderNav(projects) {
+  const nav = $('nav');
+  nav.replaceChildren();
+
+  if (projects.length === 0) {
+    nav.append(el('div', 'empty', '还没有项目'));
+    return;
+  }
+
+  nav.append(el('div', 'nav-section', '项目'));
+  for (const p of projects) {
+    const item = el('div', 'nav-item nav-item--active');
+    item.append(el('span', 'nav-label', p.name));
+    if (p.genre) item.append(el('span', 'nav-meta', p.genre));
+    nav.append(item);
+  }
+
+  nav.append(el('div', 'nav-section', '书目'));
+  if (state.books.length === 0) nav.append(el('div', 'empty', '还没有书'));
+  for (const b of state.books) {
+    const item = el('div', `nav-item${b.id === state.selectedBookId ? ' nav-item--active' : ''}`);
+    item.append(el('span', 'nav-label', b.title));
+    item.append(el('span', 'nav-meta', `至第 ${b.currentChapter} 章`));
+    item.addEventListener('click', async () => {
+      state.selectedBookId = b.id;
+      await loadChapters();
+      renderNav(projects);
+      renderCenter();
+      renderAgent();
+    });
+    nav.append(item);
+  }
+
+  nav.append(el('div', 'nav-section', `章节（${state.chapters.length}）`));
+  if (state.chapters.length === 0) nav.append(el('div', 'empty', '还没有章节'));
+  for (const c of state.chapters) {
+    const item = el('div', 'nav-item nav-item--chapter');
+    item.append(el('span', 'nav-label', `第 ${c.chapterNumber} 章`));
+    item.append(statusChip(c.status));
+    item.addEventListener('click', () => renderChapterDetail(c));
+    nav.append(item);
+  }
+}
+
+/** 状态标签：颜色 + 文字双编码；暂停/待操作不用危险色（研究报告 §3.1 决策 6） */
+function statusChip(status) {
+  const map = {
+    DRAFT: ['chip--muted', '草稿'],
+    PLANNING: ['chip--info', '规划中'],
+    CONTEXT_READY: ['chip--info', '上下文就绪'],
+    WRITING: ['chip--info', '写作中'],
+    DRAFT_READY: ['chip--info', '待审稿'],
+    REVIEWING: ['chip--warn', '审稿中'],
+    REVIEW_READY: ['chip--warn', '待修订'],
+    REVISING: ['chip--warn', '修订中'],
+    CONTINUITY_CHECKING: ['chip--warn', '一致性检查'],
+    READY_TO_COMMIT: ['chip--ok', '可提交'],
+    COMMITTING: ['chip--ok', '提交中'],
+    COMMITTED: ['chip--ok', '已提交'],
+    PAUSED: ['chip--pause', '已暂停'],
+    FAILED: ['chip--err', '失败'],
+  };
+  const [cls, text] = map[status] ?? ['chip--muted', status];
+  return el('span', `chip ${cls}`, text);
+}
+
+// ─────────────────────────────────────────────────────────────
+// 中栏：主体内容
+// ─────────────────────────────────────────────────────────────
+
+function kv(k, v) {
+  const row = el('div', 'kv-row');
+  row.append(el('span', 'kv-k', k));
+  row.append(el('span', 'kv-v', v));
+  return row;
+}
+
+function renderCenter() {
+  const c = $('center');
+  c.replaceChildren();
+
+  if (!state.project) {
+    c.append(el('h2', null, '开始'));
+    c.append(el('p', 'hint', '还没有项目。用下面的表单创建第一个。'));
+  } else {
+    c.append(el('h2', null, state.project.name));
+    const meta = el('div', 'kv');
+    meta.append(kv('项目 ID', state.project.id));
+    meta.append(kv('类型', state.project.genre ?? '—'));
+    meta.append(kv('书目数', String(state.books.length)));
+    meta.append(kv('章节数', String(state.chapters.length)));
+    c.append(meta);
+  }
+
+  c.append(renderNewProjectForm());
+  if (state.project && state.books.length === 0) c.append(renderNewBookForm());
+  if (state.selectedBookId) c.append(renderNewChapterForm());
+}
+
+function renderNewProjectForm() {
+  const box = el('div', 'form');
+  box.append(el('h3', null, '新建项目'));
+  const name = el('input');
+  name.placeholder = '项目名（必填）';
+  const genre = el('input');
+  genre.placeholder = '类型，如 urban_fantasy（可选）';
+  const btn = el('button', 'btn btn--primary', '创建项目');
+  const msg = el('div', 'form-msg');
+
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    msg.textContent = '';
+    const r = await tool('project.create', {
+      name: name.value.trim(),
+      genre: genre.value.trim() || null,
+    });
+    btn.disabled = false;
+    if (r.ok) {
+      msg.className = 'form-msg form-msg--ok';
+      msg.textContent = `已创建：${r.data.name}`;
+      name.value = '';
+      genre.value = '';
+      await loadProjects();
+    } else {
+      msg.className = 'form-msg form-msg--err';
+      // 展示字段级校验信息（Tool Registry 的结构化错误）
+      const d = r.error.details;
+      msg.textContent = Array.isArray(d)
+        ? d.map((x) => `${x.path || '(root)'}: ${x.message}`).join('；')
+        : r.error.message;
+    }
+  });
+
+  box.append(name, genre, btn, msg);
+  return box;
+}
+
+function renderNewBookForm() {
+  const box = el('div', 'form');
+  box.append(el('h3', null, '新建书目'));
+  const title = el('input');
+  title.placeholder = '书名（必填）';
+  const btn = el('button', 'btn btn--primary', '创建书目');
+  const msg = el('div', 'form-msg');
+
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    msg.textContent = '';
+    const r = await call('book.create', { projectId: state.project.id, title: title.value.trim() });
+    btn.disabled = false;
+    if (r.ok) {
+      msg.className = 'form-msg form-msg--ok';
+      msg.textContent = `已创建：${r.data.title}`;
+      title.value = '';
+      await loadProjects();
+    } else {
+      msg.className = 'form-msg form-msg--err';
+      msg.textContent = r.error.message;
+    }
+  });
+
+  box.append(title, btn, msg);
+  return box;
+}
+
+function renderNewChapterForm() {
+  const box = el('div', 'form');
+  box.append(el('h3', null, '新建章节'));
+  const num = el('input');
+  num.type = 'number';
+  num.min = '1';
+  num.value = String((state.chapters.at(-1)?.chapterNumber ?? 0) + 1);
+  const title = el('input');
+  title.placeholder = '标题（可选）';
+  const btn = el('button', 'btn btn--primary', '创建章节');
+  const msg = el('div', 'form-msg');
+
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    msg.textContent = '';
+    const r = await tool('chapter.create', {
+      bookId: state.selectedBookId,
+      chapterNumber: Number(num.value),
+      title: title.value.trim() || null,
+    });
+    btn.disabled = false;
+    if (r.ok) {
+      msg.className = 'form-msg form-msg--ok';
+      msg.textContent = `已创建第 ${r.data.chapterNumber} 章（状态 ${r.data.status}）`;
+      title.value = '';
+      await loadProjects();
+    } else {
+      msg.className = 'form-msg form-msg--err';
+      msg.textContent = r.error.message;
+    }
+  });
+
+  box.append(num, title, btn, msg);
+  return box;
+}
+
+function renderChapterDetail(c) {
+  const ctr = $('center');
+  ctr.replaceChildren();
+  ctr.append(el('h2', null, `第 ${c.chapterNumber} 章`));
+  if (c.title) ctr.append(el('p', 'hint', c.title));
+
+  const meta = el('div', 'kv');
+  meta.append(kv('章节 ID', c.id));
+  meta.append(kv('状态', c.status));
+  meta.append(kv('正文路径', c.bodyPath ?? '（尚无 —— 未提交的章节不产生正式正文）'));
+  meta.append(kv('摘要', c.summary ?? '—'));
+  meta.append(kv('创建时间', c.createdAt));
+  ctr.append(meta);
+
+  const note = el('div', 'callout');
+  note.textContent =
+    '正式正文只在 Commit 完成后写入 chapters/。' +
+    '未提交章节的中间产物位于 workspace/（施工计划 §6.1）。';
+  ctr.append(note);
+
+  const back = el('button', 'btn', '返回');
+  back.addEventListener('click', renderCenter);
+  ctr.append(back);
+}
+
+// ─────────────────────────────────────────────────────────────
+// 右栏：动作 + 诊断
+// ─────────────────────────────────────────────────────────────
+
+function renderAgent() {
+  const a = $('agent');
+  a.replaceChildren();
+
+  a.append(el('h3', null, `已注册工具（${state.tools.length}）`));
+  const list = el('div', 'tool-list');
+  for (const t of state.tools) {
+    const row = el('div', 'tool-row');
+    row.append(el('span', 'tool-name', t.name));
+    row.append(el('span', `perm perm--${t.permission.toLowerCase()}`, t.permission));
+    list.append(row);
+  }
+  a.append(list);
+
+  a.append(el('h3', null, '权限分布'));
+  const perms = el('div', 'perm-summary');
+  const entries = Object.entries(state.permissions).filter(([, names]) => names.length > 0);
+  if (entries.length === 0) perms.append(el('div', 'empty', '—'));
+  for (const [level, names] of entries) {
+    perms.append(el('div', 'perm-line', `${level}: ${names.length} 个`));
+  }
+  a.append(perms);
+
+  a.append(el('h3', null, '最近一次工具调用'));
+  const diag = el('div', 'diag');
+  if (!state.lastCall) {
+    diag.textContent = '（尚未调用）';
+  } else {
+    const { name, result, at } = state.lastCall;
+    diag.textContent = [
+      `工具: ${name}`,
+      `时间: ${at}`,
+      `结果: ${result.ok ? '成功' : `失败 ${result.error.code}`}`,
+      result.ok ? '' : `消息: ${result.error.message}`,
+    ].filter(Boolean).join('\n');
+  }
+  a.append(diag);
+}
+
+// ─────────────────────────────────────────────────────────────
+// 启动
+// ─────────────────────────────────────────────────────────────
+
+async function boot() {
   const info = await window.nwa.appInfo();
   $('ver').textContent = `Electron ${info.electron} · Node ${info.node}`;
-  checks.push(renderCheck('Electron / Node', 'ok', `Electron ${info.electron} · Node ${info.node}`));
 
-  // 2. core utilityProcess 通路
-  try {
-    const health = await invoke('core.health');
-    if (health.ok) {
-      checks.push(renderCheck(
-        'core utilityProcess（ADR-0001）', 'ok',
-        `pid ${health.data.pid} · node ${health.data.node} · sqlite ${health.data.sqlite}`,
-      ));
-    } else {
-      checks.push(renderCheck('core utilityProcess', 'err', health.error.message));
-    }
-  } catch (e) {
-    checks.push(renderCheck('core utilityProcess', 'err', String(e)));
+  const open = await call('project.open', {});
+  if (!open.ok) {
+    $('center').replaceChildren(el('div', 'empty', `打开项目失败：${open.error.message}`));
+    return;
   }
-
-  // 3. SQLite 迁移
-  try {
-    const mig = await invoke('core.migrations');
-    if (mig.ok) {
-      const ids = mig.data.applied.map((m) => m.id).join(', ');
-      checks.push(renderCheck('迁移已应用', mig.data.applied.length > 0 ? 'ok' : 'err', ids || '（无）'));
-    } else {
-      checks.push(renderCheck('迁移已应用', 'err', mig.error.message));
-    }
-  } catch (e) {
-    checks.push(renderCheck('迁移已应用', 'err', String(e)));
-  }
-
-  // 4. Schema 统计（验证 22 张表 + 索引 + 外键）
-  let stats = null;
-  try {
-    const r = await invoke('core.schema.stats');
-    if (r.ok) {
-      stats = r.data;
-      const expectTables = 22;
-      checks.push(renderCheck(
-        '数据表 / 索引', stats.tableCount >= expectTables ? 'ok' : 'wait',
-        `${stats.tableCount} 张表 · ${stats.indexCount} 个索引 · ${stats.ftsCount} 张 FTS`,
-      ));
-      $('diag').textContent =
-        `表清单（${stats.tableCount}）：\n` + stats.tables.map((t) => '  · ' + t).join('\n');
-    } else {
-      checks.push(renderCheck('数据表 / 索引', 'err', r.error.message));
-    }
-  } catch (e) {
-    checks.push(renderCheck('数据表 / 索引', 'err', String(e)));
-  }
-
-  // 5. FTS5 + BM25（ADR-0004 的基础）
-  try {
-    const r = await invoke('core.fts.probe');
-    if (r.ok) {
-      checks.push(renderCheck(
-        'FTS5 + bm25()（ADR-0004）', r.data.bm25Works ? 'ok' : 'err',
-        r.data.bm25Works ? 'MATCH 命中 1 行，bm25 排序可用' : 'FTS5 可用但 bm25 排序异常',
-      ));
-    } else {
-      checks.push(renderCheck('FTS5 + bm25()', 'err', r.error.message));
-    }
-  } catch (e) {
-    checks.push(renderCheck('FTS5 + bm25()', 'err', String(e)));
-  }
-
-  $('checks').innerHTML = checks.join('');
+  await loadProjects();
 }
 
 window.nwa.onCoreExited((p) => {
-  $('diag').textContent = `core 进程已退出：${JSON.stringify(p)}\n（UI 存活 —— ADR-0001 的进程隔离生效）`;
+  const d = $('agent');
+  if (d) {
+    d.prepend(el('div', 'callout callout--err',
+      `core 进程已退出（code ${p.code}）—— UI 存活，验证了 ADR-0001 的进程隔离`));
+  }
 });
 
-run().catch((e) => {
-  $('checks').innerHTML = renderCheck('启动失败', 'err', String(e));
+boot().catch((e) => {
+  $('center').replaceChildren(el('div', 'empty', `启动失败：${e.message}`));
 });
+
+// 供 GUI 探针读取
+window.__nwaState = state;

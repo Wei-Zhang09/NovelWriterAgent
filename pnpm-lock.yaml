@@ -38,6 +38,9 @@ importers:
       '@nwa/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@nwa/harness':
+        specifier: workspace:*
+        version: link:../../packages/harness
       '@nwa/shared':
         specifier: workspace:*
         version: link:../../packages/shared

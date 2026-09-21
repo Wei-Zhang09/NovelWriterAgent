@@ -89,34 +89,36 @@ function createWindow(): void {
   const rendererPath = join(here, '../renderer/index.html');
   void win.loadFile(rendererPath);
 
-  // GUI 探针：仅在 NWA_GUI_PROBE=1 时启用（CI/手工验收用）。
-  // 生产路径不受影响；探针把渲染进程的 DOM 状态写盘后退出。
+  // GUI 探针：仅在环境变量开启时启用（CI/验收用），生产路径不受影响。
   if (process.env.NWA_GUI_PROBE === '1') {
     win.webContents.on('did-finish-load', () => {
       setTimeout(() => {
         void win?.webContents
-          .executeJavaScript(`(() => ({
-            paneCount: document.querySelectorAll('.pane').length,
-            checkCount: document.querySelectorAll('.check').length,
-            okChecks: [...document.querySelectorAll('.check .dot--ok')].length,
-            failedChecks: [...document.querySelectorAll('.check')]
-              .filter(el => el.querySelector('.dot--err'))
-              .map(el => (el.querySelector('.label')?.textContent ?? '') + ': ' + (el.querySelector('.value')?.textContent ?? '')),
-            checks: [...document.querySelectorAll('.check')].map(el => ({
-              ok: !!el.querySelector('.dot--ok'),
-              label: el.querySelector('.label')?.textContent ?? '',
-              value: el.querySelector('.value')?.textContent ?? '',
-            })),
-            version: document.getElementById('ver')?.textContent ?? '',
-          }))()`)
+          .executeJavaScript(`(() => {
+            const panes = document.querySelectorAll('.pane').length;
+            const toolRows = document.querySelectorAll('.tool-row').length;
+            const navSections = document.querySelectorAll('.nav-section').length;
+            const forms = document.querySelectorAll('.form').length;
+            const errors = [...document.querySelectorAll('.form-msg--err, .callout--err')]
+              .map(e => e.textContent);
+            return {
+              paneCount: panes, toolCount: toolRows, navSectionCount: navSections,
+              formCount: forms, errorTexts: errors,
+              version: document.getElementById('ver')?.textContent ?? '',
+              brand: document.querySelector('.brand')?.textContent ?? '',
+            };
+          })()`)
           .then((result) => {
             const out = {
               ...result,
-              pass: result.paneCount === 3 && result.checkCount >= 5 && result.failedChecks.length === 0,
+              // 三栏齐全 + 8 个工具已注册 + 至少一个表单 + 无错误提示
+              pass: result.paneCount === 3
+                && result.toolCount >= 8
+                && result.formCount >= 1
+                && result.errorTexts.length === 0,
             };
-            const fs = { writeFileSync };
-            fs.writeFileSync(join(here, '../gui-result.json'), JSON.stringify(out, null, 2), 'utf8');
-            logger.info('GUI 探针完成', { pass: out.pass, okChecks: out.okChecks });
+            writeFileSync(join(here, '../gui-result.json'), JSON.stringify(out, null, 2), 'utf8');
+            logger.info('GUI 探针完成', { pass: out.pass, toolCount: out.toolCount });
             app.exit(out.pass ? 0 : 1);
           })
           .catch((err: unknown) => {
@@ -124,6 +126,117 @@ function createWindow(): void {
             app.exit(1);
           });
       }, 3500);
+    });
+  }
+
+  // GUI 流程验证：驱动真实 DOM 走完「新建项目 → 书目 → 章节」。
+  if (process.env.NWA_GUI_FLOW === '1') {
+    win.webContents.on('did-finish-load', () => {
+      // 等 boot() 完成（它会打开项目并渲染首屏）
+      setTimeout(async () => {
+        const steps: { name: string; ok: boolean; detail?: string }[] = [];
+        const record = (name: string, ok: boolean, detail?: string) => {
+          steps.push({ name, ok, ...(detail === undefined ? {} : { detail }) });
+          logger.info(`flow: ${name} ${ok ? 'OK' : 'FAIL'}`, { detail });
+        };
+
+        try {
+          const flow = `(async () => {
+            const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+            const $ = (id) => document.getElementById(id);
+            const btnByText = (root, text) =>
+              [...root.querySelectorAll('button')].find(b => b.textContent.trim() === text);
+            const setInput = (inp, v) => {
+              inp.value = v;
+              inp.dispatchEvent(new Event('input', { bubbles: true }));
+            };
+            const steps = [];
+            const rec = (name, ok, detail) => steps.push({ name, ok, detail });
+
+            // 等首屏渲染完成
+            for (let i = 0; i < 40 && !document.querySelector('.form'); i++) await sleep(250);
+
+            // 1) 三栏 + 工具清单
+            rec('三栏渲染', document.querySelectorAll('.pane').length === 3,
+                'panes=' + document.querySelectorAll('.pane').length);
+            const toolsBefore = document.querySelectorAll('.tool-row').length;
+            rec('工具已注册', toolsBefore >= 8, 'tools=' + toolsBefore);
+
+            // 2) 新建项目
+            const projForm = [...document.querySelectorAll('.form')]
+              .find(f => f.querySelector('h3')?.textContent.includes('新建项目'));
+            if (!projForm) { rec('找到新建项目表单', false); return { steps }; }
+            const name = document.title + '-项目-' + Date.now();
+            setInput(projForm.querySelectorAll('input')[0], name);
+            setInput(projForm.querySelectorAll('input')[1], 'urban_fantasy');
+            btnByText(projForm, '创建项目').click();
+            await sleep(1800);
+            const projMsg = projForm.querySelector('.form-msg')?.textContent ?? '';
+            rec('新建项目', projMsg.includes('已创建'), projMsg);
+
+            // 3) 新建书目（首个项目创建后中栏会出现该书目表单）
+            await sleep(400);
+            const bookForm = [...document.querySelectorAll('.form')]
+              .find(f => f.querySelector('h3')?.textContent.includes('新建书目'));
+            if (!bookForm) { rec('找到新建书目表单', false, '中栏表单未出现'); return { steps }; }
+            rec('找到新建书目表单', true);
+            setInput(bookForm.querySelectorAll('input')[0], '测试小说');
+            btnByText(bookForm, '创建书目').click();
+            await sleep(1800);
+            const bookMsg = bookForm.querySelector('.form-msg')?.textContent ?? '';
+            rec('新建书目', bookMsg.includes('已创建'), bookMsg);
+
+            // 4) 新建章节
+            await sleep(400);
+            const chForm = [...document.querySelectorAll('.form')]
+              .find(f => f.querySelector('h3')?.textContent.includes('新建章节'));
+            if (!chForm) { rec('找到新建章节表单', false); return { steps }; }
+            rec('找到新建章节表单', true);
+            setInput(chForm.querySelectorAll('input')[1], '第一章 开端');
+            btnByText(chForm, '创建章节').click();
+            await sleep(1800);
+            const chMsg = chForm.querySelector('.form-msg')?.textContent ?? '';
+            rec('新建章节', chMsg.includes('已创建'), chMsg);
+
+            // 5) 章节出现在左栏，且状态为草稿
+            await sleep(500);
+            const chapterItems = [...document.querySelectorAll('.nav-item--chapter')];
+            rec('章节出现在左栏', chapterItems.length >= 1, 'chapters=' + chapterItems.length);
+            const chipText = chapterItems[0]?.querySelector('.chip')?.textContent ?? '';
+            rec('章节状态标签为草稿', chipText === '草稿', 'chip=' + chipText);
+
+            // 6) 点击章节可查看详情，且正文路径为空（未提交）
+            chapterItems[0]?.click();
+            await sleep(600);
+            const detailText = $('center')?.textContent ?? '';
+            rec('章节详情可打开', detailText.includes('第 1 章'), '');
+            rec('未提交章节无正式正文', detailText.includes('未提交的章节不产生正式正文'), '');
+
+            return { steps };
+          })()`;
+
+          const res = (await win?.webContents.executeJavaScript(flow)) as {
+            steps: { name: string; ok: boolean; detail?: string }[];
+          };
+          for (const s of res.steps) record(s.name, s.ok, s.detail);
+
+          const pass = steps.length > 0 && steps.every((s) => s.ok);
+          writeFileSync(
+            join(here, '../gui-flow-result.json'),
+            JSON.stringify({ steps, pass }, null, 2),
+            'utf8',
+          );
+          app.exit(pass ? 0 : 1);
+        } catch (err) {
+          writeFileSync(
+            join(here, '../gui-flow-result.json'),
+            JSON.stringify({ steps, pass: false, error: String(err) }, null, 2),
+            'utf8',
+          );
+          logger.error('GUI 流程验证失败', err);
+          app.exit(1);
+        }
+      }, 3000);
     });
   }
 

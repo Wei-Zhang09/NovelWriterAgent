@@ -14,7 +14,8 @@
   "dependencies": {
     "@nwa/core": "workspace:*",
     "@nwa/shared": "workspace:*",
-    "@nwa/storage": "workspace:*"
+    "@nwa/storage": "workspace:*",
+    "@nwa/harness": "workspace:*"
   },
   "devDependencies": {
     "electron": "^44.4.3"

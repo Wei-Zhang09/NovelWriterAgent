@@ -11,7 +11,7 @@
   <div class="app">
     <header class="titlebar">
       <span class="brand">NovelWriter Agent</span>
-      <span class="phase">STEP 0 · 骨架验证</span>
+      <span class="phase">STEP 2 · 项目与章节</span>
       <span class="ver" id="ver">—</span>
     </header>
 
@@ -19,23 +19,18 @@
       <!-- 左栏：切对象 -->
       <aside class="pane pane--nav">
         <h2>小说导航</h2>
-        <ul id="nav" class="nav">
-          <li>概览</li><li>世界观（Full）</li><li>人物</li>
-          <li>章节</li><li>时间线（Full）</li><li>伏笔（Full）</li>
-        </ul>
-        <p class="hint">v1.0-MVP 仅实现 5 个页面</p>
+        <div id="nav" class="nav"></div>
       </aside>
 
       <!-- 中栏：主体内容 -->
       <section class="pane pane--doc">
-        <h2>环境自检</h2>
-        <div id="checks" class="checks">连接 core 进程中…</div>
+        <div id="center" class="center"></div>
       </section>
 
       <!-- 右栏：动作 + 诊断 -->
       <aside class="pane pane--agent">
         <h2>运行与诊断</h2>
-        <div id="diag" class="diag">—</div>
+        <div id="agent" class="agent"></div>
       </aside>
     </main>
   </div>

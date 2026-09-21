@@ -27,9 +27,10 @@
     "check:storage": "node scripts/check-storage-exec.mjs",
     "check:gates": "node scripts/self-test-gates.mjs",
     "check": "pnpm typecheck && pnpm lint && pnpm check:gates && pnpm check:boundary && pnpm check:storage && pnpm test",
-    "verify": "pnpm check && pnpm verify:smoke && pnpm verify:gui",
+    "verify": "pnpm check && pnpm verify:smoke && pnpm verify:gui && pnpm verify:flow",
     "clean": "pnpm -r exec node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build:packages": "pnpm -r --filter \"!@nwa/desktop\" build"
+    "build:packages": "pnpm -r --filter \"!@nwa/desktop\" build",
+    "verify:flow": "node apps/desktop/scripts/verify-gui-flow.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

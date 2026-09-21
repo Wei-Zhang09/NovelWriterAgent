@@ -43,6 +43,7 @@ apps/desktop/dist/
 # 验证脚本的输出
 apps/desktop/dist/smoke-result.json
 apps/desktop/dist/gui-result.json
+apps/desktop/dist/gui-flow-result.json
 
 # 门禁自检的临时探针（正常情况会被清理，防止异常退出残留）
 **/__gateprobe__*
