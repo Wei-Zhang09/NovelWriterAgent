@@ -12,3 +12,4 @@ export * from './schemas/domain.js';
 export * from './schemas/tool.js';
 export * from './schemas/plan.js';
 export * from './schemas/review.js';
+export * from './schemas/fact-extraction.js';

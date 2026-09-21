@@ -519,6 +519,37 @@ function createWindow(): void {
               }
             }
 
+            // 14) 事实与 Canon 面板（STEP 9）
+            const canonForm = [...document.querySelectorAll('.form')]
+              .find(f => f.querySelector('h3')?.textContent.includes('事实与 Canon'));
+            rec('事实面板存在', !!canonForm, '');
+            if (canonForm) {
+              // 必须写明两步走 —— 避免误以为抽取即入库
+              rec('⚠ 标注"抽取不写库、提升才写库"',
+                  canonForm.textContent.includes('不写库') && canonForm.textContent.includes('提升才写'), '');
+
+              const exBtn = btnByText(canonForm, '抽取事实');
+              rec('有抽取按钮', !!exBtn, '');
+              if (exBtn) {
+                exBtn.click();
+                let msg = '';
+                for (let i = 0; i < 40; i++) {
+                  await sleep(250);
+                  const m = canonForm.querySelector('.form-msg')?.textContent || '';
+                  if (m.includes('抽取到') || m.includes('抽取被拒绝') || m.includes('还没有')
+                      || m.includes('MODEL_')) {
+                    msg = m;
+                    break;
+                  }
+                }
+                rec('⚠ 无草稿时给出明确提示',
+                    msg.includes('还没有草稿') || msg.includes('还没有章节')
+                    || msg.includes('MODEL_AUTH_FAILED')
+                    || msg.includes('抽取到') || msg.includes('抽取被拒绝'),
+                    msg.slice(0, 90));
+              }
+            }
+
             return { steps };
           })()`;
 

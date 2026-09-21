@@ -5,6 +5,7 @@
  * 预留（Full）：Timeline / Foreshadowing / World Entity。
  *
  * STEP 8 已实现：Continuity Checker（十维度对账，只读）
+ * STEP 9 已实现：Fact 抽取 + Canon 提升（只 propose，不直接写库）
  *
  * 待 STEP 9 实现：
  *   - Fact 抽取：从 draft 生成 proposed_facts（**只 propose，不直接写库**）
@@ -32,5 +33,16 @@ export type {
   IssueSeverity,
   ContinuityCheckerOptions,
 } from './continuity/checker.js';
+
+export { FactExtractor } from './canon/fact-extractor.js';
+export type {
+  FactExtractorOptions,
+  ExtractStructuredCaller,
+  KnownCharacter,
+  ExtractionResult,
+  ExtractionRequest,
+} from './canon/fact-extractor.js';
+export { CanonPromoter } from './canon/canon-promoter.js';
+export type { PromotePolicy, PromoteOutcome, PromoteReport } from './canon/canon-promoter.js';
 
 export const STORY_PACKAGE_READY = true;

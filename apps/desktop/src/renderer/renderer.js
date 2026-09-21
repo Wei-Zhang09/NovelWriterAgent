@@ -36,6 +36,7 @@ const state = {
   lastDraft: null,
   lastContinuity: null,
   lastReview: null,
+  lastCanon: null,
 };
 
 async function call(method, params) {
@@ -888,6 +889,101 @@ function renderAgent() {
   });
 
   a.append(revBox);
+
+  // ── 事实 / Canon 面板（STEP 9） ──
+  const canonBox = el('div', 'form form--rail');
+  canonBox.append(el('h3', null, '事实与 Canon'));
+  const canonMsg = el('div', 'form-msg');
+
+  const canonRow = el('div', 'btn-row');
+  const extractBtn = el('button', 'btn', '抽取事实');
+  const promoteBtn = el('button', 'btn btn--primary', '提升为 Canon');
+  const canonRefreshBtn = el('button', 'btn', '刷新');
+  canonRow.append(extractBtn, promoteBtn, canonRefreshBtn);
+  canonBox.append(canonRow, canonMsg);
+  // 明确两步走 —— 避免误以为抽取即入库
+  canonBox.append(el('div', 'perm-line', '抽取只产出候选（不写库）；提升才写事实库'));
+
+  const canonDetail = el('div', 'model-status');
+  canonBox.append(canonDetail);
+
+  const firstChapter = () => state.chapters[0];
+
+  async function refreshCanon() {
+    const r = await call('canon.list', {});
+    if (!r.ok) return;
+    const d = r.data;
+    state.lastCanon = d;
+    canonDetail.replaceChildren();
+    const line = (label, list, showValue) => {
+      canonDetail.append(el('div', 'perm-line',
+        `${label}：${list.length} 条`
+        + (list.length && showValue ? `（${list.slice(0, 3).map((f) => `${f.subject}.${f.predicate}=${f.objectValue}`).join('；')}${list.length > 3 ? '…' : ''}）` : '')));
+    };
+    line('Canon', d.canon, true);
+    line('待验证', d.provisional, true);
+    line('冲突待裁决', d.contradicted, true);
+    if (d.conflicts.length > 0) {
+      canonDetail.append(el('div', 'issue-src',
+        `⚠ 存在 ${d.conflicts.length} 组同主体同谓词的不同取值，需人工裁决`));
+    }
+  }
+
+  extractBtn.addEventListener('click', async () => {
+    const c = firstChapter();
+    if (!c) { canonMsg.className = 'form-msg form-msg--err'; canonMsg.textContent = '还没有章节'; return; }
+    extractBtn.disabled = true;
+    canonMsg.className = 'form-msg';
+    canonMsg.textContent = '正在抽取事实…';
+
+    const r = await call('canon.extract', { chapterId: c.id });
+    extractBtn.disabled = false;
+    if (!r.ok) {
+      canonMsg.className = 'form-msg form-msg--err';
+      canonMsg.textContent = `${r.error.code}: ${r.error.message}`;
+      return;
+    }
+    const d = r.data;
+    if (!d.ok) {
+      // 整批拒绝时说明原因 —— 这是"不允许部分写入"的可见性
+      canonMsg.className = 'form-msg form-msg--err';
+      canonMsg.textContent = `抽取被拒绝（未写入任何候选）：${d.error ? d.error.message.slice(0, 110) : ''}`
+        + (d.rejected.length ? `｜首条：${d.rejected[0].reason}` : '');
+      return;
+    }
+    canonMsg.className = 'form-msg form-msg--ok';
+    canonMsg.textContent = `抽取到 ${d.proposedCount} 条候选（未写库）`
+      + (d.conflictCount ? `，其中 ${d.conflictCount} 条与已有 Canon 冲突` : '');
+    canonDetail.replaceChildren();
+    for (const f of d.facts) {
+      canonDetail.append(el('div', 'perm-line',
+        `${f.subjectName}.${f.predicate} = ${f.objectValue}`
+        + `（置信 ${f.confidence}${f.isDefining ? '，定义性' : ''}）`));
+      canonDetail.append(el('div', 'issue-src', `引文：${f.quote.slice(0, 60)}`));
+    }
+  });
+
+  promoteBtn.addEventListener('click', async () => {
+    const c = firstChapter();
+    if (!c) { canonMsg.className = 'form-msg form-msg--err'; canonMsg.textContent = '还没有章节'; return; }
+    promoteBtn.disabled = true;
+    const r = await call('canon.promote', { chapterId: c.id });
+    promoteBtn.disabled = false;
+    if (!r.ok) {
+      canonMsg.className = 'form-msg form-msg--err';
+      canonMsg.textContent = `${r.error.code}: ${r.error.message}`;
+      return;
+    }
+    const d = r.data;
+    canonMsg.className = 'form-msg form-msg--ok';
+    canonMsg.textContent = `提升完成：Canon ${d.canonCount}、待验证 ${d.provisionalCount}`
+      + `、冲突 ${d.contradictedCount}、跳过 ${d.skippedCount}`;
+    await refreshCanon();
+  });
+
+  canonRefreshBtn.addEventListener('click', refreshCanon);
+
+  a.append(canonBox);
 
   // ── Context Engine 面板（STEP 5） ──
   const ctxBox = el('div', 'form form--rail');

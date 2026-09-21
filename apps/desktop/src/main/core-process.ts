@@ -34,7 +34,7 @@ import {
 } from '@nwa/harness';
 import { z } from 'zod';
 import { Planner, Writer, Reviewer } from '@nwa/writing';
-import { ChapterWorkspace, ContinuityChecker } from '@nwa/story';
+import { ChapterWorkspace, ContinuityChecker, FactExtractor, CanonPromoter } from '@nwa/story';
 import type { ReviewIssue } from '@nwa/shared';
 import { TransitionGate } from '@nwa/harness';
 import type { ToolContext } from '@nwa/shared';
@@ -1038,6 +1038,172 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const from = (params.from ?? chapter.status) as never;
     const to = (params.to ?? 'COMMITTING') as never;
     return { chapterId: chapter.id, from, to, ...gate.check({ chapterId: chapter.id, from, to }) };
+  },
+
+  /**
+   * 从当前章草稿抽取事实候选（STEP 9）。
+   *
+   * ⚠ **只 propose，不写库**：产物落工作区 proposed_facts.json。
+   *   真正入库由 canon.promote 触发，且必须经过 evidence 校验。
+   */
+  'canon.extract': async (params: { chapterId: string }) => {
+    const p = requireProject();
+    if (!p.runtime) {
+      throw new AppError(ErrorCode.MODEL_AUTH_FAILED, '尚未配置模型，无法抽取事实');
+    }
+    const projectId = p.repos.projects.list()[0]?.id;
+    const bookId = projectId ? p.repos.books.listByProject(projectId)[0]?.id : undefined;
+    if (!bookId) throw new AppError(ErrorCode.STORAGE_QUERY_FAILED, '当前项目还没有书');
+
+    const chapter = p.repos.chapters.get(params.chapterId);
+    const ws = new ChapterWorkspace({
+      rootDir: p.dir,
+      chapterNumber: chapter.chapter_number,
+      logger: logger.child('workspace'),
+    });
+    const draft = ws.readText('draft');
+    if (draft === null) {
+      throw new AppError(
+        ErrorCode.TOOL_VALIDATION_ERROR,
+        `第 ${chapter.chapter_number} 章还没有草稿 —— 请先点「生成草稿」`,
+      );
+    }
+
+    const chars = p.repos.characters
+      .listByBook(bookId)
+      .map((c) => ({ id: c.id, name: c.name, aliases: [] as string[] }));
+    const existingCanon = p.repos.facts.listByStatus(bookId, 'CANON').map((f) => {
+      const sub = p.repos.characters.listByBook(bookId).find((c) => c.id === f.subject_id);
+      return {
+        id: f.id,
+        subjectName: sub?.name ?? f.subject_id ?? '未知',
+        predicate: f.predicate,
+        objectValue: f.object_value,
+      };
+    });
+
+    const extractor = new FactExtractor({
+      // 槽位选 utility：抽取是「结构化小任务」，不需要写作级模型（§54 任务路由）
+      structured: (req) => p.runtime!.structured('utility', req),
+      logger: logger.child('extractor'),
+      bookId,
+      characters: chars,
+      // 没登记的角色也允许抽出（否则新角色首次出场的事实全丢）
+      allowUnresolvedSubject: true,
+    });
+
+    const res = await extractor.extract({
+      chapterNumber: chapter.chapter_number,
+      draftText: draft,
+      existingCanon,
+    });
+
+    // 成功时落盘工作区（不写库）
+    if (res.ok && res.proposed.length > 0) {
+      ws.writeJson('proposedFacts', {
+        chapterNumber: chapter.chapter_number,
+        generatedAt: new Date().toISOString(),
+        facts: res.proposed,
+        conflicts: res.conflicts,
+      });
+    }
+
+    return {
+      ok: res.ok,
+      proposedCount: res.proposed.length,
+      rejectedCount: res.rejected.length,
+      conflictCount: res.conflicts.length,
+      facts: res.proposed.map((f) => ({
+        id: f.id,
+        subjectName: f.subjectName,
+        predicate: f.predicate,
+        objectValue: f.objectValue,
+        confidence: f.confidence,
+        isDefining: f.isDefining,
+        quote: f.quote,
+      })),
+      rejected: res.rejected.slice(0, 5).map((r) => ({
+        predicate: r.fact.predicate,
+        reason: r.reason,
+      })),
+      conflicts: res.conflicts.map((c) => ({
+        predicate: c.fact.predicate,
+        incoming: c.fact.objectValue,
+        existing: c.existingValue,
+      })),
+      // 明确回报"未写入事实库"
+      persisted: false,
+      error: res.error ?? null,
+    };
+  },
+
+  /** 把工作区的候选事实提升入库（STEP 9）—— 这是唯一写 facts 的入口 */
+  'canon.promote': async (params: { chapterId: string }) => {
+    const p = requireProject();
+    const projectId = p.repos.projects.list()[0]?.id;
+    const bookId = projectId ? p.repos.books.listByProject(projectId)[0]?.id : undefined;
+    if (!bookId) throw new AppError(ErrorCode.STORAGE_QUERY_FAILED, '当前项目还没有书');
+
+    const chapter = p.repos.chapters.get(params.chapterId);
+    const ws = new ChapterWorkspace({
+      rootDir: p.dir,
+      chapterNumber: chapter.chapter_number,
+      logger: logger.child('workspace'),
+    });
+    const saved = ws.readJson<{ facts: never[] }>('proposedFacts');
+    if (saved === null || saved.facts.length === 0) {
+      throw new AppError(
+        ErrorCode.TOOL_VALIDATION_ERROR,
+        '工作区中没有候选事实 —— 请先点「抽取事实」',
+      );
+    }
+    const draft = ws.readText('draft') ?? '';
+
+    const promoter = new CanonPromoter({
+      repos: p.repos,
+      logger: logger.child('promoter'),
+      bookId,
+    });
+    const report = promoter.promote(saved.facts, {
+      draftText: draft,
+      sourceRef: `chapters/${String(chapter.chapter_number).padStart(3, '0')}.md`,
+    });
+
+    return {
+      canonCount: report.canonCount,
+      provisionalCount: report.provisionalCount,
+      contradictedCount: report.contradictedCount,
+      skippedCount: report.skippedCount,
+      outcomes: report.outcomes.map((o) => ({
+        predicate: o.predicate,
+        status: o.status,
+        reason: o.reason,
+      })),
+    };
+  },
+
+  /** 列出当前 Canon 与待裁决项（STEP 9 UI） */
+  'canon.list': () => {
+    const p = requireProject();
+    const projectId = p.repos.projects.list()[0]?.id;
+    const bookId = projectId ? p.repos.books.listByProject(projectId)[0]?.id : undefined;
+    if (!bookId) return { canon: [], provisional: [], contradicted: [], conflicts: [] };
+
+    const chars = p.repos.characters.listByBook(bookId);
+    const nameOf = (id: string | null) => chars.find((c) => c.id === id)?.name ?? '—';
+    const map = (f: { id: string; subject_id: string | null; predicate: string; object_value: string }) => ({
+      id: f.id,
+      subject: nameOf(f.subject_id),
+      predicate: f.predicate,
+      objectValue: f.object_value,
+    });
+
+    return {
+      canon: p.repos.facts.listByStatus(bookId, 'CANON').map(map),
+      provisional: p.repos.facts.listByStatus(bookId, 'PROVISIONAL').map(map),
+      contradicted: p.repos.facts.listByStatus(bookId, 'CONTRADICTED').map(map),
+      conflicts: p.repos.facts.findCanonConflicts(bookId),
+    };
   },
 
   // ── Agent Runtime / Run 可观测性（STEP 4） ────────────────

@@ -26,6 +26,7 @@ export { createProjectTools, createChapterTools, createAllTools } from './tools/
 export { createPlanTools } from './tools/plan-tools.js';
 export { createContinuityTools } from './tools/continuity-tools.js';
 export { createReviewTools } from './tools/review-tools.js';
+export { createFactTools } from './tools/fact-tools.js';
 export type { AnyToolDefinition } from '@nwa/shared';
 
 // ── Model Gateway（STEP 3） ──────────────────────────────────

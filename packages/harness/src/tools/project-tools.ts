@@ -11,6 +11,7 @@ import { AppError, ErrorCode, Logger, chapterId, projectId } from '@nwa/core';
 import { createPlanTools } from './plan-tools.js';
 import { createContinuityTools } from './continuity-tools.js';
 import { createReviewTools } from './review-tools.js';
+import { createFactTools } from './fact-tools.js';
 import {
   ChapterSchema,
   CreateChapterInputSchema,
@@ -224,6 +225,8 @@ export function createAllTools(
     ...createPlanTools(repos),
     // STEP 8：审阅（review.run / review.get / review.categories）
     ...createReviewTools(repos),
+    // STEP 9：事实与证据（fact.* / evidence.*）
+    ...createFactTools(repos, { resolveBookId }),
     // STEP 10：一致性检查（continuity.check / continuity.dimensions）—— 只读
     ...createContinuityTools(repos, {
       resolveBookId,

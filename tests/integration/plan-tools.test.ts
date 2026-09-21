@@ -197,10 +197,10 @@ describe('chapter.getPlan', () => {
 });
 
 describe('工具总数（STEP 6 后）', () => {
-  it('工具总数随 STEP 递增（当前 15）', () => {
+  it('工具总数随 STEP 递增（当前 21）', () => {
     t = createTestProject();
     const names = registry(t).list().map((x) => x.name);
-    expect(names).toHaveLength(15);
+    expect(names).toHaveLength(21);
     expect(names).toContain('chapter.plan');
     expect(names).toContain('chapter.getPlan');
   });

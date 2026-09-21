@@ -55,7 +55,9 @@ describe('注册', () => {
     ]);
     expect(byPrefix('continuity.')).toEqual(['continuity.check', 'continuity.dimensions']);
     expect(byPrefix('review.')).toEqual(['review.categories', 'review.get', 'review.run']);
-    expect(names).toHaveLength(15);
+    expect(byPrefix('fact.')).toEqual(['fact.add', 'fact.get', 'fact.promote', 'fact.search']);
+    expect(byPrefix('evidence.')).toEqual(['evidence.add', 'evidence.get']);
+    expect(names).toHaveLength(21);
   });
 
   it('拒绝重复注册（静默覆盖会让"注册了哪个版本"不可知）', () => {
@@ -95,13 +97,14 @@ describe('注册', () => {
     const report = makeRegistry(t.repos).permissionReport();
     expect(report.READ).toEqual([
       'chapter.countCommitted', 'chapter.get', 'chapter.getPlan', 'chapter.list',
-      'continuity.check', 'continuity.dimensions', 'project.get', 'project.list',
-      'review.categories', 'review.get',
+      'continuity.check', 'continuity.dimensions', 'evidence.get', 'fact.get',
+      'fact.search', 'project.get', 'project.list', 'review.categories', 'review.get',
     ]);
     expect(report.WRITE).toEqual(['chapter.create', 'project.create', 'project.update']);
     // 计划与审阅都是"提议"，不是"提交"，故归 PROPOSE_WRITE
-    expect(report.PROPOSE_WRITE).toEqual(['chapter.plan', 'review.run']);
-    expect(report.COMMIT).toEqual([]);
+    expect(report.PROPOSE_WRITE).toEqual(['chapter.plan', 'evidence.add', 'fact.add', 'review.run']);
+    // Canon 提升是不可逆的权威操作，权限门槛提到 COMMIT
+    expect(report.COMMIT).toEqual(['fact.promote']);
   });
 });
 
