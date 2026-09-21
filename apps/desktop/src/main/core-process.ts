@@ -1653,6 +1653,49 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
   },
 
   /** 最近一次 checkpoint（恢复入口） */
+  /**
+   * 暂停一个 Run（补缺口：Pause 的 UI 入口）。
+   *
+   * ⚠ 已完成的 checkpoint **保留**，因此 resume 不必重跑已完成步骤
+   *   （研究报告 R8：不重跑昂贵的 LLM 调用）。
+   */
+  'run.pause': async (params: { runId: string }) => {
+    const p = requireProject();
+    if (!p.runtime) {
+      throw new AppError(ErrorCode.MODEL_AUTH_FAILED, '尚未配置模型，无运行中的 Agent');
+    }
+    await p.runtime.pause(params.runId);
+    logger.info('Run 已暂停', { runId: params.runId });
+    return { ok: true, runId: params.runId, paused: true };
+  },
+
+  /**
+   * 恢复一个 Run。
+   *
+   * ⚠ 返回 resumeFrom（上次完成的 checkpoint 阶段），让调用方知道
+   *   "从哪继续" —— 而不是重跑全部。
+   */
+  'run.resume': async (params: { runId: string }) => {
+    const p = requireProject();
+    if (!p.runtime) {
+      throw new AppError(ErrorCode.MODEL_AUTH_FAILED, '尚未配置模型，无运行中的 Agent');
+    }
+    const r = await p.runtime.resume(params.runId);
+    logger.info('Run 已恢复', { runId: params.runId, resumeFrom: r.resumeFrom });
+    return { ok: true, runId: r.runId, resumeFrom: r.resumeFrom };
+  },
+
+  /** 取消一个 Run（不可恢复，与 pause 语义不同） */
+  'run.cancel': async (params: { runId: string }) => {
+    const p = requireProject();
+    if (!p.runtime) {
+      throw new AppError(ErrorCode.MODEL_AUTH_FAILED, '尚未配置模型，无运行中的 Agent');
+    }
+    await p.runtime.cancel(params.runId);
+    logger.info('Run 已取消', { runId: params.runId });
+    return { ok: true, runId: params.runId, cancelled: true };
+  },
+
   'run.lastCheckpoint': (params: { runId: string }) => {
     const p = requireProject();
     const ck = p.runtime?.lastCheckpoint(params.runId);

@@ -623,6 +623,28 @@ function createWindow(): void {
               rec('有待确认刷新按钮', !!rBtn2, '');
             }
 
+            // 18) Run 控制（补缺口：Pause / Resume / Cancel 入口）
+            const runForm = [...document.querySelectorAll('.form')]
+              .find(f => f.querySelector('h3')?.textContent.includes('Agent 与状态机'));
+            rec('Agent 与状态机面板存在', !!runForm, '');
+            if (runForm) {
+              const pBtn2 = btnByText(runForm, '暂停');
+              const rBtn3 = btnByText(runForm, '恢复');
+              const cBtn2 = btnByText(runForm, '取消');
+              rec('有暂停/恢复/取消三个按钮', !!pBtn2 && !!rBtn3 && !!cBtn2, '');
+              rec('标注暂停与取消的语义区别',
+                  runForm.textContent.includes('保留已完成步骤') && runForm.textContent.includes('不可恢复'), '');
+              if (pBtn2) {
+                pBtn2.click();
+                await sleep(800);
+                const m = runForm.querySelector('.form-msg')?.textContent || '';
+                // 无运行中的 Run 时应明确提示，而不是静默
+                rec('⚠ 无运行中 Run 时给出明确提示',
+                    m.includes('没有运行中的 Run') || m.includes('MODEL_AUTH_FAILED') || m.includes('成功'),
+                    m.slice(0, 80));
+              }
+            }
+
             return { steps };
           })()`;
 

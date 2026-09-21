@@ -223,6 +223,50 @@ function renderRuntimePanel() {
 
   const rs = state.runStatus;
 
+  // ── Run 控制（补缺口：Pause / Resume / Cancel 的 UI 入口）──
+  const runMsg = el('div', 'form-msg');
+  const ctlRow = el('div', 'btn-row');
+  const pauseBtn = el('button', 'btn', '暂停');
+  const resumeBtn = el('button', 'btn', '恢复');
+  const cancelBtn = el('button', 'btn', '取消');
+  ctlRow.append(pauseBtn, resumeBtn, cancelBtn);
+  box.append(ctlRow, runMsg);
+  box.append(el('div', 'perm-line', '暂停保留已完成步骤；取消不可恢复'));
+
+  // ⚠ run.status 返回的字段名是 active（不是 activeRuns）
+  const activeRunId = () => {
+    const list = state.runStatus?.active ?? [];
+    return list[0]?.runId ?? null;
+  };
+
+  const doRun = async (method, label) => {
+    const runId = activeRunId();
+    if (!runId) {
+      runMsg.className = 'form-msg form-msg--err';
+      runMsg.textContent = '当前没有运行中的 Run';
+      return;
+    }
+    runMsg.className = 'form-msg';
+    runMsg.textContent = `${label}中…`;
+    const r = await call(method, { runId });
+    if (!r.ok) {
+      runMsg.className = 'form-msg form-msg--err';
+      runMsg.textContent = `${r.error.code}: ${r.error.message}`;
+      return;
+    }
+    const d = r.data ?? {};
+    runMsg.className = 'form-msg form-msg--ok';
+    runMsg.textContent = d.resumeFrom
+      ? `${label}成功 —— 从 checkpoint「${d.resumeFrom}」继续（已完成步骤不重跑）`
+      : `${label}成功`;
+    await loadRunStatus();
+    renderAgent();
+  };
+
+  pauseBtn.addEventListener('click', () => doRun('run.pause', '暂停'));
+  resumeBtn.addEventListener('click', () => doRun('run.resume', '恢复'));
+  cancelBtn.addEventListener('click', () => doRun('run.cancel', '取消'));
+
   const readyRow = el('div', 'kv-row');
   readyRow.append(el('span', 'kv-k', 'Agent 可用'));
   readyRow.append(
