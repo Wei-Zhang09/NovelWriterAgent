@@ -1,0 +1,22 @@
+{
+  "name": "@nwa/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "NovelWriter Agent 桌面工作台（Electron）",
+  "main": "./dist/main/main.js",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "tsc -b && node scripts/build.mjs",
+    "start": "electron .",
+    "clean": "tsc -b --clean && rm -rf dist"
+  },
+  "dependencies": {
+    "@nwa/core": "workspace:*",
+    "@nwa/shared": "workspace:*",
+    "@nwa/storage": "workspace:*"
+  },
+  "devDependencies": {
+    "electron": "^44.4.3"
+  }
+}

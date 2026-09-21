@@ -36,6 +36,17 @@ coverage/
 .nyc_output/
 tests/fixtures/tmp/
 
+# 构建产物（各包 dist/ 已被上面的 dist/ 覆盖）
+*.tsbuildinfo
+apps/desktop/dist/
+
+# 验证脚本的输出
+apps/desktop/dist/smoke-result.json
+apps/desktop/dist/gui-result.json
+
+# 门禁自检的临时探针（正常情况会被清理，防止异常退出残留）
+**/__gateprobe__*
+
 # 编辑器 / 系统
 .vscode/*
 !.vscode/extensions.json

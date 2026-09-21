@@ -1,0 +1,8 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# 允许执行构建脚本的依赖白名单（pnpm 默认阻止，防止供应链风险）
+# esbuild 由 vitest 引入，需要 postinstall 安装其平台二进制
+allowBuilds:
+  esbuild: true

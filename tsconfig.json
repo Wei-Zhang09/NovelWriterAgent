@@ -1,0 +1,14 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/core" },
+    { "path": "./packages/shared" },
+    { "path": "./packages/storage" },
+    { "path": "./packages/story" },
+    { "path": "./packages/retrieval" },
+    { "path": "./packages/harness" },
+    { "path": "./packages/writing" },
+    { "path": "./packages/distillation" },
+    { "path": "./apps/desktop" }
+  ]
+}

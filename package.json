@@ -1,0 +1,42 @@
+{
+  "name": "novelwriter-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "本地优先的 AI 长篇小说创作 Agent（Novel Harness + Story Memory + Novel Distillation Engine）",
+  "license": "MIT",
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @nwa/desktop dev",
+    "build": "pnpm -r build",
+    "typecheck": "tsc -b --pretty",
+    "typecheck:clean": "tsc -b --clean && tsc -b --pretty",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:e2e": "vitest run tests/e2e",
+    "verify:smoke": "node scripts/run-smoke.mjs",
+    "verify:gui": "node scripts/run-gui.mjs",
+    "check:boundary": "node scripts/check-boundaries.mjs",
+    "check:storage": "node scripts/check-storage-exec.mjs",
+    "check:gates": "node scripts/self-test-gates.mjs",
+    "check": "pnpm typecheck && pnpm lint && pnpm check:gates && pnpm check:boundary && pnpm check:storage && pnpm test",
+    "verify": "pnpm check && pnpm verify:smoke && pnpm verify:gui",
+    "clean": "pnpm -r exec node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build:packages": "pnpm -r --filter \"!@nwa/desktop\" build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "electron": "^44.4.3",
+    "eslint": "^9.17.0",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.1",
+    "vitest": "^2.1.8",
+    "zod": "^3.24.1"
+  }
+}

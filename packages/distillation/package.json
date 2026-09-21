@@ -1,0 +1,27 @@
+{
+  "name": "@nwa/distillation",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Novel Distillation Engine —— v1.0 仅骨架，不实现",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean"
+  },
+  "dependencies": {
+    "@nwa/core": "workspace:*",
+    "@nwa/shared": "workspace:*",
+    "zod": "^3.24.1"
+  }
+}

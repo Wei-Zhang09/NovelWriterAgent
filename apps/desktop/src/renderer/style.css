@@ -1,0 +1,47 @@
+/* 三栏工作台（施工文档 §41）
+   职责：左栏切对象 / 中栏主体内容 / 右栏动作+诊断
+   状态表达：颜色 + 文字双编码；暂停/待操作不得用危险色 */
+:root {
+  --bg: #111318;
+  --pane: #171a21;
+  --border: #262b36;
+  --fg: #e6e8ee;
+  --muted: #8b93a7;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --err: #f85149;
+  --info: #58a6ff;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.6 "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+}
+.app { display: flex; flex-direction: column; height: 100vh; }
+.titlebar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 16px; border-bottom: 1px solid var(--border);
+  background: var(--pane);
+}
+.brand { font-weight: 600; }
+.phase { color: var(--muted); font-size: 12px; }
+.ver { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.panes { display: grid; grid-template-columns: 240px minmax(0, 1fr) 320px; flex: 1; min-height: 0; }
+.pane { padding: 16px; overflow: auto; border-right: 1px solid var(--border); }
+.pane--agent { border-right: none; border-left: 1px solid var(--border); }
+.pane h2 { margin: 0 0 12px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.nav { list-style: none; margin: 0; padding: 0; }
+.nav li { padding: 7px 10px; border-radius: 6px; cursor: default; color: var(--muted); }
+.nav li:first-child { background: #1f2430; color: var(--fg); }
+.hint { color: var(--muted); font-size: 11px; margin-top: 16px; }
+.checks { display: flex; flex-direction: column; gap: 8px; }
+.check { display: flex; align-items: baseline; gap: 10px; padding: 9px 12px; background: var(--pane); border: 1px solid var(--border); border-radius: 6px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.dot--ok { background: var(--ok); }
+.dot--err { background: var(--err); }
+.dot--wait { background: var(--warn); }
+.check .label { min-width: 190px; }
+.check .value { color: var(--muted); font-family: Consolas, monospace; font-size: 12px; word-break: break-all; }
+.diag { font-family: Consolas, monospace; font-size: 11px; color: var(--muted); white-space: pre-wrap; }

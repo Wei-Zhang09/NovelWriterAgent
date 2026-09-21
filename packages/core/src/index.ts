@@ -1,0 +1,10 @@
+/**
+ * @nwa/core —— 零依赖基础层
+ *
+ * 职责：错误码、ID 生成、分层日志、配置校验。
+ * 本包不得依赖任何其他 @nwa/* 包，也不得依赖 electron / zod。
+ */
+export * from './errors.js';
+export * from './ids.js';
+export * from './logging.js';
+export * from './config.js';

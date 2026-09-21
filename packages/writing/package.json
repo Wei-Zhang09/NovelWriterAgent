@@ -1,0 +1,31 @@
+{
+  "name": "@nwa/writing",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "写作流水线：规划、写作、审稿、一致性检查",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean"
+  },
+  "dependencies": {
+    "@nwa/core": "workspace:*",
+    "@nwa/shared": "workspace:*",
+    "@nwa/storage": "workspace:*",
+    "@nwa/story": "workspace:*",
+    "@nwa/harness": "workspace:*",
+    "@nwa/retrieval": "workspace:*",
+    "zod": "^3.24.1"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "@nwa/shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "跨包数据契约：Zod Schema 与派生类型（Rule 3）",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean"
+  },
+  "dependencies": {
+    "@nwa/core": "workspace:*",
+    "zod": "^3.24.1"
+  }
+}
