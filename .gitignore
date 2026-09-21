@@ -1,0 +1,56 @@
+# 依赖与构建产物
+node_modules/
+.pnpm-store/
+dist/
+dist-electron/
+out/
+build/
+release/
+*.tsbuildinfo
+
+# Electron
+apps/desktop/release/
+
+# 环境与密钥
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# 数据库与用户数据（严禁入库）
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# 运行产物
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# 测试与覆盖率
+coverage/
+.nyc_output/
+tests/fixtures/tmp/
+
+# 编辑器 / 系统
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 临时
+*.tmp
+.tmp/
+.cache/
+
+# 参考项目克隆（本地研究用，不入库；研究结论放 docs/research/）
+research/inkos/
+research/webnovel-writer/
+research/AI-Novel-Writing-Assistant/
+research/deepwrite/
