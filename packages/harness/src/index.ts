@@ -27,6 +27,7 @@ export { createPlanTools } from './tools/plan-tools.js';
 export { createContinuityTools } from './tools/continuity-tools.js';
 export { createReviewTools } from './tools/review-tools.js';
 export { createFactTools } from './tools/fact-tools.js';
+export { createCommitTools } from './tools/commit-tools.js';
 export type { AnyToolDefinition } from '@nwa/shared';
 
 // ── Model Gateway（STEP 3） ──────────────────────────────────
@@ -67,6 +68,16 @@ export {
   isAbnormal,
 } from './workflow/state-machine.js';
 export type { TransitionRequest, TransitionDecision } from './workflow/state-machine.js';
+
+// ── Atomic Commit（STEP 11）【MVP 门槛】 ────────────────────
+export { CommitEngine, SimulatedKill } from './commit/commit-engine.js';
+export type { CommitRequest, CommitReport, CommitEngineOptions, ManifestArtifact, KillSwitch } from './commit/commit-engine.js';
+export { AtomicFileSet, sha256, hashOfFile, findAliases, resolveInside } from './commit/atomic-file-set.js';
+export type { StageOptions, StageResult, FileIdentity } from './commit/atomic-file-set.js';
+export { CommitLock, LOCK_FILE_NAME } from './commit/commit-lock.js';
+export type { CommitLockOptions, LockHandle, AcquireResult } from './commit/commit-lock.js';
+export { RepairEngine } from './commit/repair.js';
+export type { RepairDecision, RepairSummary, RepairBranch, RepairAction } from './commit/repair.js';
 
 // ── 迁移门禁（STEP 8 + STEP 10） ────────────────────────────
 export { TransitionGate } from './workflow/transition-gate.js';

@@ -27,18 +27,20 @@
     "check:storage": "node scripts/check-storage-exec.mjs",
     "check:gates": "node scripts/self-test-gates.mjs",
     "check": "pnpm typecheck && pnpm lint && pnpm check:gates && pnpm check:boundary && pnpm check:storage && pnpm test",
-    "verify": "pnpm check && pnpm verify:smoke && pnpm verify:gui && pnpm verify:flow && pnpm verify:model",
+    "verify": "pnpm check && pnpm verify:smoke && pnpm verify:gui && pnpm verify:flow && pnpm verify:model && pnpm verify:simulate",
     "clean": "pnpm -r exec node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build:packages": "pnpm -r --filter \"!@nwa/desktop\" build",
     "verify:flow": "node apps/desktop/scripts/verify-gui-flow.mjs",
     "verify:model": "node scripts/run-model-e2e.mjs",
-    "verify:all": "pnpm check && pnpm verify:smoke && pnpm verify:gui && pnpm verify:flow && pnpm verify:model",
-    "typecheck:incremental": "tsc -b --pretty"
+    "verify:all": "pnpm check && pnpm verify:smoke && pnpm verify:gui && pnpm verify:flow && pnpm verify:model && pnpm verify:simulate",
+    "typecheck:incremental": "tsc -b --pretty",
+    "verify:simulate": "tsx scripts/simulate-chapters.ts --count=20"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
     "electron": "^44.4.3",
     "eslint": "^9.17.0",
+    "tsx": "^4.23.15",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.18.1",
     "vite": "^7.3.6",

@@ -12,6 +12,7 @@ import { createPlanTools } from './plan-tools.js';
 import { createContinuityTools } from './continuity-tools.js';
 import { createReviewTools } from './review-tools.js';
 import { createFactTools } from './fact-tools.js';
+import { createCommitTools } from './commit-tools.js';
 import {
   ChapterSchema,
   CreateChapterInputSchema,
@@ -199,6 +200,16 @@ export function createAllTools(
     /** 解析当前书 id（Continuity 检查需要）；缺省时用第一个书 */
     resolveBookId?: () => string;
     logger?: import('@nwa/core').Logger;
+    /** Commit 相关依赖：缺省时不注册 commit 工具（测试与无项目场景） */
+    commit?: {
+      readonly db: import('@nwa/storage').Database;
+      readonly rootDir: string;
+      readonly readWorkspaceText: (
+        chapterNumber: number,
+        name: 'draft' | 'revision',
+      ) => string | null;
+      readonly assertGateOpen?: (chapterId: string) => void;
+    };
   },
 ): AnyToolDefinition[] {
   /**
@@ -227,6 +238,17 @@ export function createAllTools(
     ...createReviewTools(repos),
     // STEP 9：事实与证据（fact.* / evidence.*）
     ...createFactTools(repos, { resolveBookId }),
+    // STEP 11：原子提交（workspace.*）【MVP 门槛】—— 权限 COMMIT 级
+    ...(opts?.commit
+      ? createCommitTools({
+          db: opts.commit.db,
+          repos,
+          rootDir: opts.commit.rootDir,
+          logger: opts?.logger ?? new Logger('harness:commit'),
+          readWorkspaceText: opts.commit.readWorkspaceText,
+          ...(opts.commit.assertGateOpen ? { assertGateOpen: opts.commit.assertGateOpen } : {}),
+        })
+      : []),
     // STEP 10：一致性检查（continuity.check / continuity.dimensions）—— 只读
     ...createContinuityTools(repos, {
       resolveBookId,

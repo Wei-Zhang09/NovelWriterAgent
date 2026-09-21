@@ -14,7 +14,7 @@
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { Logger, AppError, ErrorCode, bookId } from '@nwa/core';
+import { Logger, AppError, ErrorCode, bookId, type ErrorCodeValue } from '@nwa/core';
 import { Database, MIGRATIONS, createRepositories, type Repositories } from '@nwa/storage';
 import {
   ToolRegistry,
@@ -35,6 +35,7 @@ import {
 import { z } from 'zod';
 import { Planner, Writer, Reviewer } from '@nwa/writing';
 import { ChapterWorkspace, ContinuityChecker, FactExtractor, CanonPromoter } from '@nwa/story';
+import { CommitEngine } from '@nwa/harness';
 import type { ReviewIssue } from '@nwa/shared';
 import { TransitionGate } from '@nwa/harness';
 import type { ToolContext } from '@nwa/shared';
@@ -424,7 +425,25 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const db = new Database({ path: dbPath, migrations: MIGRATIONS });
     const repos = createRepositories(db);
     const tools = new ToolRegistry(logger.child('tools'));
-    for (const tool of createAllTools(repos)) tools.register(tool);
+    // ⚠ commit 工具需要项目目录（写 chapters/ 等），只能在 project.open 注册
+    for (const tool of createAllTools(repos, {
+      logger: logger.child('tools'),
+      commit: {
+        db,
+        rootDir: dir,
+        // 工作区读取由 app 层注入，避免 @nwa/harness 依赖 @nwa/story
+        readWorkspaceText: (chapterNumber, name) => {
+          const ws = new ChapterWorkspace({
+            rootDir: dir,
+            chapterNumber,
+            logger: logger.child('workspace'),
+          });
+          return ws.readText(name);
+        },
+      },
+    })) {
+      tools.register(tool);
+    }
 
     const events = new EventBus({ runs: repos.runs, logger: logger.child('events') });
     const project: OpenProject = { dir, db, repos, tools, events, runtime: null };
@@ -432,10 +451,31 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     opened = project;
     logger.info('项目已打开', { dir, tools: tools.list().length, agentReady: project.runtime !== null });
 
+    // ⚠ ADR-0002 v2 步骤 0：打开项目即检查上次是否有未完成事务并收尾。
+    //   必须在任何新提交之前执行，否则残留状态会污染后续判定。
+    let recovery: { scanned: number; repaired: number; needsHuman: number } | null = null;
+    try {
+      const r = new CommitEngine({
+        db,
+        repos,
+        rootDir: dir,
+        logger: logger.child('commit'),
+      }).recoverOnStartup();
+      recovery = { scanned: r.scanned, repaired: r.repaired.length, needsHuman: r.needsHuman.length };
+      if (r.scanned > 0) {
+        logger.warn('启动时发现未完成事务并已处理', recovery);
+      }
+    } catch (e) {
+      logger.error('启动恢复失败（不阻断打开项目）', {
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+
     return {
       dir,
       toolCount: tools.list().length,
       agentReady: project.runtime !== null,
+      recovery,
       projectCount: repos.projects.list().length,
       bookCount: repos.projects.list().length === 0 ? 0 : repos.books.listByProject(repos.projects.list()[0]!.id).length,
     };
@@ -1206,6 +1246,49 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     };
   },
 
+  /**
+   * 提交预检（STEP 11）：走 workspace.proposeCommit 工具。
+   * ⚠ 只读，不写任何东西。
+   */
+  'commit.propose': async (params: { chapterId: string }) => {
+    const p = requireProject();
+    const r = await p.tools.invoke('workspace.proposeCommit', { chapterId: params.chapterId }, toolContext('ADMIN'));
+    if (!r.ok) throw new AppError(r.error.code as ErrorCodeValue, r.error.message, { details: r.error.details });
+    return r.data;
+  },
+
+  /** 执行提交（STEP 11）—— 权限 COMMIT 级 */
+  'commit.run': async (params: { chapterId: string; commitMode?: 'clean' | 'with_debt' }) => {
+    const p = requireProject();
+    const input: { chapterId: string; commitMode?: 'clean' | 'with_debt' } = {
+      chapterId: params.chapterId,
+    };
+    if (params.commitMode) input.commitMode = params.commitMode;
+    const r = await p.tools.invoke('workspace.commit', input, toolContext('ADMIN'));
+    if (!r.ok) {
+      // 提交失败是可预期结果（门禁/冲突），以数据返回而不是抛错，便于 UI 展示
+      return { ok: false, error: { code: r.error.code, message: r.error.message } };
+    }
+    return r.data;
+  },
+
+  /** 启动恢复（STEP 11）：扫描未完成事务 */
+  'commit.recover': async () => {
+    const p = requireProject();
+    const r = await p.tools.invoke('workspace.recover', {}, toolContext('ADMIN'));
+    if (!r.ok) throw new AppError(r.error.code as ErrorCodeValue, r.error.message);
+    return r.data;
+  },
+
+  /** 提交历史 */
+  'commit.list': async (params: { chapterId?: string }) => {
+    const p = requireProject();
+    const input = params.chapterId ? { chapterId: params.chapterId } : {};
+    const r = await p.tools.invoke('workspace.listCommits', input, toolContext('ADMIN'));
+    if (!r.ok) throw new AppError(r.error.code as ErrorCodeValue, r.error.message);
+    return r.data;
+  },
+
   // ── Agent Runtime / Run 可观测性（STEP 4） ────────────────
 
   /** Run 与 Agent 的当前状态（UI 右栏） */
@@ -1463,7 +1546,11 @@ function bootstrap(): void {
   const db = new Database({ path: dbPath, migrations: MIGRATIONS });
   const repos = createRepositories(db);
   const tools = new ToolRegistry(logger.child('tools'));
-  for (const tool of createAllTools(repos)) tools.register(tool);
+  // bootstrap 阶段还没有项目目录，故不注册 commit 工具
+  // （commit 工具在 project.open 时随 dir 一起注册）
+  for (const tool of createAllTools(repos, { logger: logger.child('tools') })) {
+      tools.register(tool);
+    }
   const events = new EventBus({ runs: repos.runs, logger: logger.child('events') });
   const project: OpenProject = { dir: PROJECTS_ROOT, db, repos, tools, events, runtime: null };
   project.runtime = buildRuntime(project);

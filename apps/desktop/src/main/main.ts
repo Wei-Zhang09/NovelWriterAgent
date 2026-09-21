@@ -550,6 +550,35 @@ function createWindow(): void {
               }
             }
 
+            // 15) 提交面板（STEP 11）【MVP 门槛】
+            const commitForm = [...document.querySelectorAll('.form')]
+              .find(f => f.querySelector('h3')?.textContent.includes('提交为正式章节'));
+            rec('提交面板存在', !!commitForm, '');
+            if (commitForm) {
+              // 必须标注三阶段 —— 让"中断可恢复"这件事在界面上可见
+              rec('⚠ 标注三阶段 PREPARE→APPLY→VERIFY',
+                  commitForm.textContent.includes('PREPARE') && commitForm.textContent.includes('VERIFY'), '');
+
+              const pcBtn = btnByText(commitForm, '提交预检');
+              rec('有提交预检按钮', !!pcBtn, '');
+              if (pcBtn) {
+                pcBtn.click();
+                let msg = '';
+                for (let i = 0; i < 40; i++) {
+                  await sleep(250);
+                  const m = commitForm.querySelector('.form-msg')?.textContent || '';
+                  if (m.includes('可以提交') || m.includes('不可提交') || m.includes('还没有')) {
+                    msg = m;
+                    break;
+                  }
+                }
+                // 无草稿时应明确列出阻塞项，而不是静默
+                rec('⚠ 预检给出明确阻塞项或放行',
+                    msg.includes('可以提交') || msg.includes('不可提交') || msg.includes('还没有'),
+                    msg.slice(0, 90));
+              }
+            }
+
             return { steps };
           })()`;
 

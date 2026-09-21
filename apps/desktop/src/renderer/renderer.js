@@ -37,6 +37,7 @@ const state = {
   lastContinuity: null,
   lastReview: null,
   lastCanon: null,
+  lastCommit: null,
 };
 
 async function call(method, params) {
@@ -984,6 +985,68 @@ function renderAgent() {
   canonRefreshBtn.addEventListener('click', refreshCanon);
 
   a.append(canonBox);
+
+  // ── 提交面板（STEP 11）【MVP 门槛】──
+  const commitBox = el('div', 'form form--rail');
+  commitBox.append(el('h3', null, '提交为正式章节'));
+  const commitMsg = el('div', 'form-msg');
+
+  const commitRow = el('div', 'btn-row');
+  const precheckBtn = el('button', 'btn', '提交预检');
+  const commitBtn = el('button', 'btn btn--primary', '确认提交');
+  commitRow.append(precheckBtn, commitBtn);
+  commitBox.append(commitRow, commitMsg);
+  commitBox.append(el('div', 'perm-line', '三阶段 PREPARE→APPLY→VERIFY；中断可恢复'));
+
+  const commitDetail = el('div', 'model-status');
+  commitBox.append(commitDetail);
+
+  const firstCh = () => state.chapters[0];
+
+  precheckBtn.addEventListener('click', async () => {
+    const c = firstCh();
+    if (!c) { commitMsg.className = 'form-msg form-msg--err'; commitMsg.textContent = '还没有章节'; return; }
+    const r = await call('commit.propose', { chapterId: c.id });
+    if (!r.ok) {
+      commitMsg.className = 'form-msg form-msg--err';
+      commitMsg.textContent = `${r.error.code}: ${r.error.message}`;
+      return;
+    }
+    const d = r.data;
+    commitMsg.className = d.ready ? 'form-msg form-msg--ok' : 'form-msg form-msg--err';
+    commitMsg.textContent = d.ready
+      ? `可以提交（源：${d.source}）`
+      : `不可提交：${d.blockers.join('；')}`;
+    commitDetail.replaceChildren();
+    for (const w of d.willWrite) {
+      commitDetail.append(el('div', 'perm-line', `将写入 ${w.path}${w.bytes ? `（${w.bytes} 字节）` : ''}`));
+    }
+  });
+
+  commitBtn.addEventListener('click', async () => {
+    const c = firstCh();
+    if (!c) { commitMsg.className = 'form-msg form-msg--err'; commitMsg.textContent = '还没有章节'; return; }
+    commitBtn.disabled = true;
+    commitMsg.className = 'form-msg';
+    commitMsg.textContent = '正在提交…';
+
+    const r = await call('commit.run', { chapterId: c.id });
+    commitBtn.disabled = false;
+    if (!r.ok) {
+      commitMsg.className = 'form-msg form-msg--err';
+      commitMsg.textContent = `${r.error.code}: ${r.error.message}`;
+      return;
+    }
+    const d = r.data;
+    state.lastCommit = d;
+    commitMsg.className = d.ok ? 'form-msg form-msg--ok' : 'form-msg form-msg--err';
+    commitMsg.textContent = d.ok
+      ? `已提交：${d.chapterPath}（${d.phase}，${d.appliedCount} 项产物）`
+      : `提交失败：${d.status} — ${d.error ? d.error.message.slice(0, 80) : ''}`;
+    await refreshChapters();
+  });
+
+  a.append(commitBox);
 
   // ── Context Engine 面板（STEP 5） ──
   const ctxBox = el('div', 'form form--rail');

@@ -22,8 +22,8 @@ export interface TestProject {
 let counter = 0;
 
 /** 建一个已迁移、已初始化一个项目 + 一本书的测试环境 */
-export function createTestProject(): TestProject {
-  const dir = mkdtempSync(join(tmpdir(), `nwa-test-${process.pid}-${++counter}-`));
+export function createTestProject(opts?: { readonly rootDir?: string }): TestProject {
+  const dir = opts?.rootDir ?? mkdtempSync(join(tmpdir(), `nwa-test-${process.pid}-${++counter}-`));
   const pid = projectId();
   const bid = bookId();
 
