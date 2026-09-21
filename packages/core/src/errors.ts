@@ -11,6 +11,14 @@ export const ErrorCode = {
   MODEL_RATE_LIMIT: 'MODEL_RATE_LIMIT',
   /** v1.0 新增（研究报告 R11）：结构化输出为空或不可解析时使用 */
   MODEL_STRUCTURED_EMPTY: 'MODEL_STRUCTURED_EMPTY',
+  /**
+   * v1.0 新增：请求体/参数不合法（HTTP 400/404/422）。
+   *
+   * ⚠ 与 MODEL_TIMEOUT 严格区分：400 表示"同样的请求还会失败"
+   * （模型名错、max_tokens 超限、endpoint 路径错），
+   * 而超时是"换个时机可能成功"。混用会把排查引向错误方向。
+   */
+  MODEL_REQUEST_INVALID: 'MODEL_REQUEST_INVALID',
 
   // ---- 工具与上下文 ----
   TOOL_VALIDATION_ERROR: 'TOOL_VALIDATION_ERROR',
@@ -77,6 +85,8 @@ const ERROR_SEMANTICS: Record<ErrorCodeValue, { recoverable: boolean; retryable:
   MODEL_AUTH_FAILED: { recoverable: false, retryable: false },
   MODEL_RATE_LIMIT: { recoverable: true, retryable: true },
   MODEL_STRUCTURED_EMPTY: { recoverable: true, retryable: true },
+  // 不可重试：同样的请求体还会失败，重试只是浪费配额
+  MODEL_REQUEST_INVALID: { recoverable: false, retryable: false },
 
   TOOL_VALIDATION_ERROR: { recoverable: true, retryable: false },
   TOOL_PERMISSION_DENIED: { recoverable: false, retryable: false },

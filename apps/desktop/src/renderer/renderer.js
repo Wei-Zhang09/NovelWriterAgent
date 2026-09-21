@@ -423,11 +423,22 @@ function renderModelSettings() {
     const r = await call('model.config.save', payload);
     saveBtn.disabled = false;
     if (r.ok) {
-      msg.className = 'form-msg form-msg--ok';
-      msg.textContent = `已保存 profile ${r.data.profileId}，密钥引用 ${r.data.apiKeyRef}`;
+      const d = r.data;
+      // ⚠ 明确报告 agentReady —— 保存成功但 Runtime 未建成时，
+      //   用户会再次陷入"配了却用不了"，所以这里必须说清楚。
+      if (d.agentReady) {
+        msg.className = 'form-msg form-msg--ok';
+        msg.textContent = `已保存 profile ${d.profileId}，模型已就绪（agentReady）`;
+      } else {
+        msg.className = 'form-msg form-msg--err';
+        msg.textContent = `配置已保存，但模型未就绪：${d.rebuildError ?? 'Runtime 未建立'}`
+          + ' —— 请检查 endpoint / 模型名是否正确';
+      }
       await loadModelConfig();
       renderCenter();
       renderAgent();
+      // 刷新 Runtime 状态（"就绪 / 需先配置模型"芯片）
+      await loadRunStatus();
     } else {
       msg.className = 'form-msg form-msg--err';
       msg.textContent = r.error.message;
@@ -676,10 +687,24 @@ function renderAgent() {
     const d = r.data;
     if (!d.ok) {
       planMsg.className = 'form-msg form-msg--err';
+      // ⚠ 不要把 message 截到 80 字 —— HTTP 错误的原因（如
+      //   "model 'xxx' does not exist"）常在后半段，截断后用户
+      //   只知道"被拒"，不知道为何被拒。
       planMsg.textContent = `规划失败（尝试 ${d.attempts} 次）`
-        + (d.error ? ` ${d.error.code}: ${d.error.message.slice(0, 80)}` : '')
-        + (d.issues?.length ? ` | 问题：${d.issues.join('；').slice(0, 100)}` : '');
+        + (d.error ? ` ${d.error.code}: ${d.error.message}` : '')
+        + (d.issues?.length ? ` | 问题：${d.issues.join('；')}` : '');
       planDetail.replaceChildren();
+      // 展示错误详情（如 HTTP 响应体），便于直接定位配置问题
+      const ev = d.error && d.error.details ? d.error.details : null;
+      if (ev) {
+        const body = ev.body ?? ev.rawTextHead;
+        if (typeof body === 'string' && body.length > 0) {
+          planDetail.append(el('div', 'issue-src', `服务端返回：${body.slice(0, 400)}`));
+        }
+        if (typeof ev.status === 'number') {
+          planDetail.append(el('div', 'issue-src', `HTTP ${ev.status}`));
+        }
+      }
       return;
     }
 

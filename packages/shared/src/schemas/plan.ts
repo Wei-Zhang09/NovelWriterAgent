@@ -160,7 +160,71 @@ export function validatePlanSemantics(plan: PlanOutput): string[] {
     );
   }
 
+  // 6. ⚠ 占位符检测（实测踩到）
+  //
+  // 模型在材料不足时会把「待确认：…」「例如…」原样写进字段，产出一份
+  // 看着有结构、实则没有创作决定的大纲：
+  //   hook: "待确认：章末钩子，例如主角发现了一个关键物品或信息"
+  // 这种计划传给 Writer 等于没给方向，写出来的东西必然空转。
+  //
+  // 因此在语义层拦下来（而不是只靠 prompt 劝阻 —— prompt 会失效，
+  // 校验不会）。
+  const placeholders = findPlaceholders(plan);
+  for (const p of placeholders) {
+    issues.push(`${p.field} 含占位符「${p.hit}」—— 必须给出具体的创作决定，不得留待确认`);
+  }
+
   return issues;
+}
+
+/** 判定为占位符的文本模式 */
+const PLACEHOLDER_PATTERNS: readonly RegExp[] = [
+  /待确认/,
+  /待定/,
+  /TODO/i,
+  /TBD/i,
+  /待填写/,
+  /请填写/,
+  /此处填/,
+  /（\s*空\s*）/,
+  /\(\s*空\s*\)/,
+  /^\s*例如[：:]/,
+  /例如：.*(物品|信息|事件|人物).*$/,
+  /^(待|未)(补充|说明|明确|给出)/,
+  /占位/,
+  /\$\{.*\}/,
+  /<[^>]*填写[^>]*>/,
+];
+
+/** 检查计划里是否残留占位符；返回 [{field, hit}] */
+export function findPlaceholders(plan: PlanOutput): { field: string; hit: string }[] {
+  const out: { field: string; hit: string }[] = [];
+
+  const scan = (field: string, value: unknown): void => {
+    if (typeof value === 'string') {
+      for (const re of PLACEHOLDER_PATTERNS) {
+        const m = value.match(re);
+        if (m) {
+          out.push({ field, hit: value.slice(0, 40) });
+          return; // 一个字段只报一次
+        }
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const [i, v] of value.entries()) scan(`${field}[${i}]`, v);
+      return;
+    }
+    if (value && typeof value === 'object') {
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        scan(`${field}.${k}`, v);
+      }
+    }
+  };
+
+  scan('brief', plan.brief);
+  scan('scenes', plan.scenes);
+  return out;
 }
 
 /**

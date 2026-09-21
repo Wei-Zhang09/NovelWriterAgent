@@ -157,6 +157,20 @@ app.whenReady().then(async () => {
     });
     rec('保存模型配置', save.ok === true, save.ok ? `profile=${save.data.profileId}` : JSON.stringify(save.error));
 
+    // 1b) ⚠ 保存后必须立即 agentReady（回归测试）
+    //
+    // 实测 bug：runtime 只在 project.open 时构建。用户在界面配好模型后
+    // p.runtime 仍为 null，点「规划当前章节」报"尚未配置模型"，
+    // 看起来像配置没生效。
+    const saveData = save.ok ? save.data : {};
+    rec(
+      '⚠ 保存后模型即刻就绪（agentReady）',
+      saveData.agentReady === true,
+      saveData.agentReady === true
+        ? 'agentReady=true'
+        : `agentReady=${String(saveData.agentReady)}${saveData.rebuildError ? `，错误：${saveData.rebuildError}` : ''}`,
+    );
+
     // 2) 密钥加密落盘检查
     const onDisk = existsSync(credPath) ? readFileSync(credPath, 'utf8') : '';
     rec('凭据文件已生成', onDisk.length > 0, credPath);

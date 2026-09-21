@@ -1575,8 +1575,34 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
         };
 
     saveModelsConfig(p.dir, { slots, profiles });
-    logger.info('模型配置已保存', { profileId: next.id, slots, configPath: modelsConfigPath(p.dir) });
-    return { ok: true, profileId: next.id, apiKeyRef, slots };
+
+    // ⚠ 保存后必须**重建 Runtime** —— 否则 agentReady 一直为 false。
+    //
+    // 实测 bug：runtime 只在 project.open 时构建一次。用户在界面里配好模型后，
+    // p.runtime 仍是 null，于是「规划当前章节」等入口全部报
+    // "尚未配置模型"，看起来像配置没生效。
+    // 配置是热更新的（无需重开项目），因此这里同步重建。
+    const rebuild = (() => {
+      try {
+        p.runtime = buildRuntime(p);
+        return { agentReady: p.runtime !== null };
+      } catch (e) {
+        // 配置写对了但 gateway 构建失败（如 profile 非法）→ 不静默，
+        // 明确回报，否则用户会再次陷入"配了却用不了"
+        logger.error('模型配置已保存，但 Runtime 重建失败', {
+          error: e instanceof Error ? e.message : String(e),
+        });
+        return { agentReady: false, rebuildError: e instanceof Error ? e.message : String(e) };
+      }
+    })();
+
+    logger.info('模型配置已保存', {
+      profileId: next.id,
+      slots,
+      configPath: modelsConfigPath(p.dir),
+      agentReady: rebuild.agentReady,
+    });
+    return { ok: true, profileId: next.id, apiKeyRef, slots, ...rebuild };
   },
 
   /** 删除密钥引用（不删除 profile 配置） */

@@ -40,7 +40,7 @@ export {
   defaultCredentialsPath,
 } from './models/secret-store.js';
 export type { CryptoBackend } from './models/secret-store.js';
-export { classifyHttpFailure, isRetryable, backoffDelayMs } from './models/errors.js';
+export { classifyHttpFailure, extractErrorText, isRetryable, backoffDelayMs } from './models/errors.js';
 export type {
   ChatMessage,
   ChatRequest,
