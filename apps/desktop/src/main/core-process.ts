@@ -35,7 +35,7 @@ import {
 import { z } from 'zod';
 import { Planner, Writer, Reviewer } from '@nwa/writing';
 import { ChapterWorkspace, ContinuityChecker, FactExtractor, CanonPromoter } from '@nwa/story';
-import { CommitEngine, SummaryIndexer, MemoryGatherer } from '@nwa/harness';
+import { CommitEngine, SummaryIndexer, MemoryGatherer, SummaryGenerator } from '@nwa/harness';
 import { FtsIndex } from '@nwa/storage';
 import { bigramTokenizer, Retriever, buildMatchExpression } from '@nwa/retrieval';
 import type { ReviewIssue } from '@nwa/shared';
@@ -171,17 +171,40 @@ function modelsConfigPath(dir: string): string {
   return join(dir, 'models.json');
 }
 
+/**
+ * 用户级模型配置的规范位置。
+ *
+ * ⚠ 为什么需要它：`models.json` 目前放在项目目录下，但**模型配置是
+ *   用户级的**（换个项目不会换模型）。这带来一个真实问题：
+ *   隔离目录（验证脚本用的 `NWA_PROJECTS_ROOT`）里没有 models.json，
+ *   于是 `buildRuntime` 返回 null、`agentReady=false`，所有需要模型的
+ *   功能静默不可用。实测踩到。
+ *
+ * 因此读取时按顺序尝试：项目目录 → 用户规范位置。
+ * 写入仍写入项目目录（保持既有行为不变）。
+ */
+function userModelsConfigPath(): string {
+  return join(homedir(), 'NovelWriterProjects', 'models.json');
+}
+
 function loadModelsConfig(dir: string): ModelsConfig | null {
-  const p = modelsConfigPath(dir);
-  if (!existsSync(p)) return null;
-  try {
-    const raw = JSON.parse(readFileSync(p, 'utf8')) as ModelsConfig;
-    if (!raw || typeof raw !== 'object' || !Array.isArray(raw.profiles)) return null;
-    return raw;
-  } catch (err) {
-    logger.warn('models.json 解析失败，忽略', { error: String(err) });
-    return null;
+  // 项目目录优先；找不到则回退到用户级位置
+  const candidates = [modelsConfigPath(dir)];
+  const userPath = userModelsConfigPath();
+  if (userPath !== candidates[0]) candidates.push(userPath);
+
+  for (const p of candidates) {
+    if (!existsSync(p)) continue;
+    try {
+      const raw = JSON.parse(readFileSync(p, 'utf8')) as ModelsConfig;
+      if (raw && typeof raw === 'object' && Array.isArray(raw.profiles) && raw.profiles.length > 0) {
+        return raw;
+      }
+    } catch (err) {
+      logger.warn('models.json 解析失败，尝试下一个位置', { path: p, error: String(err) });
+    }
   }
+  return null;
 }
 
 function saveModelsConfig(dir: string, cfg: ModelsConfig): void {
@@ -309,7 +332,17 @@ function requireProject(): OpenProject {
 }
 
 /** 项目根目录：用户可见、可检查（§0.1「文件和数据库可检查」） */
-const PROJECTS_ROOT = join(homedir(), 'NovelWriterProjects');
+/**
+ * 项目根目录。
+ *
+ * ⚠ 支持环境变量覆盖（`NWA_PROJECTS_ROOT`）—— 这是**测试隔离**的必需品。
+ *
+ * 实测踩到：验证脚本（verify-gui / verify-writing）走真实 IPC，
+ * 而 IPC 又用这个常量，于是每次验证都往用户的**真实项目**里写数据。
+ * 结果是 24 本重名的「测试小说」和 23 个重复的「第1章」。
+ * 验证脚本污染用户数据是不可接受的 —— 因此必须可隔离。
+ */
+const PROJECTS_ROOT = process.env['NWA_PROJECTS_ROOT'] ?? join(homedir(), 'NovelWriterProjects');
 
 /** 统一的工具调用上下文 —— 由宿主构造，模型无法伪造 */
 function toolContext(callerPermission: ToolContext['callerPermission'] = 'ADMIN'): ToolContext {
@@ -1371,6 +1404,79 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     };
   },
 
+  /**
+   * 生成章节摘要候选（ADR-0006 约束 C）。
+   *
+   * ⚠ 这一步是长程记忆的**唯一入口**。此前全代码库没有它 ——
+   *   `chapters.summary` 永远是 NULL，Commit 只能 fallback 成标题
+   *   「第 N 章」，导致后续章节检索到的前情只有三个字，
+   *   模型只能另起炉灶（实测：第1章主角"林渊"→第2章变成"林秋"）。
+   *
+   * ⚠ 生成后 summary_approved 仍为 0 —— **不进检索**，
+   *   必须由作者在界面上确认（ADR-0006："错一条污染后面几百章"）。
+   */
+  'summary.generate': async (params: { chapterId: string }) => {
+    const p = requireProject();
+    if (!p.runtime) {
+      throw new AppError(ErrorCode.MODEL_AUTH_FAILED, '尚未配置模型，无法生成摘要');
+    }
+    const chapter = p.repos.chapters.get(params.chapterId);
+
+    // 取正文：优先 revision，退回 draft
+    const ws = new ChapterWorkspace({
+      rootDir: p.dir,
+      chapterNumber: chapter.chapter_number,
+      logger: logger.child('workspace'),
+    });
+    const body = ws.readText('revision') ?? ws.readText('draft');
+    if (body === null) {
+      throw new AppError(
+        ErrorCode.TOOL_VALIDATION_ERROR,
+        `第 ${chapter.chapter_number} 章还没有正文 —— 无法生成摘要`,
+      );
+    }
+
+    // 前情摘要（已确认的），供模型保持连贯
+    const prior = p.repos.chapters
+      .listApprovedSummaries(chapter.book_id)
+      .filter((c) => c.chapter_number < chapter.chapter_number)
+      .map((c) => c.summary ?? '')
+      .filter((x) => x.trim().length > 0);
+
+    const plan = p.repos.chapters.readPlan<unknown>(params.chapterId);
+
+    const gen = new SummaryGenerator({
+      structured: (req) => p.runtime!.structured('utility', req),
+      logger: logger.child('summary-gen'),
+    });
+
+    const res = await gen.generate({
+      chapterNumber: chapter.chapter_number,
+      draftText: body,
+      ...(plan !== null ? { planText: JSON.stringify(plan).slice(0, 4000) } : {}),
+      ...(prior.length > 0 ? { previousSummaries: prior } : {}),
+    });
+
+    if (!res.ok || !res.summary) {
+      return {
+        ok: false,
+        error: res.error ?? { code: ErrorCode.MODEL_STRUCTURED_EMPTY, message: '摘要生成失败' },
+      };
+    }
+
+    // 写入候选（保持未确认状态）
+    p.repos.chapters.setSummaryCandidate(chapter.id, res.summary.summary);
+
+    return {
+      ok: true,
+      summary: res.summary.summary,
+      keyFacts: res.summary.keyFacts,
+      endState: res.summary.endState,
+      // 明确回报：尚未进检索
+      approved: false,
+    };
+  },
+
   /** 确认摘要（可同时改写内容）→ 才进检索索引 */
   'summary.approve': (params: { chapterId: string; edited?: string }) => {
     const p = requireProject();
@@ -1555,7 +1661,9 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       temperature: prof.temperature ?? 0.8,
       maxTokens: prof.maxTokens ?? 4096,
       contextWindow: 128000,
-      timeoutMs: prof.timeoutMs ?? 60000,
+      // ⚠ 默认 180 秒而不是 60 秒：写正文要生成多个上千字的场景，
+      //   60 秒几乎必然超时（实测踩到"请求超时（60000ms）"）。
+      timeoutMs: prof.timeoutMs ?? 180000,
       retryPolicy: {
         maxAttempts: prof.maxAttempts ?? 3,
         ...(prof.structuredFallbackProfileId

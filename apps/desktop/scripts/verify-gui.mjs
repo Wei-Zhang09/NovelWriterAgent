@@ -13,6 +13,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -27,7 +28,13 @@ const child = spawn(
   {
     cwd: appRoot,
     shell: process.platform === 'win32',
-    env: { ...process.env, NWA_GUI_PROBE: '1' },
+    env: {
+      ...process.env,
+      NWA_GUI_PROBE: '1',
+      // ⚠ 隔离项目目录：GUI 验证会真实建书/建章，
+      //   写进用户真实项目会造成污染（曾累积 24 本重名书）。
+      NWA_PROJECTS_ROOT: join(tmpdir(), 'nwa-verify-gui'),
+    },
     stdio: 'inherit',
   },
 );

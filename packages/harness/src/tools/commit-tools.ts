@@ -173,6 +173,20 @@ export function createCommitTools(
         );
       }
 
+      // ⚠ 摘要必须已生成（summary.generate）才允许提交。
+      //
+      // 摘要缺失时**拒绝**而不是 fallback 成标题 —— 见下方 commit 调用的说明。
+      const summary = chapter.summary;
+      if (summary === null || summary.trim().length === 0) {
+        throw new AppError(
+          ErrorCode.TOOL_VALIDATION_ERROR,
+          `第 ${chapter.chapter_number} 章还没有摘要，拒绝提交。` +
+            '摘要是后续章节的长程记忆来源（ADR-0006），缺失会导致跨章记忆断裂。' +
+            '请先点「生成摘要」并在「摘要确认」面板中确认。',
+          { details: { chapterId: chapter.id, missing: 'summary' } },
+        );
+      }
+
       const engine = new CommitEngine({
         db: deps.db,
         repos: deps.repos,
@@ -185,7 +199,16 @@ export function createCommitTools(
         chapterId: chapter.id,
         chapterNumber: chapter.chapter_number,
         body,
-        summary: chapter.summary ?? `第 ${chapter.chapter_number} 章`,
+        // ⚠ 摘要必须**已有内容**才允许提交。
+        //
+        // 原先这里是 `chapter.summary ?? \`第 N 章\`` —— fallback 成标题，
+        // 提交照常成功，于是 chapters.summary 恒为"第 N 章"，
+        // 后续章节检索到的前情只有三个字，长程记忆**整条断裂**
+        // （实测：第1章主角"林渊"→第2章变成"林秋"）。
+        //
+        // 那种"静默降级"比直接失败更糟：它让系统看起来在工作。
+        // 因此改为**拒绝提交**，并明确告知缺哪一步。
+        summary,
         commitMode: input.commitMode ?? 'clean',
       });
 

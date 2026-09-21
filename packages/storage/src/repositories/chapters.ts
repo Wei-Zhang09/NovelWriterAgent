@@ -154,6 +154,24 @@ export class ChapterRepository {
     return row.review_status === 'BLOCKED';
   }
 
+  /**
+   * 写入摘要候选（**不改变确认状态**）。
+   *
+   * ⚠ 刻意与 approveSummary 分开：
+   *   生成摘要（机器）与确认摘要（作者）是两件事，合并会让
+   *   "自动生成的摘要直接生效"，违反 ADR-0006 约束 C。
+   *   本方法写入后 summary_approved 仍为 0。
+   */
+  setSummaryCandidate(id: string, summary: string): ChapterRow {
+    this.db.run(
+      'UPDATE chapters SET summary = ?, summary_approved = 0, summary_approved_at = NULL, updated_at = ? WHERE id = ?',
+      summary,
+      now(),
+      id,
+    );
+    return this.get(id);
+  }
+
   // ── 摘要人工确认（ADR-0006 约束 C） ──────────────────────
 
   /**

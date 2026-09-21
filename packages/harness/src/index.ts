@@ -99,6 +99,14 @@ export type {
   RetrievalTraceLike,
 } from './context/memory-gatherer.js';
 export { SummaryIndexer } from './context/summary-indexer.js';
+export { SummaryGenerator, ChapterSummarySchema, validateSummary } from './context/summary-generator.js';
+export type {
+  ChapterSummary,
+  SummaryGeneratorOptions,
+  SummaryStructuredCaller,
+  SummaryRequest,
+  SummaryResult,
+} from './context/summary-generator.js';
 export type { ReindexResult } from './context/summary-indexer.js';
 export { SLOT_NAMES } from './context/types.js';
 export type {

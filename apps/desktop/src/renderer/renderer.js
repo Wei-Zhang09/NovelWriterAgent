@@ -377,6 +377,10 @@ function renderModelSettings() {
   const temperature = makeRow('temperature', '0.8');
   const maxTokens = makeRow('maxTokens', '4096');
   const maxAttempts = makeRow('最大重试次数', '3');
+  // ⚠ 超时必须有设置项：写一章正文要生成多个场景、每个可能上千字，
+  //   60 秒（旧默认）几乎必然超时（实测：规划能过、写作报
+  //   "请求超时（60000ms）"）。默认给 180 秒。
+  const timeoutSec = makeRow('单次请求超时（秒）', '180');
 
   if (cfg?.profiles?.length) {
     const p = cfg.profiles[0];
@@ -386,11 +390,13 @@ function renderModelSettings() {
     temperature.value = String(p.temperature);
     maxTokens.value = String(p.maxTokens);
     maxAttempts.value = String(p.maxAttempts);
+    timeoutSec.value = String(Math.round((p.timeoutMs ?? 180000) / 1000));
   } else {
     id.value = 'default';
     temperature.value = '0.8';
     maxTokens.value = '4096';
     maxAttempts.value = '3';
+    timeoutSec.value = '180';
   }
 
   const saveBtn = el('button', 'btn btn--primary', '保存配置');
@@ -415,6 +421,7 @@ function renderModelSettings() {
         temperature: Number(temperature.value) || 0.8,
         maxTokens: Number(maxTokens.value) || 4096,
         maxAttempts: Number(maxAttempts.value) || 3,
+        timeoutMs: (Number(timeoutSec.value) || 180) * 1000,
       },
       apiKey: apiKey.value.length > 0 ? apiKey.value : null,
       useForAllSlots: true,
@@ -1126,8 +1133,9 @@ function renderAgent() {
   sumBox.append(el('h3', null, '摘要确认'));
   const sumMsg = el('div', 'form-msg');
   const sumRow = el('div', 'btn-row');
+  const sumGenBtn = el('button', 'btn btn--primary', '生成摘要');
   const sumRefreshBtn = el('button', 'btn', '刷新待确认');
-  sumRow.append(sumRefreshBtn);
+  sumRow.append(sumGenBtn, sumRefreshBtn);
   sumBox.append(sumRow, sumMsg);
   // 必须说明为什么需要确认
   sumBox.append(el('div', 'perm-line', '未确认的摘要不进检索（摘要是长程记忆的源头）'));
@@ -1158,6 +1166,41 @@ function renderAgent() {
       sumDetail.append(row);
     }
   }
+  sumGenBtn.addEventListener('click', async () => {
+    const c = firstCh();
+    if (!c) {
+      sumMsg.className = 'form-msg form-msg--err';
+      sumMsg.textContent = '还没有章节';
+      return;
+    }
+    sumGenBtn.disabled = true;
+    sumMsg.className = 'form-msg';
+    sumMsg.textContent = '正在生成摘要（会读完本章正文）…';
+    // ⚠ 生成为 _候选_，仍需在下方点「确认」才进检索
+    const r = await call('summary.generate', { chapterId: c.id });
+    sumGenBtn.disabled = false;
+    if (!r.ok) {
+      sumMsg.className = 'form-msg form-msg--err';
+      sumMsg.textContent = `${r.error.code}: ${r.error.message}`;
+      return;
+    }
+    const d = r.data;
+    if (!d.ok) {
+      sumMsg.className = 'form-msg form-msg--err';
+      sumMsg.textContent = `摘要生成失败：${d.error ? d.error.message : ''}`;
+      return;
+    }
+    sumMsg.className = 'form-msg form-msg--ok';
+    sumMsg.textContent = `摘要已生成（未确认，尚未进检索）：${d.summary.slice(0, 50)}…`;
+    sumDetail.replaceChildren();
+    sumDetail.append(el('div', 'issue-msg', d.summary));
+    if (d.endState) sumDetail.append(el('div', 'issue-src', `结束状态：${d.endState}`));
+    for (const f of d.keyFacts ?? []) {
+      sumDetail.append(el('div', 'issue-src', `· ${f}`));
+    }
+    await refreshPending();
+  });
+
   sumRefreshBtn.addEventListener('click', refreshPending);
 
   a.append(sumBox);

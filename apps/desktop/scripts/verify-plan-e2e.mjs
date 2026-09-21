@@ -18,7 +18,7 @@
  * 本脚本真实调用模型，检查产出里是否还有占位符。
  */
 import { app, utilityProcess, safeStorage } from 'electron';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -135,8 +135,14 @@ app.on('window-all-closed', () => {});
 app.setName('@nwa/desktop');
 app.setPath('userData', join(app.getPath('appData'), '@nwa/desktop'));
 
+// ⚠ 隔离目录：验证脚本不得污染用户真实项目（见 core-process 的说明）
+const ISOLATED_ROOT = join(app.getPath('temp'), 'nwa-verify-plan');
+mkdirSync(ISOLATED_ROOT, { recursive: true });
+process.env['NWA_PROJECTS_ROOT'] = ISOLATED_ROOT;
+
 app.whenReady().then(async () => {
   try {
+    // 模型配置从用户真实目录读（只读）
     const modelsJson = join(homedir(), 'NovelWriterProjects', 'models.json');
     if (!existsSync(modelsJson)) {
       rec('找到模型配置', false, '请先在桌面端「模型设置」保存');
@@ -159,13 +165,18 @@ app.whenReady().then(async () => {
       rec('找到项目', false, '项目目录里没有项目 —— 请先在界面里新建一个');
       return finish(1);
     }
-    const books = await call('book.list', { projectId });
-    const bookId = books.data?.books?.[0]?.id ?? books.data?.[0]?.id;
+    let books = await call('book.list', { projectId });
+    let bookId = books.data?.books?.[0]?.id ?? books.data?.[0]?.id;
     if (!bookId) {
-      rec('找到书', false, '还没有书 —— 请先在界面里新建一个');
+      const nb = await call('book.create', { projectId, title: '验证用书' });
+      bookId = nb.data?.id;
+      books = await call('book.list', { projectId });
+    }
+    if (!bookId) {
+      rec('准备书', false, JSON.stringify(books).slice(0, 150));
       return finish(1);
     }
-    rec('找到书', true, bookId);
+    rec('准备书', true, `${bookId}（隔离目录）`);
 
     // 取一章（已存在则复用）
     const list = await call('tool.invoke', {

@@ -14,6 +14,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -28,7 +29,12 @@ const child = spawn(
   {
     cwd: appRoot,
     shell: process.platform === 'win32',
-    env: { ...process.env, NWA_GUI_FLOW: '1' },
+    env: {
+      ...process.env,
+      NWA_GUI_FLOW: '1',
+      // ⚠ 隔离项目目录：GUI 流程验证会真实建书/建章，不得污染用户项目。
+      NWA_PROJECTS_ROOT: join(tmpdir(), 'nwa-verify-flow'),
+    },
     stdio: 'inherit',
   },
 );
