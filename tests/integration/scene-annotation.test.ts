@@ -25,7 +25,7 @@ import {
 } from '@nwa/distillation';
 import { SceneAnnotator } from '@nwa/distillation';
 import type { AnnotationStructuredCaller } from '@nwa/distillation';
-import { SceneSemanticSchema, SCENE_FUNCTIONS } from '@nwa/shared';
+import { SceneSemanticSchema, SceneAnnotationSchema, SCENE_FUNCTIONS } from '@nwa/shared';
 import { Logger } from '@nwa/core';
 
 const logger = new Logger('test:scene', { level: 'error' });
@@ -256,8 +256,6 @@ describe('场景切分（§18 六项依据）', () => {
 
 // ══════════════════════════════════════════════════════════
 describe('⚠ hook 容错（表述形式问题不该毁掉整个场景的标注）', () => {
-  const { SceneAnnotationSchema } = require('@nwa/shared') as typeof import('@nwa/shared');
-
   const BASE = {
     sceneId: 'sc1',
     characters: ['甲'],
