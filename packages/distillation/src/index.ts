@@ -1,10 +1,36 @@
 /**
- * @nwa/distillation —— Novel Distillation Engine
+ * @nwa/distillation —— Novel Distillation Engine（§15–§27）
  *
- * ⚠ **v1.0-MVP 仅骨架，不实现。** 硬门槛（ADR-0003）：
- *   在 STEP 11（Atomic Commit + Test D）通过之前，不得开始任何 NDE 相关实现。
+ * ## 现状
  *
- * 理由（研究报告 §7）：NDE / Skills / Corpus 在 4 个参考项目中**均无参考实现**，
- * 属于本项目的差异化空间，必须在地基稳定后自研。
+ * STEP 14（语料导入）已实现；STEP 15–17 进行中。
+ *
+ * ⚠ 曾经的硬门槛（ADR-0003）**已满足**：STEP 11 的 Atomic Commit + Test D
+ *   已通过（4 个 kill 注入点全过），因此 NDE 相关实现可以开始。
+ *   保留 `NDE_DEFERRED_UNTIL_STEP_11` 作为历史标记，其语义已从
+ *   "禁止实现"变为"门槛已解除"。
+ *
+ * ## 分层
+ *
+ * ```
+ * corpus/     STEP 14 —— 导入、规范化、章节识别、权限登记
+ * parse/      STEP 15 —— 场景切分、叙事标注
+ * mine/       STEP 16 —— 模式挖掘、跨作品对比、对比蒸馏
+ * skill/      STEP 17 —— 技能编译与校验
+ * ```
  */
-export const NDE_DEFERRED_UNTIL_STEP_11 = true;
+
+/** 历史标记：门槛已解除（STEP 11 的 Test D 4 个注入点全过） */
+export const NDE_DEFERRED_UNTIL_STEP_11 = false;
+
+// ── STEP 14：语料导入 ──────────────────────────────────────
+export { normalizeText, normalizeWithStrip, contentHash, textStats } from './corpus/normalize.js';
+export { stripBoilerplate } from './corpus/boilerplate.js';
+export type { StripResult } from './corpus/boilerplate.js';
+export type { TextStats } from './corpus/normalize.js';
+
+export { detectChapters, parseChineseNumber, declaredNumberOf } from './corpus/chapter-detect.js';
+export type { DetectedChapter, DetectResult, DetectStrategy } from './corpus/chapter-detect.js';
+
+export { CorpusImporter } from './corpus/import.js';
+export type { ImportOptions, ImportRequest, ImportResult } from './corpus/import.js';

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Novel Distillation Engine —— v1.0 仅骨架，不实现",
+  "description": "Novel Distillation Engine —— STEP 14+ 语料导入/解析/挖掘/技能编译",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -22,6 +22,7 @@
   "dependencies": {
     "@nwa/core": "workspace:*",
     "@nwa/shared": "workspace:*",
-    "zod": "^3.24.1"
+    "zod": "^3.24.1",
+    "@nwa/storage": "workspace:*"
   }
 }

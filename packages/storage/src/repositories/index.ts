@@ -14,6 +14,7 @@ import { EvidenceRepository } from './evidence.js';
 import { FactRepository } from './facts.js';
 import { RunRepository } from './runs.js';
 import { ForeshadowingRepository } from './foreshadowing.js';
+import { CorpusRepository } from './corpus.js';
 
 export interface Repositories {
   readonly projects: ProjectRepository;
@@ -25,6 +26,8 @@ export interface Repositories {
   readonly runs: RunRepository;
   /** 伏笔账目（§14 六态机）—— STEP 8 引入 */
   readonly foreshadowing: ForeshadowingRepository;
+  /** 语料库（§16/§45/§61）—— STEP 14 引入 */
+  readonly corpus: CorpusRepository;
 }
 
 export function createRepositories(db: Database): Repositories {
@@ -37,6 +40,7 @@ export function createRepositories(db: Database): Repositories {
     facts: new FactRepository(db),
     runs: new RunRepository(db),
     foreshadowing: new ForeshadowingRepository(db),
+    corpus: new CorpusRepository(db),
   };
 }
 
@@ -47,6 +51,14 @@ export { EvidenceRepository } from './evidence.js';
 export { FactRepository } from './facts.js';
 export { RunRepository } from './runs.js';
 export { ForeshadowingRepository, FORESHADOW_STATUSES, FORESHADOW_TIERS } from './foreshadowing.js';
+export { CorpusRepository, canProcess, PROCESSABLE_USAGE, CORPUS_SOURCE_TYPES, CORPUS_USAGE } from './corpus.js';
+export type {
+  CorpusDocumentRow,
+  CorpusSceneRow,
+  CorpusSourceType,
+  CorpusUsage,
+  RegisterDocumentInput,
+} from './corpus.js';
 export type { ForeshadowingRow, ForeshadowStatus, ForeshadowTier } from './foreshadowing.js';
 export type { ProjectRow, BookRow, CreateProjectInput } from './projects.js';
 export type { ChapterRow } from './chapters.js';

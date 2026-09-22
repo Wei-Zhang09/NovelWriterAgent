@@ -74,6 +74,9 @@ importers:
       '@nwa/shared':
         specifier: workspace:*
         version: link:../shared
+      '@nwa/storage':
+        specifier: workspace:*
+        version: link:../storage
       zod:
         specifier: ^3.24.1
         version: 3.24.1

@@ -24,9 +24,28 @@ export {
   EvidenceRepository,
   FactRepository,
   RunRepository,
+  ForeshadowingRepository,
+  CorpusRepository,
+} from './repositories/index.js';
+
+// ⚠ 语料库的许可判定是**代码强制的硬约束**（§61），
+//   因此把常量与判定函数一并导出，避免调用方各自复制一份判断逻辑。
+export {
+  canProcess,
+  PROCESSABLE_USAGE,
+  CORPUS_SOURCE_TYPES,
+  CORPUS_USAGE,
 } from './repositories/index.js';
 
 export type {
+  CorpusDocumentRow,
+  CorpusSceneRow,
+  CorpusSourceType,
+  CorpusUsage,
+  RegisterDocumentInput,
+  ForeshadowingRow,
+  ForeshadowStatus,
+  ForeshadowTier,
   ProjectRow,
   BookRow,
   CreateProjectInput,
