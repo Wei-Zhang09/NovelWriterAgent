@@ -176,19 +176,36 @@ export class PatternMiner {
     if (scenes.length === 0) return { patterns: [] };
 
     // 编号 → 真实 sceneId 的映射（只在这里建立，模型不碰 sceneId）
+    //
+    // ⚠ 作品用**字母代号**（甲/乙/丙）而非 document_id —— 让模型能看出
+    //   "哪些场景来自不同作品"，从而判断某手法是跨作品共性
+    //   还是单部作品的习惯。给内部 id 会让它倾向于忽略这个区别。
     const indexToId = new Map<string, string>();
+    const docLabel = new Map<string, string>();
+    const docSeq = ['甲', '乙', '丙', '丁', '戊', '己'];
+    for (const sc of scenes) {
+      if (!docLabel.has(sc.document_id)) {
+        docLabel.set(sc.document_id, docSeq[docLabel.size] ?? `作${docLabel.size + 1}`);
+      }
+    }
+    const docCount = docLabel.size;
+
     const blocks: string[] = [];
     for (let i = 0; i < scenes.length; i++) {
       const key = `S${i + 1}`;
       indexToId.set(key, scenes[i]!.id);
       const text = textOf(scenes[i]!).slice(0, this.maxSceneChars);
+      const label = docLabel.get(scenes[i]!.document_id)!;
       blocks.push(
-        `【${key}】作品：${scenes[i]!.document_id}｜第 ${scenes[i]!.chapter_number ?? '?'} 章\n${text}`,
+        `【${key}】作品${label}｜第 ${scenes[i]!.chapter_number ?? '?'} 章\n${text}`,
       );
     }
 
     const hint = FUNCTION_HINT[sceneFunction] ?? sceneFunction;
-    const genreLine = genre ? `这些场景全部来自「${genre}」类作品。` : '';
+    const genreLine = genre
+      ? `这些场景来自「${genre}」类作品，共 ${docCount} 部不同的作品` +
+        `（标注为作品${[...docLabel.values()].join('、')}）。`
+      : `这些场景来自 ${docCount} 部不同的作品。`;
 
     const prompt = [
       `以下是一批**同一叙事任务**（${hint}）的场景片段，来自真实出版/发表的作品。`,
@@ -205,12 +222,20 @@ export class PatternMiner {
       '4. `boundary` 必须写出**什么时候不该用** —— 这是防滥用的关键。',
       '5. `scope` 判断：跨类型都成立的叙事原理填 UNIVERSAL；',
       `   只在「${genre ?? '本类型'}」成立、换个类型就不合理的填 GENRE。`,
+      docCount >= 2
+        ? `   ⚠ 特别注意：这批场景来自 ${docCount} 部**不同**作品。` +
+          '若某手法只出现在同一部作品的场景里（证据编号都属同一作品），' +
+          '它更可能是该作者的个人习惯，请把它填 GENRE 或降低 confidence；' +
+          '只有**跨作品都出现**的手法才配 UNIVERSAL。'
+        : '',
       '6. 若这批场景里**没有**明显的共性手法，返回空数组 —— ',
       '   不要为了交差硬凑。空结果比编造的模式有价值。',
       '',
       '场景：',
       ...blocks,
-    ].join('\n');
+    ]
+      .filter((x) => x !== '')
+      .join('\n');
 
     try {
       const res = await this.structured({
@@ -316,7 +341,9 @@ export class PatternMiner {
     let done = 0;
 
     for (const [fn, all] of groups) {
-      const sampled = sampleEvenly(all, this.scenesPerGroup);
+      // ⚠ 分层抽样：保证每部作品都有代表，否则跨作品证据会被抽样抹掉，
+      //   导致模式被错误降档为 STYLE（虚假的"证据不足"）
+      const sampled = sampleStratifiedByDocument(all, this.scenesPerGroup);
       const r = await this.mineGroup({
         scenes: sampled,
         sceneFunction: fn,
@@ -356,6 +383,67 @@ export function sampleEvenly<T>(items: readonly T[], n: number): T[] {
     out.push(items[Math.floor(i * step)]!);
   }
   return out;
+}
+
+/**
+ * ⚠ 按来源作品**分层**抽样（跨作品分析的前提）。
+ *
+ * ## 为什么必须分层
+ *
+ * `sourceDocumentIds` 是从**送给模型的样本**里算出来的，它决定了
+ * 这条模式算"类型规律"还是"作者风格"（见 resolveScope）。
+ *
+ * 若只用 `sampleEvenly`：某组有 2 部作品各 100 个场景，抽 8 个时
+ * **可能 8 个全来自同一部**（尤其两部作品场景数悬殊时）。
+ * 后果：这条模式明明有跨作品证据，却被降档为 STYLE ——
+ * **虚假的"证据不足"**，让跨作品分析白做。
+ *
+ * 实测数据形态：`CHARACTER_DEVELOPMENT` 在《百岁之好》67 个场景，
+ * 在《清纯校花》里更多 —— 两部作品场景数悬殊，均匀抽样很容易全落在一部。
+ *
+ * ## 做法
+ *
+ * 先按作品分组，每部作品内均匀抽 `n / 作品数` 个（至少 1 个），
+ * 再按原始顺序合并 —— 保证**每部作品都有代表**。
+ * 若某部作品场景太少，余额由场景多的作品补齐（不硬凑重复）。
+ */
+export function sampleStratifiedByDocument<T extends { readonly document_id: string }>(
+  items: readonly T[],
+  n: number,
+): T[] {
+  if (items.length <= n) return [...items];
+
+  const byDoc = new Map<string, T[]>();
+  for (const it of items) {
+    if (!byDoc.has(it.document_id)) byDoc.set(it.document_id, []);
+    byDoc.get(it.document_id)!.push(it);
+  }
+
+  // 单一作品：退化为均匀抽样
+  if (byDoc.size === 1) return sampleEvenly(items, n);
+
+  const perDoc = Math.max(1, Math.floor(n / byDoc.size));
+  const picked: T[] = [];
+  const leftovers: T[] = [];
+
+  for (const group of byDoc.values()) {
+    const take = sampleEvenly(group, Math.min(perDoc, group.length));
+    picked.push(...take);
+    const taken = new Set(take);
+    leftovers.push(...group.filter((x) => !taken.has(x)));
+  }
+
+  // 余额（因某部作品不足而剩下的名额）从其余场景里均匀补
+  const shortfall = n - picked.length;
+  if (shortfall > 0 && leftovers.length > 0) {
+    picked.push(...sampleEvenly(leftovers, shortfall));
+  }
+
+  // 按原始顺序返回，便于模型看到连贯的上下文
+  const order = new Map(items.map((x, i) => [x, i]));
+  return picked
+    .sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0))
+    .slice(0, n);
 }
 
 /** 模式 → 落库行（供仓储写入） */

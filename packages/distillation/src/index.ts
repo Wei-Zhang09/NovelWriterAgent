@@ -53,6 +53,7 @@ export {
   PatternMiner,
   MinedPatternSchema,
   sampleEvenly,
+  sampleStratifiedByDocument,
   toPatternRow,
   discountBySample,
 } from './mine/pattern-miner.js';
