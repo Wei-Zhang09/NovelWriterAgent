@@ -27,6 +27,8 @@ export { createPlanTools } from './tools/plan-tools.js';
 export { createContinuityTools } from './tools/continuity-tools.js';
 export { createReviewTools } from './tools/review-tools.js';
 export { createFactTools } from './tools/fact-tools.js';
+export { createCharacterTools } from './tools/character-tools.js';
+export { createBookTools } from './tools/book-tools.js';
 export { createCommitTools } from './tools/commit-tools.js';
 export type { AnyToolDefinition } from '@nwa/shared';
 

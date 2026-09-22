@@ -12,6 +12,8 @@ import { createPlanTools } from './plan-tools.js';
 import { createContinuityTools } from './continuity-tools.js';
 import { createReviewTools } from './review-tools.js';
 import { createFactTools } from './fact-tools.js';
+import { createCharacterTools } from './character-tools.js';
+import { createBookTools } from './book-tools.js';
 import { createCommitTools } from './commit-tools.js';
 import {
   ChapterSchema,
@@ -246,6 +248,10 @@ export function createAllTools(
     ...createReviewTools(repos),
     // STEP 9：事实与证据（fact.* / evidence.*）
     ...createFactTools(repos, { resolveBookId }),
+    // STEP 20：角色（§52 Test A 的 add character）
+    ...createCharacterTools(repos),
+    // STEP 20：书目（⚠ 此前只有 IPC 没有工具，导致建书这一步断链）
+    ...createBookTools(repos),
     // STEP 11：原子提交（workspace.*）【MVP 门槛】—— 权限 COMMIT 级
     ...(opts?.commit
       ? createCommitTools({
