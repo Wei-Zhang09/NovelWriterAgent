@@ -306,10 +306,10 @@ app.whenReady().then(async () => {
           `第 ${n} 章改稿`,
           rvd.ok === true,
           rvd.ok
-            ? `改 ${rvd.revisedCount}/${rvd.totalTargets} 处（${rvd.deltaChars >= 0 ? '+' : ''}${rvd.deltaChars} 字）`
+            ? `应用 ${rvd.appliedEdits} 条替换（拒 ${rvd.rejectedEdits}）｜${rvd.deltaChars >= 0 ? '+' : ''}${rvd.deltaChars} 字`
             : `${rvd.error?.code}：${String(rvd.error?.message ?? '').slice(0, 100)}`,
         );
-        if (rvd.ok && rvd.revisedCount > 0) {
+        if (rvd.ok && rvd.appliedEdits > 0) {
           // ⚠ 改完必须重新审稿 —— 改稿可能引入新问题
           const redo = await call('review.run', { chapterId }, 300_000);
           const rdd = redo.ok ? (redo.data ?? {}) : {};

@@ -991,14 +991,9 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     }
 
     const reviser = new Reviser({
-      complete: async (req) => {
-        const r = await p.runtime!.completeText('writer', {
-          messages: req.messages.map((m) => ({ role: m.role, content: m.content })),
-          temperature: req.temperature ?? 0.3,
-          maxTokens: req.maxTokens ?? 4096,
-        });
-        return { text: r.text, usage: { inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens } };
-      },
+      // 改稿走结构化输出（替换指令），由 Reviser 程序化应用 ——
+      // 这样模型无法触碰它没明确引用的文字（"改稿毁稿"的机制防线）
+      structured: (req) => p.runtime!.structured('writer', req),
       workspace: ws,
       logger: logger.child('reviser'),
     });
@@ -1015,15 +1010,15 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
 
     return {
       ok: true,
-      revisedCount: res.outcomes.filter((o) => o.revised).length,
+      appliedEdits: res.appliedEdits,
+      rejectedEdits: res.rejectedEdits,
       totalTargets: res.outcomes.length,
       deltaChars: res.deltaChars ?? 0,
       totalChars: res.totalChars ?? 0,
       outcomes: res.outcomes.map((o) => ({
         severity: o.severity,
         category: o.category,
-        revised: o.revised,
-        note: o.note,
+        applied: o.applied,
         skippedReason: o.skippedReason ?? null,
       })),
       // ⚠ 明确标注：改完必须重新审稿
