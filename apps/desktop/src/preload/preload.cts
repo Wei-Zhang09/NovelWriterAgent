@@ -10,12 +10,15 @@ const IPC_CHANNELS = {
   appInfo: 'nwa:app-info',
   coreEvent: 'nwa:core-event',
   coreExited: 'nwa:core-exited',
+  pickFile: 'nwa:pickFile',
 } as const;
 
 const api = {
   invoke: (method: string, params?: unknown) =>
     ipcRenderer.invoke(IPC_CHANNELS.invoke, { method, params }),
   appInfo: () => ipcRenderer.invoke(IPC_CHANNELS.appInfo),
+  /** 选择语料文件（§16 导入入口）—— 返回绝对路径或 null（用户取消） */
+  pickFile: (): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.pickFile),
   onCoreEvent: (cb: (payload: unknown) => void) => {
     const listener = (_e: unknown, payload: unknown) => cb(payload);
     ipcRenderer.on(IPC_CHANNELS.coreEvent, listener);

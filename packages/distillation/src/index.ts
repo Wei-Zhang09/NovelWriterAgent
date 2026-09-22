@@ -99,3 +99,11 @@ export type {
 
 export { CorpusImporter } from './corpus/import.js';
 export type { ImportOptions, ImportRequest, ImportResult } from './corpus/import.js';
+
+// ── 导入入口（STEP 22 补：产品层的导入能力，此前只在验证脚本里）──
+export { importCorpusFile, corpusOverview, documentsDir, documentChaptersDir } from './corpus/import-entry.js';
+export type {
+  ImportCorpusOptions,
+  ImportCorpusRequest,
+  ImportCorpusResult,
+} from './corpus/import-entry.js';

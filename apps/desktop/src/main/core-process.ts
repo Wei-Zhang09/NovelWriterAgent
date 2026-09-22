@@ -11,7 +11,7 @@
  *   STEP 3  挂载 Model Gateway
  *   STEP 4  挂载 Agent Runtime / Workflow / Event Bus
  */
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { Logger, AppError, ErrorCode, bookId, type ErrorCodeValue } from '@nwa/core';
@@ -19,6 +19,7 @@ import {
   CorpusRepository,
   Database,
   MIGRATIONS,
+  canProcess,
   createRepositories,
   filterSkillsByGenre,
   normalizeGenre,
@@ -61,6 +62,9 @@ import {
   SkillCompiler,
   SkillStore,
   analyzeCrossWork,
+  corpusOverview,
+  documentChaptersDir,
+  importCorpusFile,
   planDeprecations,
   segmentScenes,
 } from '@nwa/distillation';
@@ -409,15 +413,22 @@ function corpusRoot(): string {
 function corpusRepo(): CorpusRepository {
   if (!corpusHandle) {
     const dbPath = join(corpusRoot(), 'corpus.db');
-    if (!existsSync(dbPath)) {
-      throw new AppError(
-        ErrorCode.STORAGE_QUERY_FAILED,
-        `语料库不存在：${dbPath}（请先导入语料，或设 NWA_CORPUS_ROOT）`,
-      );
-    }
+
+    // ⚠ **不存在就创建**，而不是报错。
+    //
+    //   原实现遇到不存在的库直接抛错，理由是"先导入语料"—— 但这就成了
+    //   死循环：**导入语料正是要往这个库里写**。全新安装的用户第一次
+    //   点「导入」必然失败，报"语料库不存在，请先导入语料"。
+    //
+    //   实测：verify:corpus-import 在干净沙盒里第一步就撞上这个。
+    //   这与"首次使用无法创建项目"是同一类问题 —— 初始化路径不能
+    //   依赖已经初始化完成。
+    //
+    //   `Database` 构造会跑迁移（migrate），因此首次创建即得到完整表结构。
+    mkdirSync(dirname(dbPath), { recursive: true });
     const db = new Database({ path: dbPath, migrations: MIGRATIONS });
     corpusHandle = { db, repo: new CorpusRepository(db) };
-    logger.info('已打开语料库', { path: dbPath });
+    logger.info(existsSync(dbPath) ? '已打开语料库' : '已创建语料库', { path: dbPath });
   }
   return corpusHandle.repo;
 }
@@ -1723,7 +1734,27 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     }
     const root = params.corpusRoot ?? 'C:/Users/zw/NovelWriterCorpus';
     const doc = corpusRepo().get(params.documentId);
-    const chDir = join(root, 'documents', params.documentId, 'chapters');
+
+    // ⚠ §61 强制：许可不明的语料**不得进入自动处理链**。
+    //
+    //   实测发现：`canProcess` / `PROCESSABLE_USAGE` 定义在仓储层，
+    //   但**全仓无任何调用** —— 也就是说"UNKNOWN 禁止进自动链"此前
+    //   只写在文档与 register 的入参校验里，**运行时没有强制**。
+    //   已登记为 RETRIEVAL_ONLY 的语料照样能被标注/挖掘/编译。
+    //
+    //   这里补上运行时闸门（这是"定义了却没接线"的第 5 次出现）。
+    if (!canProcess(doc, 'DISTILLATION_ONLY')) {
+      throw new AppError(
+        ErrorCode.TOOL_VALIDATION_ERROR,
+        `语料「${doc.title}」的许可为 ${doc.allowed_usage}，不允许进入自动蒸馏链。` +
+          '§61 要求：许可不明（UNKNOWN）或仅限检索的内容不得用于分析/蒸馏。' +
+          '若你确认有权分析该文本，请重新导入并登记正确的许可。',
+      );
+    }
+
+    // ⚠ 用集中提供的路径函数，不自己拼 —— 自己拼会与导入端不一致
+    //   （实测 bug：导入写 <root>/<docId>/，标注读 <root>/documents/<docId>/）
+    const chDir = documentChaptersDir(root, params.documentId);
     if (!existsSync(chDir)) {
       throw new AppError(
         ErrorCode.TOOL_VALIDATION_ERROR,
@@ -1776,6 +1807,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     });
     const persister = new ScenePersister({
       repo: corpusRepo(),
+      // ⚠ 与导入端同一根：ScenePersister 内部拼 documents/<id>/scenes
       corpusRoot: root,
       logger: logger.child('persist'),
     });
@@ -1908,6 +1940,22 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const repo = corpusRepo();
     const root = corpusRoot();
     const all = repo.listAnnotatedScenesByGenre(params.genre ?? null);
+
+    // ⚠ 同 annotate：挖掘也属自动处理链，逐个文档校验许可（§61）
+    const blocked = [
+      ...new Set(
+        all
+          .map((sc) => repo.get(sc.document_id))
+          .filter((d) => !canProcess(d, 'DISTILLATION_ONLY'))
+          .map((d) => `${d.title}(${d.allowed_usage})`),
+      ),
+    ];
+    if (blocked.length > 0 && blocked.length === new Set(all.map((x) => x.document_id)).size) {
+      throw new AppError(
+        ErrorCode.TOOL_VALIDATION_ERROR,
+        `全部语料都不允许进入自动蒸馏链：${blocked.join('、')}（§61）`,
+      );
+    }
 
     if (all.length === 0) {
       throw new AppError(
@@ -2207,6 +2255,142 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       throw new AppError(ErrorCode.STORAGE_QUERY_FAILED, `技能不存在：${params.skillId}`);
     }
     return { skillId: params.skillId, status: params.status };
+  },
+
+  /**
+   * 语料库概览（§16）—— 有哪些语料、各自能否进蒸馏链。
+   *
+   * ⚠ 必须显示 `processable`：许可不明（UNKNOWN）的语料只能检索、
+   *   不能蒸馏（§61）。不显示的话，用户会在标注失败时莫名其妙。
+   */
+  'corpus.overview': () => corpusOverview(corpusRepo()),
+
+  /**
+   * 导入一份语料（§16 / §58 / §61）。
+   *
+   * ⚠ 这是此前**完全缺失**的产品能力 —— 导入只存在于验证脚本
+   *   （`verify-books.mjs` 硬编码书单），用户无法导入自己的小说。
+   *
+   * 用户选择：允许 UNKNOWN 许可导入但弹提示 → 自动降级为
+   * RETRIEVAL_ONLY（可检索、不可蒸馏），并在返回里给出 licenseWarning。
+   */
+  'corpus.import': (params: {
+    filePath: string;
+    title?: string;
+    author?: string | null;
+    genre?: string | null;
+    subgenre?: string | null;
+    licenseType?: string;
+    sourceType?: string;
+    allowedUsage?: string;
+    licenseBasis?: string;
+    clean?: boolean;
+  }) => {
+    const r = importCorpusFile(
+      { repo: corpusRepo(), corpusRoot: corpusRoot(), logger: logger.child('corpus') },
+      params,
+    );
+    if (!r.ok) {
+      throw new AppError(
+        ErrorCode.TOOL_VALIDATION_ERROR,
+        r.error?.message ?? '导入失败',
+      );
+    }
+    logger.info('语料已导入', {
+      title: r.title,
+      chapters: r.chapterCount,
+      licenseWarning: Boolean(r.licenseWarning),
+    });
+    return r;
+  },
+
+  /**
+   * 一键跑完整条蒸馏链：导入 → 标注 → 挖掘 → 编译技能。
+   *
+   * ⚠ 用户明确要求"全程进度可见"。因此：
+   *   - 每阶段通过 `onProgress` 回报（UI 侧轮询或监听日志）
+   *   - **逐阶段记录结果**，任一阶段失败时返回**已完成到哪一步**
+   *     （而不是一个笼统的失败）—— 长任务失败后能续跑，不白跑
+   *   - 标注阶段沿用既有的断点续跑（已标注章节会跳过）
+   *
+   * ⚠ 会消耗大量模型额度（标注按场景计费）。调用方应先用小章节数验证。
+   */
+  'corpus.distill': async (params: {
+    documentId: string;
+    genre?: string | null;
+    /** 最多标注多少章（先小量验证用；不传=全部） */
+    maxChapters?: number;
+    /** 是否继续挖矿与编译技能（默认 true） */
+    runMining?: boolean;
+    /** 是否继续编译技能（默认 true） */
+    runCompile?: boolean;
+  }) => {
+    const p = requireProject();
+    if (!p.runtime) {
+      throw new AppError(ErrorCode.MODEL_AUTH_FAILED, '尚未配置模型，无法蒸馏');
+    }
+    const repo = corpusRepo();
+    const root = corpusRoot();
+    const stages: {
+      stage: string;
+      ok: boolean;
+      detail?: string;
+      data?: unknown;
+    }[] = [];
+
+    // ⚠ `handlers` 是异构表（每个 handler 入参类型不同），互调时需放宽类型。
+    //   用局部宽松别名，而不是把整张表标成 any —— 后者会让**所有**
+    //   handler 失去类型检查。
+    const callHandler = handlers as unknown as Record<
+      string,
+      (p: unknown) => Promise<unknown>
+    >;
+
+    // ── 阶段 1：标注（含许可闸门，annotate.persistDocument 内部已校验）──
+    try {
+      const ann = await callHandler['annotate.persistDocument']!({
+        documentId: params.documentId,
+        corpusRoot: root,
+        ...(params.maxChapters !== undefined ? { maxChapters: params.maxChapters } : {}),
+      });
+      stages.push({ stage: 'annotate', ok: true, data: ann });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      stages.push({ stage: 'annotate', ok: false, detail: msg });
+      // ⚠ 标注失败就**停在这里**，不继续挖掘 —— 没有标注数据，
+      //   挖掘只会产出垃圾，白耗额度。
+      return { ok: false, stages, stoppedAt: 'annotate' };
+    }
+
+    const genre = params.genre ?? null;
+
+    // ── 阶段 2：挖掘 ──
+    if (params.runMining !== false) {
+      try {
+        const m = await callHandler['mine.run']!({ genre, maxGroups: 0 });
+        stages.push({ stage: 'mine', ok: true, data: m });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        stages.push({ stage: 'mine', ok: false, detail: msg });
+        return { ok: false, stages, stoppedAt: 'mine' };
+      }
+    }
+
+    // ── 阶段 3：编译技能 ──
+    if (params.runCompile !== false) {
+      try {
+        const c = await callHandler['skill.compile']!({ genre });
+        stages.push({ stage: 'compile', ok: true, data: c });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        stages.push({ stage: 'compile', ok: false, detail: msg });
+        return { ok: false, stages, stoppedAt: 'compile' };
+      }
+    }
+
+    const progress = repo.annotationProgress(params.documentId);
+    logger.info('蒸馏链完成', { documentId: params.documentId, progress });
+    return { ok: true, stages, progress };
   },
 
   /**

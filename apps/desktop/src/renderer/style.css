@@ -263,3 +263,18 @@ body {
 .panel-group > .form--rail + .form--rail {
   border-top: 1px dashed var(--border);
 }
+
+/* ── 语料导入与蒸馏面板（§16 / §58 / §61） ─────────────────── */
+.corpus-fields { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.corpus-field-row { display: flex; align-items: center; gap: 6px; }
+.corpus-field-row > span { min-width: 40px; flex: 0 0 auto; }
+.corpus-field-row > .input { flex: 1 1 auto; min-width: 0; }
+
+/* 技能/语料条目的分隔，避免多条挤在一起看不清边界 */
+.skill-row {
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
+  margin-top: 6px;
+}
+.skill-row:first-child { border-top: none; padding-top: 0; margin-top: 0; }
+.skill-name { font-weight: 600; font-size: 12px; margin-bottom: 2px; }

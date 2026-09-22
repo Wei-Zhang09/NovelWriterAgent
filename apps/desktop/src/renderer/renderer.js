@@ -10,6 +10,7 @@
  * 因此章节状态直接来自 DB 行，而非任何「任务进度」字段。
  */
 import { renderSkillPanel, renderBackupPanel } from './panels.js';
+import { renderCorpusPanel } from './corpus-panel.js';
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => {
@@ -1505,6 +1506,13 @@ function renderAgent() {
   //   只能靠 verify 脚本调用。对用户而言"后端有、界面没有" = 没有。
   const skillMsg = el('div', 'form-msg');
   g2.append(renderSkillPanel({ el, state, invoke: call, msg: skillMsg }));
+
+  // ── 语料导入与蒸馏（§16 §58 §61）──
+  //
+  // ⚠ 此前**完全没有这个入口** —— 导入只存在于 verify-books.mjs
+  //   （硬编码书单），用户无法导入自己的小说。
+  const corpusMsg = el('div', 'form-msg');
+  g2.append(renderCorpusPanel({ el, invoke: call, msg: corpusMsg }));
 
   const backupMsg = el('div', 'form-msg');
   g3.append(renderBackupPanel({ el, invoke: call, msg: backupMsg }));

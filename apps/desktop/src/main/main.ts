@@ -8,7 +8,15 @@
  * 理由（施工文档 §66）：单章长任务「允许几十分钟级」，
  * 若在主进程执行会阻塞 IPC 与窗口事件响应。
  */
-import { app, BrowserWindow, ipcMain, safeStorage, utilityProcess, type UtilityProcess } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  safeStorage,
+  utilityProcess,
+  type UtilityProcess,
+} from 'electron';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
@@ -752,6 +760,26 @@ function registerIpc(): void {
       core!.postMessage({ kind: 'request', requestId, method: request.method, params: request.params });
     });
     return result;
+  });
+
+  /**
+   * 选择语料文件（§16 导入入口）。
+   *
+   * ⚠ 文件对话框必须在**主进程**执行（`dialog` 是主进程 API），
+   *   而 core 进程负责业务 —— 所以这里单独一个通道，
+   *   不塞进通用的 `INVOKE` 路由。
+   */
+  ipcMain.handle('nwa:pickFile', async () => {
+    if (!win) return null;
+    const r = await dialog.showOpenDialog(win, {
+      title: '选择要导入的小说',
+      properties: ['openFile'],
+      filters: [
+        { name: '文本文件', extensions: ['txt', 'md'] },
+        { name: '全部文件', extensions: ['*'] },
+      ],
+    });
+    return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0];
   });
 
   ipcMain.handle(IPC.APP_INFO, () => ({
