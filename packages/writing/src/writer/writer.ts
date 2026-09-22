@@ -23,6 +23,8 @@
 import { ErrorCode, Logger, type Nullable } from '@nwa/core';
 import type { PlanOutput, ScenePlan, ChapterBrief } from '@nwa/shared';
 import type { ChapterWorkspace } from '@nwa/story';
+import type { SkillRow } from '@nwa/storage';
+import type { SkillEngine, SkillSelection } from '../skills/engine.js';
 
 /**
  * 纯文本补全调用（与 gateway 解耦的接口）。
@@ -53,6 +55,20 @@ export interface WriterOptions {
    * 全文塞回去会挤占本场景的生成空间。
    */
   readonly tailChars?: number;
+  /**
+   * Skill Engine（§25）。不传则不注入技能 ——
+   * ⚠ 与"传了但检索为空"是**不同**的情况，日志里要能区分。
+   */
+  readonly skillEngine?: SkillEngine;
+  /**
+   * 技能库（来自 `CorpusRepository.listSkills()`）。
+   *
+   * ⚠ 每次 draft 时读取而非缓存：技能可被人工下架（DEPRECATED），
+   *   缓存会让"刚下架的技能又被用上"。
+   */
+  readonly skillRows?: readonly SkillRow[];
+  /** 写什么类型的小说（技能检索的类型隔离依据，§21） */
+  readonly genre?: string | null;
 }
 
 /** 单场景生成结果 */
@@ -91,6 +107,9 @@ export class Writer {
   private readonly logger: Logger;
   private readonly wordsPerScene: number;
   private readonly tailChars: number;
+  private readonly skillEngine?: SkillEngine;
+  private readonly skillRows: readonly SkillRow[];
+  private readonly genre: string | null;
 
   constructor(opts: WriterOptions) {
     this.complete = opts.complete;
@@ -98,6 +117,9 @@ export class Writer {
     this.logger = opts.logger;
     this.wordsPerScene = opts.wordsPerScene ?? 1200;
     this.tailChars = opts.tailChars ?? 600;
+    this.skillEngine = opts.skillEngine;
+    this.skillRows = opts.skillRows ?? [];
+    this.genre = opts.genre ?? null;
   }
 
   /**
@@ -123,20 +145,52 @@ export class Writer {
     let inputTokens = 0;
     let outputTokens = 0;
 
+    // ⚠ 技能检索的统计：把"用了哪些技能"落进工作区，
+    //   否则事后无法回答"这段为什么这样写"（§46 可追溯）
+    const skillUsage: {
+      sceneIndex: number;
+      sceneId: string;
+      sceneFunction: string | null;
+      selected: { id: string; name: string; score: number; truncated: boolean }[];
+      rejectedCount: number;
+      blockChars: number;
+    }[] = [];
+
     for (let i = 0; i < scenes.length; i++) {
       const scene = scenes[i]!;
       // 只取已生成正文的尾部 —— 保持衔接，又不挤占本场景配额
       const previousTail = done.length > 0 ? tail(done[done.length - 1]!.text, this.tailChars) : null;
 
+      // ── §25 Skill Engine 检索：为**这个场景**选 Top-N 技能 ──
+      const sel = this.selectSkills(scene, i);
+      skillUsage.push({
+        sceneIndex: i,
+        sceneId: scene.sceneId,
+        sceneFunction: scene.sceneFunction ?? null,
+        selected: sel.selected.map((x) => ({
+          id: x.skill.id,
+          name: x.skill.name,
+          score: Math.round(x.score * 100) / 100,
+          truncated: x.truncated,
+        })),
+        rejectedCount: sel.rejected.length,
+        blockChars: sel.block.length,
+      });
+
+      const messages: { role: 'system' | 'user'; content: string }[] = [
+        { role: 'system', content: buildSystemPrompt(plan.brief) },
+        // 把结构化约束逐条列出，而不是让模型去"读计划"
+        { role: 'system', content: buildConstraintBlock(plan.brief, scene, i, scenes.length) },
+      ];
+      // ⚠ 技能块放在约束之后、任务之前：它是"怎么写"的建议，
+      //   排在"写什么"的约束之后才不会被当成硬性要求
+      if (sel.block) messages.push({ role: 'system', content: sel.block });
+      messages.push({ role: 'user', content: buildSceneTask(scene, previousTail, this.wordsPerScene) });
+
       let res: { text: string; usage?: { inputTokens: number; outputTokens: number } };
       try {
         res = await this.complete({
-          messages: [
-            { role: 'system', content: buildSystemPrompt(plan.brief) },
-            // 把结构化约束逐条列出，而不是让模型去"读计划"
-            { role: 'system', content: buildConstraintBlock(plan.brief, scene, i, scenes.length) },
-            { role: 'user', content: buildSceneTask(scene, previousTail, this.wordsPerScene) },
-          ],
+          messages,
           maxTokens: Math.ceil(this.wordsPerScene * 2.2), // 中文 1 字 ≈ 1.5-2 token，留余量
           temperature: 0.85,
         });
@@ -173,6 +227,14 @@ export class Writer {
 
     // 同时把计划与场景划分落进工作区，便于回溯"这段为什么这样写"
     this.workspace.writeJson('plan', plan);
+    // ⚠ 技能使用记录：把"哪个场景用了哪些技能、为什么"落盘（§46 可追溯）
+    this.workspace.writeJson('skillUsage', {
+      chapterNumber: plan.brief.chapterNumber,
+      genre: this.genre,
+      availableSkills: this.skillRows.length,
+      scenes: skillUsage,
+      totalBlockChars: skillUsage.reduce((n, x) => n + x.blockChars, 0),
+    });
     this.workspace.writeJson('scenePlan', {
       chapterNumber: plan.brief.chapterNumber,
       scenes: done.map((d, i) => ({
@@ -202,6 +264,50 @@ export class Writer {
         draftPath,
       },
     };
+  }
+
+  /**
+   * §25：为一个场景检索 Top-N 技能。
+   *
+   * ⚠ 没配 Skill Engine 或技能库为空时返回空块 ——
+   *   Writer 必须能在"没有技能"的情况下正常工作（离线/未蒸馏）。
+   *   技能是**增强**不是前置依赖。
+   */
+  private selectSkills(scene: ScenePlan, index: number): SkillSelection {
+    const empty: SkillSelection = { selected: [], rejected: [], block: '', considered: 0 };
+    if (!this.skillEngine || this.skillRows.length === 0) return empty;
+
+    try {
+      const sel = this.skillEngine.retrieve(this.skillRows, {
+        sceneFunction: scene.sceneFunction ?? null,
+        genre: this.genre,
+        // 情感强度目前从 emotionalCurve 无法可靠推断 —— 传 null 让引擎
+        // 跳过该维度，而不是猜一个值（猜出来的分数不可复现）
+        emotionIntensity: null,
+        pov: scene.pov || null,
+      });
+
+      // ⚠ 逐场景记录检索结果（含**落选**原因）——
+      //   "某技能从未被用到"必须能查出原因，不能靠猜。
+      this.logger.info('技能检索', {
+        sceneIndex: index,
+        sceneId: scene.sceneId,
+        sceneFunction: scene.sceneFunction ?? null,
+        considered: sel.considered,
+        selected: sel.selected.map((x) => `${x.skill.name}(${x.score.toFixed(2)})`),
+        rejected: sel.rejected.length,
+      });
+
+      return sel;
+    } catch (e) {
+      // ⚠ 检索失败不阻断写作 —— 技能是增强，不该让整章生成失败。
+      //   但要如实记录（否则"技能没生效"会变成查不出的现象）。
+      this.logger.warn('技能检索失败（本场景不注入技能）', {
+        sceneIndex: index,
+        error: e instanceof Error ? e.message : String(e),
+      });
+      return empty;
+    }
   }
 
   /** 失败时保留已完成场景，便于续写与排查 */

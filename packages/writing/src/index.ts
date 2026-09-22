@@ -14,6 +14,18 @@ export * from './prompts/index.js';
 // ── Planner（STEP 6） ───────────────────────────────────────
 export { Planner } from './planner/planner.js';
 export { Writer, assembleChapter, extractDeviations, stripDeviationNotes } from './writer/writer.js';
+
+// ── Skill Engine（STEP 18 / §25） ──────────────────────────
+//
+// ⚠ 引擎在 writing 而非 distillation：技能的**生产**（挖掘+编译）是离线链路，
+//   技能的**使用**只需要读 storage。运行时不该拖进整条蒸馏链路。
+export { SkillEngine, parseSkillRow, renderSkill } from './skills/engine.js';
+export type {
+  SceneContext,
+  SkillEngineOptions,
+  SelectedSkill,
+  SkillSelection,
+} from './skills/engine.js';
 export { Reviewer } from './reviewer/reviewer.js';
 export { Reviser } from './reviser/reviser.js';
 export { RevisionEditSchema, RevisionOutputSchema } from './reviser/reviser.js';

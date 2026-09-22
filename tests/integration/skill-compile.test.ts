@@ -207,7 +207,7 @@ describe('⚠ 近重复去重（技能名跨运行不稳定）', () => {
     ]);
     expect(kept.length).toBe(1);
     expect(dropped.length).toBe(1);
-    expect(dropped[0]!.similarity).toBeGreaterThanOrEqual(0.45);
+    expect(dropped[0]!.similarity).toBeGreaterThanOrEqual(0.4);
   });
 
   it('⚠ 被丢弃的如实记录（不静默吞）', () => {

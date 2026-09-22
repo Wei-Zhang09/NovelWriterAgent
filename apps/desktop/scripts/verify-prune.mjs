@@ -30,7 +30,7 @@ function arg(name, fallback) {
 }
 const APPLY = process.argv.includes('--apply');
 const GENRE = arg('genre', '都市');
-const THRESHOLD = Number(arg('threshold', '0.45'));
+const THRESHOLD = Number(arg('threshold', '0.40'));
 
 let child = null;
 let seq = 0;

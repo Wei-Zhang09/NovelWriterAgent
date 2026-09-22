@@ -41,7 +41,7 @@ import {
   type SecretStore,
 } from '@nwa/harness';
 import { z } from 'zod';
-import { Planner, Writer, Reviewer, Reviser } from '@nwa/writing';
+import { Planner, Writer, Reviewer, Reviser, SkillEngine } from '@nwa/writing';
 import { ChapterWorkspace, ContinuityChecker, FactExtractor, CanonPromoter } from '@nwa/story';
 import { CommitEngine, SummaryIndexer, MemoryGatherer, SummaryGenerator } from '@nwa/harness';
 import {
@@ -55,7 +55,7 @@ import {
   planDeprecations,
   segmentScenes,
 } from '@nwa/distillation';
-import type { CorpusSceneRow } from '@nwa/storage';
+import type { CorpusSceneRow, SkillRow } from '@nwa/storage';
 import { FtsIndex } from '@nwa/storage';
 import { bigramTokenizer, Retriever, buildMatchExpression } from '@nwa/retrieval';
 import type { ReviewIssue } from '@nwa/shared';
@@ -863,7 +863,16 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
    * ⚠ 产物只进工作区：正文写 workspace/chapter-NNN/draft.md，
    *   正式章节与 Canon 都不会被碰（§9.1）。真正的迁移在 STEP 11 的 Commit。
    */
-  'writer.draft': async (params: { chapterId: string; wordsPerScene?: number }) => {
+  'writer.draft': async (params: {
+    chapterId: string;
+    wordsPerScene?: number;
+    /** 写什么类型的小说（技能检索的类型隔离依据，§21） */
+    genre?: string | null;
+    /** 最多注入几个技能（§25 默认 2~5） */
+    maxSkills?: number;
+    /** 是否允许 STYLE 技能（§21：默认 false） */
+    allowStyle?: boolean;
+  }) => {
     const p = requireProject();
     if (!p.runtime) {
       throw new AppError(ErrorCode.MODEL_AUTH_FAILED, '尚未配置模型，无法生成正文');
@@ -881,11 +890,37 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     });
     workspace.ensure();
 
+    // ── §25 Skill Engine：把蒸馏出的技能接入 Writer ──
+    //
+    // ⚠ 技能库可能不存在（用户还没做蒸馏）—— 此时 Writer 照常工作。
+    //   技能是**增强**不是前置依赖，所以这里容忍失败而不抛错。
+    let skillEngine: SkillEngine | undefined;
+    let skillRows: readonly SkillRow[] = [];
+    const skillGenre: string | null = params.genre ?? null;
+    try {
+      const repo = corpusRepo();
+      // 技能按类型隔离取用（§21）。未指定类型时取全部，
+      // 让 filterSkillsByGenre 内部的规则决定（GENRE 技能需要同类型才命中）
+      skillRows = repo.listSkills();
+      skillEngine = new SkillEngine({
+        maxSkills: params.maxSkills ?? 4,
+        allowStyle: params.allowStyle ?? false,
+      });
+      logger.info('技能库已载入', { total: skillRows.length, genre: skillGenre });
+    } catch (e) {
+      logger.warn('技能库不可用（本次不注入技能）', {
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+
     const writer = new Writer({
       complete: (req) => p.runtime!.completeText('writer', req),
       workspace,
       logger: logger.child('writer'),
       ...(params.wordsPerScene ? { wordsPerScene: params.wordsPerScene } : {}),
+      ...(skillEngine ? { skillEngine } : {}),
+      skillRows,
+      genre: skillGenre,
     });
 
     const res = await writer.draft(plan as never);
@@ -2071,7 +2106,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
   'skill.pruneDuplicates': (params: { threshold?: number; dryRun?: boolean } = {}) => {
     const repo = corpusRepo();
     const rows = repo.listSkills();
-    const plan = planDeprecations(rows, params.threshold ?? 0.45);
+    const plan = planDeprecations(rows, params.threshold ?? 0.40);
 
     if (params.dryRun !== false) {
       // ⚠ 默认只预览，不真改 —— 批量改状态是破坏性操作，
@@ -2091,6 +2126,51 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     }
     logger.info('已下架近重复技能', { changed, kept: plan.kept.length });
     return { dryRun: false, deprecated: changed, kept: plan.kept.length, ids: plan.deprecate };
+  },
+
+  /**
+   * 预览技能检索结果（§25）—— **不调模型**，只看会注入什么。
+   *
+   * ⚠ 这个入口的价值：技能检索是"静默"的 —— 注入错了不会报错，
+   *   只会让正文质量悄悄变差。能单独查看"某个场景会拿到哪些技能、
+   *   落选的为什么落选"，才谈得上调试。
+   */
+  'skill.retrieve': (params: {
+    genre?: string | null;
+    sceneFunction?: string | null;
+    emotionIntensity?: number | null;
+    maxSkills?: number;
+    allowStyle?: boolean;
+  } = {}) => {
+    const repo = corpusRepo();
+    const rows = repo.listSkills();
+    const engine = new SkillEngine({
+      maxSkills: params.maxSkills ?? 4,
+      allowStyle: params.allowStyle ?? false,
+    });
+    const sel = engine.retrieve(rows, {
+      sceneFunction: params.sceneFunction ?? null,
+      genre: params.genre ?? null,
+      emotionIntensity: params.emotionIntensity ?? null,
+    });
+    return {
+      considered: sel.considered,
+      selectedCount: sel.selected.length,
+      blockChars: sel.block.length,
+      selected: sel.selected.map((x) => ({
+        id: x.skill.id,
+        name: x.skill.name,
+        score: Math.round(x.score * 100) / 100,
+        reasons: x.reasons,
+        truncated: x.truncated,
+        category: x.skill.category,
+        scope: x.skill.scope,
+        confidence: x.skill.confidence,
+      })),
+      rejected: sel.rejected,
+      /** ⚠ 真正会被注入的文本（人工核对用） */
+      block: sel.block,
+    };
   },
 
   /** 启用/废弃技能（§24 的"禁用"能力） */

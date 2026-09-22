@@ -28,7 +28,7 @@
  * 理由：丢弃后无法解释"为什么某条模式没变成技能"；
  * 留下并标记，诊断信息才完整。这与 §46 的可追溯性一致。
  */
-import { Logger } from '@nwa/core';
+import { Logger, jaccardBigrams } from '@nwa/core';
 import type { CorpusRepository, CorpusSceneRow, PatternRow } from '@nwa/storage';
 import type { Skill } from '@nwa/shared';
 import {
@@ -86,7 +86,7 @@ export interface CompileAndPersistResult {
  * 后果不只是"库脏"：Writer 检索 CONFLICT 时会拿到 10 个近乎一样的技能，
  * **把上下文预算挤满，且给模型互相矛盾的细微差别**。
  *
- * ## 判据：字符二元组 Jaccard 相似度，阈值 0.45
+ * ## 判据：字符二元组 Jaccard 相似度，阈值 0.40
  *
  * ⚠ 阈值是**实测**定的，不是估的。对库里 29 个真实技能算了全部
  *   406 个两两相似度（`summary + rules + antiPatterns` 拼接）：
@@ -111,16 +111,18 @@ export interface CompileAndPersistResult {
  *   早先按直觉写的 0.6 阈值只抓到 3 对（漏掉一半），
  *   而那是我**没测量就写进注释**的数字。教训：阈值必须测出来。
  *
- * 取 0.45 的理由：抓住 7 对最明显的重复；0.28~0.44 那几对已属
+ * 取 0.40 的理由：抓住最明显的重复（0.435 那对）；0.24~0.32 那几对已属
  * 可争议区间（可能是同一手法的不同侧面，也可能是相邻但不同的手法），
  * 宁可保留 —— 误删会**永久丢失**一个手法，误留只是多占一点预算。
  *
  * ⚠ 保留哪一个：置信度高者优先；相同则保留规则更多者（信息更全）。
  *   被丢弃的**如实记录**，不静默吞掉。
  */
+export { jaccardBigrams };
+
 export function dedupeSkills<T extends { readonly skill: Skill }>(
   records: readonly T[],
-  threshold = 0.45,
+  threshold = 0.40,
 ): { readonly kept: readonly T[]; readonly dropped: readonly { name: string; duplicateOf: string; similarity: number }[] } {
   const kept: T[] = [];
   const dropped: { name: string; duplicateOf: string; similarity: number }[] = [];
@@ -182,21 +184,6 @@ function skillText(skill: Skill): string {
   ].join('');
 }
 
-/** 字符二元组 Jaccard 相似度（对中文无需分词，且对改写稳健） */
-export function jaccardBigrams(a: string, b: string): number {
-  const grams = (s: string): Set<string> => {
-    const t = s.replace(/[\s，。；：、（）"'‘’“”]/g, '');
-    const out = new Set<string>();
-    for (let i = 0; i + 1 < t.length; i++) out.add(t.slice(i, i + 2));
-    return out;
-  };
-  const A = grams(a);
-  const B = grams(b);
-  if (A.size === 0 || B.size === 0) return 0;
-  let inter = 0;
-  for (const g of A) if (B.has(g)) inter++;
-  return inter / (A.size + B.size - inter);
-}
 
 /**
  * ⚠ 清理库里已有的近重复技能（把较弱的标记 DEPRECATED）。
@@ -221,7 +208,7 @@ export function jaccardBigrams(a: string, b: string): number {
  */
 export function planDeprecations(
   rows: readonly { readonly id: string; readonly name: string; readonly summary: string; readonly rules_json: string; readonly anti_patterns_json: string; readonly confidence: number; readonly status: string }[],
-  threshold = 0.45,
+  threshold = 0.40,
 ): { readonly deprecate: readonly string[]; readonly kept: readonly string[] } {
   // 只考虑仍活跃的（DEPRECATED 的不用再动）
   const active = rows.filter((r) => r.status !== 'DEPRECATED');
@@ -379,7 +366,7 @@ export class SkillStore {
       for (const e of existingTexts) {
         if (e.id === r.skill.id) continue; // 自身（重编译同一技能）
         const sim = jaccardBigrams(t, e.text);
-        if (sim >= 0.45) {
+        if (sim >= 0.40) {
           dup = { name: e.name, similarity: Math.round(sim * 100) / 100 };
           break;
         }

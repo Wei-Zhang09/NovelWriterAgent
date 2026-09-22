@@ -56,6 +56,39 @@ export const ChapterBriefSchema = z.object({
 export type ChapterBrief = z.infer<typeof ChapterBriefSchema>;
 
 /**
+ * Scene Function 分类（§19.1 的 15 类）—— **权威定义**。
+ *
+ * ⚠ 定义位置必须在 `ScenePlanSchema` **之前**：
+ *   zod 的 `z.enum(...)` 是模块加载时求值的，若定义在后面，
+ *   引用它会在初始化阶段抛 TDZ 错误（Cannot access before initialization）。
+ *
+ * ⚠ 这是唯一权威定义 —— `annotation.ts` 复用不重复声明（同 ReviewCategory 纪律）。
+ *   两处各写一份会漂移，而枚举漂移的后果是 Planner 声明的 sceneFunction
+ *   与标注器接受的值不一致，报错时还看不出原因。
+ *
+ * ⚠ 顺序也影响契约注入的枚举取值列表（`collectEnums`）——
+ *   模型看到的合法值就是这里的顺序。
+ */
+export const SceneFunctionSchema = z.enum([
+  'SETUP',
+  'CONFLICT',
+  'ESCALATION',
+  'REVELATION',
+  'REVERSAL',
+  'CHARACTER_DEVELOPMENT',
+  'RELATIONSHIP_CHANGE',
+  'WORLD_BUILDING',
+  'ACTION',
+  'EMOTIONAL_PAYOFF',
+  'COMEDY_RELIEF',
+  'CLIMAX',
+  'COOLDOWN',
+  'HOOK',
+  'CLIFFHANGER',
+]);
+export type SceneFunction = z.infer<typeof SceneFunctionSchema>;
+
+/**
  * Scene Plan（施工文档 §30 的 14 个字段）
  */
 export const ScenePlanSchema = z.object({
@@ -78,6 +111,23 @@ export const ScenePlanSchema = z.object({
   emotionalCurve: z.string().default(''),
   pacing: z.string().default(''),
 
+  /**
+   * 场景功能（§19.1 的 15 类）—— Skill Engine 检索的**主键**（§25）。
+   *
+   * ⚠ 为什么必须由 Planner 声明而不是事后推断：
+   *   §25 的检索输入第一项就是 `Scene Type`。没有它，技能检索只能
+   *   退化成"按置信度取前几个" —— 那会把"冲突要拉张力"的技能
+   *   注入到缓冲场景里，正好写反。
+   *
+   * ⚠ 用**权威枚举**（SceneFunctionSchema）而非自由文本：
+   *   自由文本会让"COOLDOWN"与"缓冲"变成两个值，检索直接失效。
+   *   这也让输出契约能列出合法取值（模型不必猜）。
+   *
+   * 设为可选是为了兼容既有计划（缺省时引擎退化为不按功能过滤，
+   * 而不是报错 —— 一个缺字段不该让整章无法生成）。
+   */
+  sceneFunction: SceneFunctionSchema.optional(),
+
   activeSkills: z.array(z.string()).default([]),
   continuityConstraints: z.array(z.string()).default([]),
 
@@ -97,25 +147,7 @@ export const PlanOutputSchema = z.object({
 });
 export type PlanOutput = z.infer<typeof PlanOutputSchema>;
 
-/** Scene Function 分类（§19.1），Planner 应据此声明场景功能 */
-export const SceneFunctionSchema = z.enum([
-  'SETUP',
-  'CONFLICT',
-  'ESCALATION',
-  'REVELATION',
-  'REVERSAL',
-  'CHARACTER_DEVELOPMENT',
-  'RELATIONSHIP_CHANGE',
-  'WORLD_BUILDING',
-  'ACTION',
-  'EMOTIONAL_PAYOFF',
-  'COMEDY_RELIEF',
-  'CLIMAX',
-  'COOLDOWN',
-  'HOOK',
-  'CLIFFHANGER',
-]);
-export type SceneFunction = z.infer<typeof SceneFunctionSchema>;
+
 
 /**
  * 校验 Plan 的**业务约束**（超出 zod 能表达的范围）。

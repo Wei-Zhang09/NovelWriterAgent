@@ -33,6 +33,14 @@ export const WORKSPACE_FILES = {
   plan: 'plan.json',
   context: 'context.json',
   scenePlan: 'scene-plan.json',
+  /**
+   * 技能使用记录（§25 / STEP 18）。
+   *
+   * ⚠ 为什么必须落盘：技能是"这段为什么这样写"的一部分依据。
+   *   没有它，事后无法回答"某个技能到底有没有被用到、用在哪个场景"——
+   *   而 §24 要求技能可 A/B 测试，没有使用记录就无法比较。
+   */
+  skillUsage: 'skill-usage.json',
   draft: 'draft.md',
   review: 'review.json',
   revision: 'revision.md',
