@@ -1062,6 +1062,9 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
         canonical: o.canonical ?? null,
         skippedReason: o.skippedReason ?? null,
       })),
+      // ⚠ 改稿修不了时如实报出（需重新生成正文）
+      needsRegeneration: res.needsRegeneration === true,
+      regenerationReason: res.regenerationReason ?? null,
       // ⚠ 明确标注：改完必须重新审稿
       needsReReview: true,
     };

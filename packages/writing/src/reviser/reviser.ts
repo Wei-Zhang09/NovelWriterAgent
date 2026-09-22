@@ -221,6 +221,21 @@ export interface RevisionResult {
   readonly passes: readonly PassStats[];
   /** 被整组回退的替换组（含原因，供人工复核） */
   readonly rolledBackGroups: readonly { issueId: string; reason: string }[];
+  /**
+   * ⚠ 需要**重新生成正文**（改稿修不了）。
+   *
+   * 触发条件：仍有阻塞问题未解决，且失败原因是"要删掉的比例超过安全上限"。
+   *
+   * 实测场景：第 2 章整章把同一段情节（上车/交残片/问来历）**近乎逐字演了两遍**，
+   * 修它必须删掉约 50% 正文 —— 而删除上限正是为防"一次删掉半章"设的。
+   *
+   * 这不是改稿能修的问题：**删掉半章不是修订，是草稿本身坏了**。
+   * 正确处置是重新生成该章正文，因此如实报出来，
+   * 而不是静默卡在门禁前让人不知道该怎么办。
+   */
+  readonly needsRegeneration?: boolean;
+  /** 需要重新生成的原因（人类可读） */
+  readonly regenerationReason?: string;
   readonly error?: { code: string; message: string; details?: unknown };
 }
 
@@ -425,6 +440,30 @@ export class Reviser {
     const deltaChars = current.length - input.draftText.length;
     const shrinkRatio = input.draftText.length > 0 ? -deltaChars / input.draftText.length : 0;
 
+    // ⚠ 判断"改稿修不了、需重新生成正文"。
+    //
+    // 依据：仍有阻塞问题未解决，且失败原因是**要删掉的比例超过安全上限**。
+    // 实测第 2 章：整章把同一段情节近乎逐字演了两遍，修它要删掉约 50% ——
+    // 那已不是"修订"，而是草稿本身结构坏了。
+    // 如实报出来，让人知道该重新生成该章，而不是对着"提交被拦"发愁。
+    const blockedByDeleteCap =
+      rolledBackGroups.some((g) => g.reason.includes('删除')) ||
+      allRejected.some((r) => r.reason.includes('删除'));
+    const stillUnresolved = targets.some((t) => !resolvedCounts.has(t.id));
+    const needsRegeneration = stillUnresolved && blockedByDeleteCap && totalApplied === 0;
+
+    const regenerationReason = needsRegeneration
+      ? '本章草稿存在大段重复/结构性矛盾，修它需要删掉过大的篇幅 —— ' +
+        '那已不是"改稿"而是"重写"。建议**重新生成本章正文**（重新写作比逐处修补更可靠）。'
+      : undefined;
+
+    if (needsRegeneration) {
+      this.logger.warn('改稿无法解决（需重新生成正文）', {
+        chapterNumber: input.chapterNumber,
+        reason: regenerationReason,
+      });
+    }
+
     // ⚠ 大幅删减要报警：定向改稿理应是小改动，删掉两成以上说明
     //   模型可能把"删除"用在了不该删的地方（实测踩到 −23%）
     if (shrinkRatio > this.maxShrinkRatio) {
@@ -447,6 +486,7 @@ export class Reviser {
       rejected: allRejected,
       rolledBackGroups,
       passes,
+      needsRegeneration: needsRegeneration || undefined,
       resolved: [...resolvedCounts.keys()],
       unresolved: targets.filter((t) => !resolvedCounts.has(t.id)).map((t) => t.id),
       originalChars: input.draftText.length,
@@ -475,6 +515,7 @@ export class Reviser {
       rejectedEdits: allRejected.length,
       passes,
       rolledBackGroups,
+      ...(needsRegeneration ? { needsRegeneration: true, regenerationReason } : {}),
     };
   }
 

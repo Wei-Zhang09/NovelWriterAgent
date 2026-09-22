@@ -176,6 +176,40 @@ describe('⚠ 核心保证：只改被引用的片段，其余逐字节不变', 
     expect(r.text).not.toContain('他走进院子。');
   });
 
+  it('⚠ 只有删除超限导致修不动时才报「需重新生成」（实测第 2 章场景）', async () => {
+    // 实测第 2 章：整章把同一段情节近乎逐字演了两遍，
+    // 修它必须删掉约 50% 正文 —— 那已不是"修订"而是草稿本身坏了。
+    // 系统应如实报出"需重新生成正文"，而不是静默卡在门禁前。
+    const dup = '他上车，接过包裹，指腹触到压印，凉。' + '随后是一段描写。'.repeat(30);
+    const text = dup + '\n\n' + dup; // 整段重复两遍
+    const { reviser } = reviserOf({
+      edits: [{ find: dup, replace: '', reason: '删除重复段落', issueId: 'ri_1' }],
+    });
+    const r = await reviser.revise({
+      chapterNumber: 1,
+      draftText: text,
+      issues: [issue({ id: 'ri_1', severity: 'BLOCKING' })],
+    });
+
+    // 删除占比约 50% → 超上限被拒 → 该阻塞问题未解决
+    expect(r.appliedEdits).toBe(0);
+    expect(r.outcomes[0]!.applied).toBe(false);
+    expect(r.needsRegeneration).toBe(true);
+    expect(r.regenerationReason).toContain('重新生成');
+  });
+
+  it('改稿成功时不该报「需重新生成」', async () => {
+    const { reviser } = reviserOf({
+      edits: [{ find: '门开了又合。', replace: '门开了。', reason: '', issueId: 'ri_1' }],
+    });
+    const r = await reviser.revise({
+      chapterNumber: 1,
+      draftText: DRAFT,
+      issues: [issue({ id: 'ri_1', severity: 'BLOCKING' })],
+    });
+    expect(r.needsRegeneration).toBeUndefined();
+  });
+
   it('⚠ 多条小删除累计超过 35% → 拒绝（防掏空整章）', async () => {
     // 单条都在 30% 以内，但合起来会掏空整章 —— 双限额的意义
     const seg = '他走进院子。这一段描写。'.repeat(8); // 每段约 12%

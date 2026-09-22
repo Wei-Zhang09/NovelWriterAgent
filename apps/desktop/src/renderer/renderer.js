@@ -1122,6 +1122,12 @@ function renderAgent() {
       revDetail2.append(el('div', 'perm-line',
         `⚠ ${d.rolledBack} 组替换被整组回退（同一问题需多处同改，任一处匹配失败即放弃，避免只改一半）`));
     }
+    // ⚠ 改稿修不了时明确告知该怎么办（否则用户只看到"提交被拦"无从下手）
+    if (d.needsRegeneration) {
+      revMsg2.className = 'form-msg form-msg--err';
+      revMsg2.textContent = `改稿无法解决：${d.regenerationReason || '建议重新生成本章正文'}`;
+      revDetail2.append(el('div', 'perm-line', '→ 建议操作：重新生成本章正文（重新写作比逐处修补更可靠）'));
+    }
   });
 
   a.append(revBox2);
