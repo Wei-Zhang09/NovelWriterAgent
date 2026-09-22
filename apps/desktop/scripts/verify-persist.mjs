@@ -156,11 +156,17 @@ app.whenReady().then(async () => {
 
     // ⚠ 跑真实模型标注并落库（消耗额度）
     console.log(`\n──── 标注并落库（真实模型，前 ${CHAPTERS} 章）────\n`);
-    const persisted = await call('annotate.persistDocument', {
-      documentId: docId,
-      corpusRoot: CORPUS_ROOT,
-      maxChapters: CHAPTERS,
-    });
+    // ⚠ 全量标注 108 章耗时以十分钟计，IPC 超时必须放宽
+    //   （默认 600s 会在跑到第 45 章时误报 TIMEOUT）
+    const persisted = await call(
+      'annotate.persistDocument',
+      {
+        documentId: docId,
+        corpusRoot: CORPUS_ROOT,
+        maxChapters: CHAPTERS,
+      },
+      3_600_000,
+    );
 
     if (!persisted.ok) {
       rec('标注落库', false, `${persisted.error?.code}：${persisted.error?.message}`);

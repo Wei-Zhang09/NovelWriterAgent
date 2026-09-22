@@ -70,6 +70,7 @@ export type {
   CorpusUsage,
   RegisterDocumentInput,
   PersistSceneInput,
+  PatternRow,
 } from './corpus.js';
 export type { ForeshadowingRow, ForeshadowStatus, ForeshadowTier } from './foreshadowing.js';
 export type { ProjectRow, BookRow, CreateProjectInput } from './projects.js';

@@ -18,7 +18,7 @@
 import type { Database } from '../database.js';
 import { AppError, ErrorCode } from '@nwa/core';
 import { now, requireRow } from './types.js';
-import { normalizeGenre, sameGenre, listGenres } from './genre.js';
+import { normalizeGenre, sameGenre, listGenres, type SkillScope } from './genre.js';
 
 /** 来源类型（§16.2） */
 export const CORPUS_SOURCE_TYPES = [
@@ -56,6 +56,24 @@ export interface CorpusDocumentRow {
   readonly subgenre?: string | null;
   /** 简介/文案；迁移 0007 引入 */
   readonly synopsis?: string | null;
+}
+
+/** 挖掘出的模式行（§20 七槽） */
+export interface PatternRow {
+  readonly id: string;
+  readonly category: string;
+  readonly trigger_json: string;
+  readonly pattern_json: string;
+  readonly strategy_json: string;
+  readonly evidence_refs_json: string;
+  readonly confidence: number;
+  readonly sample_count: number;
+  readonly mechanism: string;
+  readonly genre: string | null;
+  readonly scene_function: string;
+  readonly created_at: string;
+  /** 作用域：UNIVERSAL / GENRE / STYLE（§21） */
+  readonly scope: string;
 }
 
 export interface CorpusSceneRow {
@@ -357,6 +375,114 @@ export class CorpusRepository {
       input.paragraphCount,
       input.annotationError,
       input.oversized ? 1 : 0,
+    );
+  }
+
+  /**
+   * 写入挖掘出的模式（幂等：同 id 覆盖）。
+   *
+   * ⚠ `scope` 由调用方按**来源作品数**决定，不采信模型自报 ——
+   *   模型看不到全局作品分布，它说 "UNIVERSAL" 时无从判断。
+   */
+  putPattern(input: {
+    readonly id: string;
+    readonly category: string;
+    readonly triggerJson: string;
+    readonly patternJson: string;
+    readonly strategyJson: string;
+    readonly evidenceRefsJson: string;
+    readonly confidence: number;
+    readonly sampleCount: number;
+    readonly mechanism: string;
+    readonly genre: string | null;
+    readonly sceneFunction: string;
+    readonly scope: SkillScope;
+  }): void {
+    this.db.run(
+      `INSERT INTO distillation_patterns
+         (id, category, trigger_json, pattern_json, strategy_json, evidence_refs_json,
+          confidence, sample_count, mechanism, genre, scene_function, created_at, scope)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         trigger_json = excluded.trigger_json,
+         pattern_json = excluded.pattern_json,
+         strategy_json = excluded.strategy_json,
+         evidence_refs_json = excluded.evidence_refs_json,
+         confidence = excluded.confidence,
+         sample_count = excluded.sample_count,
+         mechanism = excluded.mechanism,
+         genre = excluded.genre,
+         scene_function = excluded.scene_function,
+         scope = excluded.scope`,
+      input.id,
+      input.category,
+      input.triggerJson,
+      input.patternJson,
+      input.strategyJson,
+      input.evidenceRefsJson,
+      input.confidence,
+      input.sampleCount,
+      input.mechanism,
+      input.genre,
+      input.sceneFunction,
+      now(),
+      input.scope,
+    );
+  }
+
+  /**
+   * 按类型 + 作用域取模式（Writer 消费的入口）。
+   *
+   * ⚠ 类型隔离：`genre` 归一化后比较，并**包含 UNIVERSAL**
+   *   （跨类型通用策略对所有类型都适用）。
+   *   STYLE 作用域需显式 `includeStyle` 才返回 —— §21 要求
+   *   Writer 默认不用作者特有策略。
+   */
+  listPatterns(opts: {
+    readonly genre?: string | null;
+    readonly sceneFunction?: string;
+    readonly includeStyle?: boolean;
+    readonly minConfidence?: number;
+  } = {}): PatternRow[] {
+    const rows = this.db.all<PatternRow>(
+      `SELECT * FROM distillation_patterns ORDER BY confidence DESC, sample_count DESC`,
+    );
+    const target = normalizeGenre(opts.genre ?? null);
+    return rows.filter((r) => {
+      // 作用域过滤：STYLE 默认排除
+      if (r.scope === 'STYLE' && !opts.includeStyle) return false;
+      // UNIVERSAL 对所有类型适用；GENRE 要求同类型
+      if (r.scope === 'GENRE' && target !== null && normalizeGenre(r.genre) !== target) {
+        return false;
+      }
+      if (opts.sceneFunction && r.scene_function !== opts.sceneFunction) return false;
+      if (opts.minConfidence !== undefined && r.confidence < opts.minConfidence) return false;
+      return true;
+    });
+  }
+
+  /** 模式统计（供 verify 与 UI 展示） */
+  patternStats(): { scope: string; genre: string | null; count: number }[] {
+    return this.db.all<{ scope: string; genre: string | null; count: number }>(
+      `SELECT scope, genre, COUNT(*) AS count FROM distillation_patterns
+       GROUP BY scope, genre ORDER BY count DESC`,
+    );
+  }
+
+  /** 按场景功能统计模式数 */
+  patternStatsByFunction(): { scene_function: string; count: number; avgConfidence: number }[] {
+    return this.db.all<{ scene_function: string; count: number; avgConfidence: number }>(
+      `SELECT scene_function, COUNT(*) AS count, AVG(confidence) AS avgConfidence
+       FROM distillation_patterns GROUP BY scene_function ORDER BY count DESC`,
+    );
+  }
+
+  /** 列出某文档的全部场景（含未标注）—— 断点续跑用 */
+  listScenesByDocument(documentId: string): CorpusSceneRow[] {
+    return this.db.all<CorpusSceneRow>(
+      `SELECT * FROM corpus_scenes WHERE document_id = ?
+       ORDER BY chapter_number, scene_index`,
+      documentId,
     );
   }
 

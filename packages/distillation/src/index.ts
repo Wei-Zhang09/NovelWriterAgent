@@ -49,6 +49,26 @@ export type { PacingMetrics, ProseMetrics } from './parse/metrics.js';
 
 export { SceneAnnotator } from './parse/annotator.js';
 export { ScenePersister, sceneFileName, summarizePersist } from './parse/persist.js';
+export {
+  PatternMiner,
+  MinedPatternSchema,
+  sampleEvenly,
+  toPatternRow,
+  discountBySample,
+} from './mine/pattern-miner.js';
+export type {
+  MinedPattern,
+  MinedPatternRecord,
+  MineResult,
+  PatternMinerOptions,
+} from './mine/pattern-miner.js';
+export {
+  PatternStore,
+  analyzeCrossWork,
+  resolveScope,
+  filterByGenre,
+} from './mine/pattern-store.js';
+export type { CrossWorkAnalysis, PatternStoreOptions } from './mine/pattern-store.js';
 export type { PersistOptions, PersistResult } from './parse/persist.js';
 export type {
   AnnotationStructuredCaller,

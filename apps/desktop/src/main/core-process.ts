@@ -43,7 +43,15 @@ import { z } from 'zod';
 import { Planner, Writer, Reviewer, Reviser } from '@nwa/writing';
 import { ChapterWorkspace, ContinuityChecker, FactExtractor, CanonPromoter } from '@nwa/story';
 import { CommitEngine, SummaryIndexer, MemoryGatherer, SummaryGenerator } from '@nwa/harness';
-import { SceneAnnotator, ScenePersister, segmentScenes } from '@nwa/distillation';
+import {
+  PatternMiner,
+  PatternStore,
+  SceneAnnotator,
+  ScenePersister,
+  analyzeCrossWork,
+  segmentScenes,
+} from '@nwa/distillation';
+import type { CorpusSceneRow } from '@nwa/storage';
 import { FtsIndex } from '@nwa/storage';
 import { bigramTokenizer, Retriever, buildMatchExpression } from '@nwa/retrieval';
 import type { ReviewIssue } from '@nwa/shared';
@@ -333,6 +341,14 @@ function createProbeAgents(): AgentHandler[] {
       },
     },
   ];
+}
+
+function safeJson(s: string): unknown {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
 }
 
 function requireProject(): OpenProject {
@@ -1622,6 +1638,8 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     corpusRoot?: string;
     maxChapters?: number;
     onProgressEvery?: number;
+    /** 跳过已标注章节（默认 true）—— 断点续跑 */
+    skipAnnotated?: boolean;
   }) => {
     const p = requireProject();
     if (!p.runtime) {
@@ -1640,6 +1658,33 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const limit = params.maxChapters ?? files.length;
     const selected = files.slice(0, limit);
 
+    // ⚠ 断点续跑：跳过已标注的章节。
+    //
+    //   全量标注 108 章耗时以十分钟计，任何中断（超时/网络/手动停）
+    //   都不该让前 45 章白跑。判据是"该章**所有**场景都已落库且已标注" ——
+    //   只按章号跳过会让"标注到一半中断的章"永远补不上。
+    const repo0 = corpusRepo();
+    const doneChapters = new Set<number>();
+    for (const r of repo0.listScenesByDocument(params.documentId)) {
+      if (r.annotated === 1 && r.chapter_number !== null) {
+        doneChapters.add(r.chapter_number);
+      }
+    }
+    // 只把"完整跑过"的章算作已完成：章号在 doneChapters 且
+    // 该章场景数 > 0（空章不算）
+    const todo = selected
+      .map((f, i) => ({ file: f, chapterNumber: i + 1 }))
+      .filter((x) => !doneChapters.has(x.chapterNumber));
+
+    if (params.skipAnnotated !== false && todo.length < selected.length) {
+      logger.info('断点续跑：跳过已标注章节', {
+        total: selected.length,
+        skipped: selected.length - todo.length,
+        remaining: todo.length,
+      });
+    }
+    const effective = params.skipAnnotated === false ? selected.map((f, i) => ({ file: f, chapterNumber: i + 1 })) : todo;
+
     const annotator = new SceneAnnotator({
       logger: logger.child('annotate'),
       structured: (req) => p.runtime!.structured('utility', req),
@@ -1650,22 +1695,42 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       logger: logger.child('persist'),
     });
 
-    const chapters = selected.map((f, i) => ({
-      chapterNumber: i + 1,
-      text: readFileSync(join(chDir, f), 'utf8'),
+    const chapters = effective.map((x) => ({
+      chapterNumber: x.chapterNumber,
+      text: readFileSync(join(chDir, x.file), 'utf8'),
     }));
+
+    // ⚠ 逐章进度日志：全量标注 108 章耗时以十分钟计，
+    //   没有进度输出就无法判断"卡住了"还是"正常在跑"。
+    const every = params.onProgressEvery ?? 1;
+    let done = 0;
+    let scenesSoFar = 0;
+    let failedSoFar = 0;
 
     const summary = await persister.persistMany({
       documentId: params.documentId,
       genre: doc.genre,
       chapters,
-      annotate: (ch) =>
-        annotator.annotateChapter({
+      annotate: async (ch) => {
+        const r = await annotator.annotateChapter({
           chapterNumber: ch.chapterNumber,
           text: ch.text,
           documentId: params.documentId,
           genre: doc.genre,
-        }),
+        });
+        done++;
+        scenesSoFar += r.sceneCount;
+        failedSoFar += r.unannotatedCount;
+        if (done % every === 0 || done === chapters.length) {
+          logger.info(`标注进度 ${done}/${chapters.length}`, {
+            chapter: ch.chapterNumber,
+            scenes: r.sceneCount,
+            totalScenes: scenesSoFar,
+            failed: failedSoFar,
+          });
+        }
+        return r;
+      },
     });
 
     const progress = corpusRepo().annotationProgress(params.documentId);
@@ -1721,6 +1786,140 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
   'annotate.sceneFunctionStats': (params: { documentId?: string; genre?: string | null } = {}) => {
     const stats = corpusRepo().sceneFunctionStats(params.documentId);
     return { stats, total: stats.reduce((s, x) => s + x.count, 0) };
+  },
+
+  /**
+   * 跨作品覆盖分析（§21）。
+   *
+   * ⚠ 先做这一步再挖掘：**单作品组挖出的模式必然带作者风格**，
+   *   落库时该降档为 STYLE，不该冒充类型规律。
+   *   这一步是免费的分析（不调模型），可先跑看数据够不够。
+   */
+  'mine.crossWorkAnalysis': (params: { genre?: string | null } = {}) => {
+    const repo = corpusRepo();
+    const all = repo.listAnnotatedScenesByGenre(params.genre ?? null);
+    const analysis = analyzeCrossWork(all);
+    return { ...analysis, totalScenes: all.length };
+  },
+
+  /**
+   * 模式挖掘（§20 七槽 + §21 跨作品分层）。
+   *
+   * ⚠ 会消耗模型额度：按 sceneFunction 分组，每组一次调用。
+   */
+  'mine.run': async (params: {
+    genre?: string | null;
+    scenesPerGroup?: number;
+    maxGroups?: number;
+    /** 每条模式的最大场景字符数 */
+    maxSceneChars?: number;
+    /** 只挖指定场景功能（调试用） */
+    onlyFunction?: string;
+  }) => {
+    const p = requireProject();
+    if (!p.runtime) {
+      throw new AppError(ErrorCode.MODEL_AUTH_FAILED, '尚未配置模型，无法挖掘');
+    }
+    const repo = corpusRepo();
+    const root = corpusRoot();
+    const all = repo.listAnnotatedScenesByGenre(params.genre ?? null);
+
+    if (all.length === 0) {
+      throw new AppError(
+        ErrorCode.STORAGE_QUERY_FAILED,
+        `没有已标注的场景可用于挖掘（类型：${params.genre ?? '全部'}）。` +
+          '请先运行 annotate.persistDocument。',
+      );
+    }
+
+    let scenes = all;
+    if (params.onlyFunction) {
+      scenes = scenes.filter((x) => x.scene_function === params.onlyFunction);
+    }
+
+    const miner = new PatternMiner({
+      logger: logger.child('mine'),
+      structured: (req) => p.runtime!.structured('utility', req),
+      scenesPerGroup: params.scenesPerGroup ?? 8,
+      maxSceneChars: params.maxSceneChars ?? 2000,
+    });
+    const store = new PatternStore({ logger: logger.child('mine'), repo });
+
+    // ⚠ 场景正文从文件读（DB 只存路径，§46）
+    const textOf = (sc: CorpusSceneRow): string => {
+      if (!sc.text_path) return '';
+      const abs = join(root, sc.text_path.replace(/\//g, '\\'));
+      try {
+        return readFileSync(abs, 'utf8');
+      } catch {
+        return '';
+      }
+    };
+
+    const r = await store.mineAndPersist({
+      miner,
+      textOf,
+      genre: params.genre ?? null,
+      scenes,
+      onProgress: (done, total, fn) => {
+        logger.info(`挖掘进度 ${done}/${total}`, { sceneFunction: fn });
+      },
+    });
+
+    logger.info('模式挖掘完成', {
+      genre: params.genre,
+      groups: r.mine.groups,
+      failedGroups: r.mine.failedGroups,
+      patterns: r.mine.patterns.length,
+      written: r.written,
+      downgraded: r.downgraded,
+    });
+
+    return {
+      genre: params.genre ?? null,
+      scenesUsed: scenes.length,
+      groups: r.mine.groups,
+      failedGroups: r.mine.failedGroups,
+      failures: r.mine.failures,
+      patterns: r.mine.patterns.length,
+      written: r.written,
+      downgraded: r.downgraded,
+      analysis: r.analysis,
+    };
+  },
+
+  /** 列出挖掘出的模式（Writer 消费入口的预览） */
+  'mine.listPatterns': (params: {
+    genre?: string | null;
+    sceneFunction?: string;
+    includeStyle?: boolean;
+    minConfidence?: number;
+    limit?: number;
+  } = {}) => {
+    const repo = corpusRepo();
+    const rows = repo.listPatterns({
+      genre: params.genre ?? null,
+      sceneFunction: params.sceneFunction,
+      includeStyle: params.includeStyle ?? false,
+      minConfidence: params.minConfidence,
+    });
+    return {
+      total: rows.length,
+      stats: repo.patternStats(),
+      byFunction: repo.patternStatsByFunction(),
+      patterns: rows.slice(0, params.limit ?? 50).map((r) => ({
+        id: r.id,
+        sceneFunction: r.scene_function,
+        genre: r.genre,
+        scope: r.scope,
+        confidence: r.confidence,
+        sampleCount: r.sample_count,
+        trigger: safeJson(r.trigger_json),
+        pattern: safeJson(r.pattern_json),
+        mechanism: r.mechanism,
+        evidenceRefs: safeJson(r.evidence_refs_json),
+      })),
+    };
   },
 
   /**

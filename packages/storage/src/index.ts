@@ -56,6 +56,7 @@ export type {
   CorpusUsage,
   RegisterDocumentInput,
   PersistSceneInput,
+  PatternRow,
   ForeshadowingRow,
   ForeshadowStatus,
   ForeshadowTier,
