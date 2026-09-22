@@ -58,10 +58,20 @@ export function classifyHttpFailure(f: HttpFailure, context: string): AppError {
   }
   if (f.status >= 500) {
     // 服务端错误可重试
-    return new AppError(ErrorCode.MODEL_TIMEOUT, `${context}：服务端错误（HTTP ${f.status}）`, {
-      details: { status: f.status, body: head },
-      retryable: true,
-    });
+    //
+    // ⚠ 必须把响应体带进消息：实测 503 的**真实原因写在 body 里**
+    //   （上游限流 / 模型未加载 / 并发超限），而原实现只写
+    //   "服务端错误（HTTP 503）" —— 排查时无从下手，
+    //   只能猜"是不是网络问题"。
+    //   这与 400 那次"分类错误把排查引向错误方向"是同一类问题。
+    return new AppError(
+      ErrorCode.MODEL_TIMEOUT,
+      `${context}：服务端错误（HTTP ${f.status}）—— ${extractErrorText(head)}`,
+      {
+        details: { status: f.status, body: head },
+        retryable: true,
+      },
+    );
   }
   return new AppError(
     ErrorCode.MODEL_REQUEST_INVALID,

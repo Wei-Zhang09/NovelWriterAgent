@@ -36,6 +36,7 @@ import { z } from 'zod';
 import { Planner, Writer, Reviewer, Reviser } from '@nwa/writing';
 import { ChapterWorkspace, ContinuityChecker, FactExtractor, CanonPromoter } from '@nwa/story';
 import { CommitEngine, SummaryIndexer, MemoryGatherer, SummaryGenerator } from '@nwa/harness';
+import { SceneAnnotator, segmentScenes } from '@nwa/distillation';
 import { FtsIndex } from '@nwa/storage';
 import { bigramTokenizer, Retriever, buildMatchExpression } from '@nwa/retrieval';
 import type { ReviewIssue } from '@nwa/shared';
@@ -1484,6 +1485,83 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const r = await p.tools.invoke('workspace.listCommits', input, toolContext('ADMIN'));
     if (!r.ok) throw new AppError(r.error.code as ErrorCodeValue, r.error.message);
     return r.data;
+  },
+
+  /**
+   * 场景切分（STEP 15，规则层，**不调用模型**）。
+   *
+   * ⚠ 只做规则切分，免费且确定 —— 用于先看切分质量，
+   *   再决定是否值得花模型额度做语义标注。
+   */
+  'annotate.segment': (params: { text: string; minParagraphs?: number; maxParagraphs?: number }) => {
+    const scenes = segmentScenes(params.text, {
+      ...(params.minParagraphs !== undefined ? { minParagraphs: params.minParagraphs } : {}),
+      ...(params.maxParagraphs !== undefined ? { maxParagraphs: params.maxParagraphs } : {}),
+    });
+    return {
+      scenes: scenes.map((s) => ({
+        index: s.index,
+        paragraphCount: s.paragraphs.length,
+        chars: s.paragraphs.reduce((n, p) => n + p.text.length, 0),
+        reason: s.reason,
+        evidence: s.evidence,
+        uncertain: s.uncertain,
+        firstParagraph: s.paragraphs[0]?.text.slice(0, 100) ?? '',
+      })),
+    };
+  },
+
+  /**
+   * 场景语义标注（STEP 15，**调用真实模型**）。
+   *
+   * ⚠ 机械指标（pacing/prose）由代码算；语义字段由模型给。
+   *   模型失败时该场景 annotated=false 且语义字段为空 ——
+   *   **不填默认值**（否则模式挖掘会把伪造数据当统计事实）。
+   */
+  'annotate.scenes': async (params: {
+    text: string;
+    documentId: string;
+    genre?: string | null;
+    maxScenes?: number;
+  }) => {
+    const p = requireProject();
+    if (!p.runtime) {
+      throw new AppError(ErrorCode.MODEL_AUTH_FAILED, '尚未配置模型，无法做语义标注');
+    }
+    const annotator = new SceneAnnotator({
+      logger: logger.child('annotate'),
+      // 语义标注走 utility 槽位（与写作/审稿分开，避免占用创作额度）
+      structured: (req) => p.runtime!.structured('utility', req),
+    });
+    const result = await annotator.annotateChapter({
+      chapterNumber: null,
+      text: params.text,
+      documentId: params.documentId,
+      ...(params.genre !== undefined ? { genre: params.genre } : {}),
+    });
+
+    const max = params.maxScenes ?? result.scenes.length;
+    const scenes = result.scenes.slice(0, max).map((s) => ({
+      sceneId: s.sceneId,
+      sceneIndex: s.sceneIndex,
+      paragraphCount: s.paragraphCount,
+      chars: s.chars,
+      boundaryReason: s.boundaryReason,
+      boundaryEvidence: s.boundaryEvidence,
+      boundaryUncertain: s.boundaryUncertain,
+      text: s.text.slice(0, 400),
+      annotation: s.annotation,
+      annotated: s.annotated,
+      annotationError: s.annotationError ?? null,
+    }));
+
+    return {
+      sceneCount: result.sceneCount,
+      annotatedCount: result.annotatedCount,
+      unannotatedCount: result.unannotatedCount,
+      uncertainBoundaries: result.uncertainBoundaries,
+      scenes,
+    };
   },
 
   /**

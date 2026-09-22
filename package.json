@@ -39,7 +39,9 @@
     "verify:plan": "electron apps/desktop/scripts/verify-plan-e2e.mjs",
     "verify:multibook": "electron apps/desktop/scripts/verify-multibook.mjs",
     "verify:corpus": "node scripts/verify-corpus.mjs",
-    "verify:books": "node scripts/verify-books.mjs"
+    "verify:books": "node scripts/verify-books.mjs",
+    "verify:annotate": "electron apps/desktop/scripts/verify-annotate.mjs",
+    "verify:endpoint": "electron apps/desktop/scripts/verify-endpoint.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

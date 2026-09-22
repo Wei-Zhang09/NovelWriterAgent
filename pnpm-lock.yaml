@@ -41,6 +41,9 @@ importers:
       '@nwa/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@nwa/distillation':
+        specifier: workspace:*
+        version: link:../../packages/distillation
       '@nwa/harness':
         specifier: workspace:*
         version: link:../../packages/harness

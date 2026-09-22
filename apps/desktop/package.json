@@ -18,7 +18,8 @@
     "@nwa/harness": "workspace:*",
     "@nwa/writing": "workspace:*",
     "@nwa/story": "workspace:*",
-    "@nwa/retrieval": "workspace:*"
+    "@nwa/retrieval": "workspace:*",
+    "@nwa/distillation": "workspace:*"
   },
   "devDependencies": {
     "electron": "^44.4.3"
