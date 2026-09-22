@@ -561,20 +561,78 @@ function renderNewProjectForm() {
 function renderNewBookForm() {
   const box = el('div', 'form');
   box.append(el('h3', null, '新建书目'));
+
+  const msg = el('div', 'form-msg');
+  const existing = state.books;
+
+  // ⚠ 已有书目时必须先把"现有几本"摆出来。
+  //
+  // 真实事故：用户连点「创建书目」产生了 **24 本同名「测试小说」**，
+  // 因为表单对"已有书"完全无感知，而且新建后**不会自动选中新书** ——
+  // 用户以为没生效就再点一次。
+  if (existing.length > 0) {
+    box.append(el('div', 'perm-line',
+      `当前项目已有 ${existing.length} 本书（左栏可切换）：`));
+    const list = el('div', 'perm-line');
+    list.textContent = existing.map((b) => `· ${b.title}`).join('\n');
+    list.style.whiteSpace = 'pre-line';
+    box.append(list);
+    // 默认折叠新建表单：防误操作，但仍支持有意创建多本书
+    const toggle = el('button', 'btn', '＋ 再建一本');
+    const holder = el('div');
+    holder.style.display = 'none';
+    toggle.addEventListener('click', () => {
+      holder.style.display = holder.style.display === 'none' ? 'block' : 'none';
+      toggle.textContent = holder.style.display === 'none' ? '＋ 再建一本' : '收起';
+    });
+    box.append(toggle, holder);
+    box.append(msg);
+    holder.append(buildBookCreateRow(msg));
+    return box;
+  }
+
+  // 还没有书 → 直接给出表单
+  box.append(buildBookCreateRow(msg), msg);
+  return box;
+}
+
+/** 书名输入 + 创建按钮（新建/追加共用） */
+function buildBookCreateRow(msg) {
+  const row = el('div');
   const title = el('input');
   title.placeholder = '书名（必填）';
   const btn = el('button', 'btn btn--primary', '创建书目');
-  const msg = el('div', 'form-msg');
 
   btn.addEventListener('click', async () => {
+    const name = title.value.trim();
+    if (name.length === 0) {
+      msg.className = 'form-msg form-msg--err';
+      msg.textContent = '请填写书名';
+      return;
+    }
+    // ⚠ 同名提醒：24 本同名书正是这样产生的
+    if (state.books.some((b) => b.title === name)) {
+      msg.className = 'form-msg form-msg--err';
+      msg.textContent = `已存在同名书目「${name}」—— 若确实需要两本同名书，请再点一次确认`;
+      if (btn.dataset.confirmed !== name) {
+        btn.dataset.confirmed = name;
+        return;
+      }
+    } else {
+      btn.dataset.confirmed = '';
+    }
+
     btn.disabled = true;
     msg.textContent = '';
-    const r = await call('book.create', { projectId: state.project.id, title: title.value.trim() });
+    const r = await call('book.create', { projectId: state.project.id, title: name });
     btn.disabled = false;
     if (r.ok) {
       msg.className = 'form-msg form-msg--ok';
-      msg.textContent = `已创建：${r.data.title}`;
+      msg.textContent = `已创建「${r.data.title}」并切换过去`;
       title.value = '';
+      btn.dataset.confirmed = '';
+      // ⚠ 新建后**自动选中新书** —— 否则用户接着建章节时会加到旧书上
+      state.selectedBookId = r.data.id ?? state.selectedBookId;
       await loadProjects();
     } else {
       msg.className = 'form-msg form-msg--err';
@@ -582,8 +640,8 @@ function renderNewBookForm() {
     }
   });
 
-  box.append(title, btn, msg);
-  return box;
+  row.append(title, btn);
+  return row;
 }
 
 function renderNewChapterForm() {
@@ -988,7 +1046,7 @@ function renderAgent() {
   const firstChapter = () => state.chapters[0];
 
   async function refreshCanon() {
-    const r = await call('canon.list', {});
+    const r = await call('canon.list', { bookId: state.selectedBookId });
     if (!r.ok) return;
     const d = r.data;
     state.lastCanon = d;
@@ -1218,7 +1276,7 @@ function renderAgent() {
     }
     searchMsg.className = 'form-msg';
     searchMsg.textContent = '检索中…';
-    const r = await call('search.query', { query: q, limit: 8 });
+    const r = await call('search.query', { query: q, limit: 8, bookId: state.selectedBookId });
     if (!r.ok) {
       searchMsg.className = 'form-msg form-msg--err';
       searchMsg.textContent = `${r.error.code}: ${r.error.message}`;
@@ -1256,7 +1314,7 @@ function renderAgent() {
   sumBox.append(sumDetail);
 
   async function refreshPending() {
-    const r = await call('summary.pending', {});
+    const r = await call('summary.pending', { bookId: state.selectedBookId });
     if (!r.ok) return;
     const d = r.data;
     sumMsg.className = d.pending.length > 0 ? 'form-msg form-msg--err' : 'form-msg form-msg--ok';
@@ -1344,7 +1402,7 @@ function renderAgent() {
     asmBtn.disabled = true;
     ctxMsg.className = 'form-msg';
     ctxMsg.textContent = '装配中…';
-    const r = await call('context.assemble', {});
+    const r = await call('context.assemble', { bookId: state.selectedBookId });
     asmBtn.disabled = false;
     if (!r.ok) {
       ctxMsg.className = 'form-msg form-msg--err';
@@ -1369,7 +1427,7 @@ function renderAgent() {
   });
 
   slotBtn.addEventListener('click', async () => {
-    const r = await call('context.slots', {});
+    const r = await call('context.slots', { bookId: state.selectedBookId });
     if (!r.ok) return;
     state.contextSlots = r.data.slots;
     ctxDetail.replaceChildren();

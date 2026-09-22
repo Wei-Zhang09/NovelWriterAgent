@@ -334,6 +334,44 @@ function requireProject(): OpenProject {
   return opened;
 }
 
+
+/**
+ * ⚠ 解析**目标书**（多书隔离的唯一入口）。
+ *
+ * ## 为什么必须有这个函数
+ *
+ * 曾经有 10 处写操作写成 `books.listByProject(pid)[0]?.id` —— 而
+ * `listByProject` 按 `created_at` 排序，`[0]` 是**最老的那本**。
+ * 后果（真实事故）：
+ *   - 「新建章节」永远加到旧书上，用户看不到变化 → 再建一本 → 24 本同名书
+ *   - Planner/Writer 装配上下文时取的是最老那本的 facts/摘要 →
+ *     **A 书的设定污染 B 书的正文**
+ *
+ * 因此这里要求**显式传 bookId**；只有调用方确实没传时才回退，
+ * 且回退目标是**最近创建的书**（`listByProject` 的最后一个），
+ * 而不是最老的那本。
+ *
+ * @param explicit 调用方指定的 bookId（优先）
+ */
+function resolveBookId(explicit?: string | null): string | undefined {
+  const p = requireProject();
+  if (explicit) {
+    // 校验该书确实存在，避免把操作指向不存在的书
+    const ok = p.repos.books.listByProject(p.repos.projects.list()[0]?.id ?? '').some((b) => b.id === explicit);
+    if (ok) return explicit;
+    throw new AppError(
+      ErrorCode.TOOL_VALIDATION_ERROR,
+      `指定的书目不存在：${explicit} —— 请先在左栏选择书目`,
+    );
+  }
+  // 未指定：回退到**最近创建**的书（不是最老的）
+  const pid = p.repos.projects.list()[0]?.id;
+  if (!pid) return undefined;
+  const books = p.repos.books.listByProject(pid);
+  return books.length > 0 ? books[books.length - 1]!.id : undefined;
+}
+
+
 /** 项目根目录：用户可见、可检查（§0.1「文件和数据库可检查」） */
 /**
  * 项目根目录。
@@ -478,7 +516,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
           indexChapter: (input) => {
             fts.indexChapter({
               chapterId: input.chapterId,
-              bookId: repos.books.listByProject(repos.projects.list()[0]?.id ?? '')[0]?.id ?? '',
+              bookId: resolveBookId() ?? '',
               chapterNumber: input.chapterNumber,
               sourceRef: input.sourceRef,
               text: input.body,
@@ -643,9 +681,9 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       topMemory: [],
     };
 
-    const bookId = p.repos.books.listByProject(
-      p.repos.projects.list()[0]!.id,
-    )[0]?.id;
+    // ⚠ 必须用**本章所属的书**，不能取"第一本书" ——
+    //   否则 A 书的 Canon/摘要会进入 B 书的正文（跨书污染）。
+    const bookId = chapter.book_id;
     if (bookId) {
       for (const f of p.repos.facts.listByStatus(bookId, 'CANON').slice(0, 50)) {
         slots.protectedCanon!.push({
@@ -800,14 +838,11 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
    * 读工作区草稿 + 已保存计划 → 与 Canon 对账。
    * ⚠ 纯只读：不修改草稿、不写库。修复是后续步骤的职责。
    */
-  'continuity.check': (params: { chapterId: string }) => {
+  'continuity.check': (params: { bookId?: string | null; chapterId: string }) => {
     const p = requireProject();
-    const projectId = p.repos.projects.list()[0]?.id;
-    const bookId = projectId ? p.repos.books.listByProject(projectId)[0]?.id : undefined;
-    if (!bookId) {
-      throw new AppError(ErrorCode.STORAGE_QUERY_FAILED, '当前项目还没有书');
-    }
+    // ⚠ 用本章所属的书（chapter.book_id），不用"当前书" —— 防跨书污染
     const chapter = p.repos.chapters.get(params.chapterId);
+    const bookId = chapter.book_id;
 
     const ws = new ChapterWorkspace({
       rootDir: p.dir,
@@ -858,13 +893,11 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
    * 链路：确定性检查（Continuity Checker）→ 模型审阅 → 合并 → 落库。
    * ⚠ 状态由 issues 机械推导，不采信模型填的 overallStatus。
    */
-  'review.run': async (params: { chapterId: string }) => {
+  'review.run': async (params: { bookId?: string | null; chapterId: string }) => {
     const p = requireProject();
-    const projectId = p.repos.projects.list()[0]?.id;
-    const bookId = projectId ? p.repos.books.listByProject(projectId)[0]?.id : undefined;
-    if (!bookId) throw new AppError(ErrorCode.STORAGE_QUERY_FAILED, '当前项目还没有书');
-
+    // ⚠ 用本章所属的书（chapter.book_id），不用"当前书" —— 防跨书污染
     const chapter = p.repos.chapters.get(params.chapterId);
+    const bookId = chapter.book_id;
     const ws = new ChapterWorkspace({
       rootDir: p.dir,
       chapterNumber: chapter.chapter_number,
@@ -1108,11 +1141,9 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
    * 数据来源：受保护的 Canon 来自真实 facts 表，记忆来自章节摘要。
    * 这样可以直观看到「Protected 超预算会报错」与「无来源条目被拒」。
    */
-  'context.assemble': (params: { budget?: { inputTokens?: number; outputReserveTokens?: number; protectedMaxTokens?: number } }) => {
+  'context.assemble': (params: { bookId?: string | null; budget?: { inputTokens?: number; outputReserveTokens?: number; protectedMaxTokens?: number } }) => {
     const p = requireProject();
-    const bookId = p.repos.projects.list()[0]?.id
-      ? p.repos.books.listByProject(p.repos.projects.list()[0]!.id)[0]?.id
-      : undefined;
+    const bookId = resolveBookId(params.bookId);
 
     const canonEntries: ContextEntry[] = [];
     const memoryEntries: ContextEntry[] = [];
@@ -1257,16 +1288,14 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
    * ⚠ **只 propose，不写库**：产物落工作区 proposed_facts.json。
    *   真正入库由 canon.promote 触发，且必须经过 evidence 校验。
    */
-  'canon.extract': async (params: { chapterId: string }) => {
+  'canon.extract': async (params: { bookId?: string | null; chapterId: string }) => {
     const p = requireProject();
     if (!p.runtime) {
       throw new AppError(ErrorCode.MODEL_AUTH_FAILED, '尚未配置模型，无法抽取事实');
     }
-    const projectId = p.repos.projects.list()[0]?.id;
-    const bookId = projectId ? p.repos.books.listByProject(projectId)[0]?.id : undefined;
-    if (!bookId) throw new AppError(ErrorCode.STORAGE_QUERY_FAILED, '当前项目还没有书');
-
+    // ⚠ 用本章所属的书（chapter.book_id），不用"当前书" —— 防跨书污染
     const chapter = p.repos.chapters.get(params.chapterId);
+    const bookId = chapter.book_id;
     const ws = new ChapterWorkspace({
       rootDir: p.dir,
       chapterNumber: chapter.chapter_number,
@@ -1349,13 +1378,11 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
   },
 
   /** 把工作区的候选事实提升入库（STEP 9）—— 这是唯一写 facts 的入口 */
-  'canon.promote': async (params: { chapterId: string }) => {
+  'canon.promote': async (params: { bookId?: string | null; chapterId: string }) => {
     const p = requireProject();
-    const projectId = p.repos.projects.list()[0]?.id;
-    const bookId = projectId ? p.repos.books.listByProject(projectId)[0]?.id : undefined;
-    if (!bookId) throw new AppError(ErrorCode.STORAGE_QUERY_FAILED, '当前项目还没有书');
-
+    // ⚠ 用本章所属的书（chapter.book_id），不用"当前书" —— 防跨书污染
     const chapter = p.repos.chapters.get(params.chapterId);
+    const bookId = chapter.book_id;
     const ws = new ChapterWorkspace({
       rootDir: p.dir,
       chapterNumber: chapter.chapter_number,
@@ -1394,10 +1421,9 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
   },
 
   /** 列出当前 Canon 与待裁决项（STEP 9 UI） */
-  'canon.list': () => {
+  'canon.list': (params: { bookId?: string | null } = {}) => {
     const p = requireProject();
-    const projectId = p.repos.projects.list()[0]?.id;
-    const bookId = projectId ? p.repos.books.listByProject(projectId)[0]?.id : undefined;
+    const bookId = resolveBookId(params.bookId);
     if (!bookId) return { canon: [], provisional: [], contradicted: [], conflicts: [] };
 
     const chars = p.repos.characters.listByBook(bookId);
@@ -1464,10 +1490,9 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
    * 检索（补缺口）：走 FTS + bm25，结果带 sourceRef。
    * ⚠ 只读。
    */
-  'search.query': (params: { query: string; limit?: number }) => {
+  'search.query': (params: { bookId?: string | null; query: string; limit?: number }) => {
     const p = requireProject();
-    const projectId = p.repos.projects.list()[0]?.id;
-    const bookId = projectId ? p.repos.books.listByProject(projectId)[0]?.id : undefined;
+    const bookId = resolveBookId(params.bookId);
 
     const retriever = new Retriever({ runner: p.fts, tokenizer: bigramTokenizer });
     const chapterTrace = retriever.retrieve({
@@ -1508,10 +1533,9 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
   },
 
   /** 待确认摘要清单（ADR-0006 约束 C 的验收卡） */
-  'summary.pending': () => {
+  'summary.pending': (params: { bookId?: string | null } = {}) => {
     const p = requireProject();
-    const projectId = p.repos.projects.list()[0]?.id;
-    const bookId = projectId ? p.repos.books.listByProject(projectId)[0]?.id : undefined;
+    const bookId = resolveBookId(params.bookId);
     if (!bookId) return { pending: [], approvedCount: 0 };
     const indexer = new SummaryIndexer({
       repos: p.repos,
