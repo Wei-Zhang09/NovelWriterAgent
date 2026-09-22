@@ -411,7 +411,14 @@ describe('工具函数', () => {
   it('extractJson 对无法解析的内容返回 undefined（不猜）', () => {
     expect(extractJson('纯散文，没有任何 JSON')).toBeUndefined();
     expect(extractJson('')).toBeUndefined();
-    expect(extractJson('{"broken": ')).toBeUndefined();
+  });
+
+  it('⚠ extractJson 对**被截断**的 JSON 抛错，而不是返回 undefined', () => {
+    // 实测：edits 数组太长被 maxTokens 砍断，解析失败 → undefined
+    // → schema 报 `(root): Required`，看起来像"模型没给 edits 字段"。
+    // 报错误导会让人去改 prompt，而真正该做的是调大 maxTokens。
+    expect(() => extractJson('{"broken": ')).toThrow(/截断/);
+    expect(() => extractJson('{"edits":[{"find":"很长的内容')).toThrow(/截断/);
   });
 
   it('isRetryable 只对 AppError.retryable 为 true 的返回 true', () => {

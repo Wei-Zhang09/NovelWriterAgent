@@ -17,7 +17,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { buildStructuredContract, describeSchemaFields, unwrapSchema } from '@nwa/harness';
+import { buildStructuredContract, describeSchemaFields, unwrapSchema, extractJson } from '@nwa/harness';
 
 describe('契约文本包含必需字段（小模型靠它才知道要输出什么）', () => {
   it('列出全部字段名与类型', () => {
@@ -138,5 +138,52 @@ describe('⚠ 解开 schema 外层包装（实测踩到）', () => {
     const t = buildStructuredContract('X', z.object({ a: z.string() }));
     expect(t).toContain('"a"');
     expect(t).toContain('字符串');
+  });
+});
+
+
+describe('⚠ extractJson 区分「截断」与「不是 JSON」（实测踩到）', () => {
+  it('正常的 JSON 能解析', () => {
+    expect(extractJson('{"edits":[]}')).toEqual({ edits: [] });
+  });
+
+  it('围栏包裹的 JSON 能解析', () => {
+    expect(extractJson('```json\n{"a":1}\n```')).toEqual({ a: 1 });
+  });
+
+  it('⚠ 被截断的 JSON 抛出 TruncatedOutputError（不是返回 undefined）', () => {
+    // 实测：edits 数组太长被 maxTokens 砍断，
+    // 三种解析全部失败 → 返回 undefined → schema 报 `(root): Required`，
+    // 看起来像"模型没给 edits 字段"，实际是输出被截断。
+    // 报错误导会让人去改 prompt，而真正该做的是调大 maxTokens。
+    const truncated = '{\n  "edits": [\n    {\n      "find": "他继续走。探杖点一下，脚跟着落一下';
+    expect(() => extractJson(truncated)).toThrow(/截断/);
+  });
+
+  it('截断错误带 head/tail/length 便于诊断', () => {
+    const truncated = '{"edits":[{"find":"很长的内容'.repeat(3);
+    try {
+      extractJson(truncated);
+      expect.unreachable('应当抛出');
+    } catch (e) {
+      expect((e as Error).message).toContain('maxTokens');
+      expect((e as { details: { length: number } }).details.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('不是 JSON 的散文仍返回 undefined（不误判为截断）', () => {
+    expect(extractJson('这是一段散文，没有任何结构。')).toBeUndefined();
+  });
+
+  it('完整但字段不对的 JSON 不报截断（交给 schema 校验）', () => {
+    expect(extractJson('{"wrong":1}')).toEqual({ wrong: 1 });
+  });
+
+  it('括号闭合的 JSON 不报截断', () => {
+    expect(extractJson('{"a":[1,2,3]}')).toEqual({ a: [1, 2, 3] });
+  });
+
+  it('字符串里的括号不干扰深度计算', () => {
+    expect(extractJson('{"a":"{未闭合"}')).toEqual({ a: '{未闭合' });
   });
 });

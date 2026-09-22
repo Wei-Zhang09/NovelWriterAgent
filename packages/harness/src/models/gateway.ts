@@ -196,7 +196,19 @@ export class ModelGateway {
         ...(req.signal ? { signal: req.signal } : {}),
       });
       lastRaw = res.text;
-      const parsed = req.schema.safeParse(extractJson(res.text));
+      let extracted: unknown;
+      try {
+        extracted = extractJson(res.text);
+      } catch (e) {
+        // ⚠ 输出被截断：这不是"字段缺失"，而是输出太长。
+        //   必须报成**可重试**的错误，否则整轮改稿白跑
+        //   （实测第 2 章改稿就是死在这里）。
+        if (e instanceof TruncatedOutputError) {
+          throw new AppError(ErrorCode.MODEL_TIMEOUT, e.message, { details: e.details, retryable: true });
+        }
+        throw e;
+      }
+      const parsed = req.schema.safeParse(extracted);
       // ⚠ 失败时把**原始输出**带进错误详情 —— 否则只看到
       //   "(root): Required" 完全无法定位模型到底返回了什么
       if (!parsed.success) {
@@ -361,7 +373,65 @@ export function extractJson(text: string): unknown {
       /* 放弃 */
     }
   }
+
+  // ⚠ 全部解析失败：区分"输出被截断"与"根本不是 JSON"。
+  //
+  // 实测踩到：模型输出的 edits 数组太长被 maxTokens 截断，
+  // 三种解析全部失败 → 返回 undefined → schema 报 `(root): Required`，
+  // 看起来像"模型没给 edits 字段"，实际是**输出太长被砍断**。
+  // 报错信息误导会让人去改 prompt，而真正该做的是给足 maxTokens。
+  if (looksTruncated(trimmed)) {
+    throw new TruncatedOutputError(
+      '模型输出疑似被 maxTokens 截断（JSON 未闭合）。' +
+        '这不是"缺少字段"，而是输出太长 —— 请调大该步骤的 maxTokens 或减少单次处理量。',
+      { head: trimmed.slice(0, 200), tail: trimmed.slice(-200), length: trimmed.length },
+    );
+  }
+
   return undefined;
+}
+
+/** 判断一段文本是否"像被截断的 JSON"：以 { 或 [ 开头但括号未闭合 */
+function looksTruncated(text: string): boolean {
+  const first = text.search(/[{[]/);
+  if (first < 0) return false;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = first; i < text.length; i++) {
+    const c = text[i]!;
+    if (esc) {
+      esc = false;
+      continue;
+    }
+    if (c === '\\') {
+      esc = true;
+      continue;
+    }
+    if (c === '"') {
+      inStr = !inStr;
+      continue;
+    }
+    if (inStr) continue;
+    if (c === '{' || c === '[') depth++;
+    else if (c === '}' || c === ']') depth--;
+  }
+  // 有未闭合的结构（或停在字符串中间）→ 截断
+  return depth > 0 || inStr;
+}
+
+/**
+ * 模型输出被截断（不是"字段缺失"）。
+ *
+ * ⚠ 单独成类是为了让上层能给出**正确的**诊断与处置建议。
+ */
+export class TruncatedOutputError extends Error {
+  readonly details: { head: string; tail: string; length: number };
+  constructor(message: string, details: { head: string; tail: string; length: number }) {
+    super(message);
+    this.name = 'TruncatedOutputError';
+    this.details = details;
+  }
 }
 
 function describeIssues(err: z.ZodError): string {

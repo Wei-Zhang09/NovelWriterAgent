@@ -140,7 +140,13 @@ export interface RevisionOptions {
   readonly structured: RevisionStructuredCaller;
   readonly workspace: ChapterWorkspace;
   readonly logger: Logger;
-  /** 一次最多处理多少个问题（默认 6）。过多会让模型失去焦点 */
+  /**
+   * 一次最多处理多少个问题（默认 3）。
+   *
+   * ⚠ 从 6 降到 3：实测 6 个问题时模型输出（每个问题都要逐字引用原文）
+   *   会超出 maxTokens 被截断 —— 第 2 章改稿就是这样整轮失败的。
+   *   宁可多跑一轮，也不要截断。未解决的阻塞问题会有第二轮定向重试。
+   */
   readonly maxIssuesPerPass?: number;
   /**
    * 单条替换允许的最大长度占比（默认 0.7）。
@@ -163,12 +169,15 @@ export interface RevisionOptions {
    */
   readonly maxShrinkRatio?: number;
   /**
-   * 单条**删除**允许的最大占比（默认 0.15）。
+   * 单条**删除**允许的最大占比（默认 0.30）。
    *
-   * ⚠ 比 maxReplaceRatio 严得多：删除是不可逆的信息损失
+   * ⚠ 比 maxReplaceRatio 严：删除是不可逆的信息损失
    *   （实测一次删除 59% 正文把稿子毁掉）。
+   *   但过严会拒绝正常改法（模型常用"删掉矛盾段落"）。
    */
   readonly maxDeleteRatio?: number;
+  /** 全章删除**累计**上限（默认 0.35）—— 防多条小删除拼起来掏空整章 */
+  readonly maxTotalDeleteRatio?: number;
 }
 
 export interface EditOutcome {
@@ -258,16 +267,18 @@ export class Reviser {
   private readonly retryUnresolved: boolean;
   private readonly maxShrinkRatio: number;
   private readonly maxDeleteRatio: number;
+  private readonly maxTotalDeleteRatio: number;
 
   constructor(opts: RevisionOptions) {
     this.structured = opts.structured;
     this.workspace = opts.workspace;
     this.logger = opts.logger;
-    this.maxIssuesPerPass = opts.maxIssuesPerPass ?? 6;
+    this.maxIssuesPerPass = opts.maxIssuesPerPass ?? 3;
     this.maxReplaceRatio = opts.maxReplaceRatio ?? 0.7;
     this.retryUnresolved = opts.retryUnresolved ?? true;
     this.maxShrinkRatio = opts.maxShrinkRatio ?? 0.2;
     this.maxDeleteRatio = opts.maxDeleteRatio ?? MAX_DELETE_RATIO;
+    this.maxTotalDeleteRatio = opts.maxTotalDeleteRatio ?? MAX_TOTAL_DELETE_RATIO;
   }
 
   /**
@@ -588,11 +599,21 @@ export class Reviser {
     let appliedEdits = 0;
     const resolvedCounts = new Map<string, number>();
     const applied: AppliedEditLog[] = [];
+    let deletedChars = 0;
 
     for (const edit of standalone) {
-      const outcome = applyEdit(current, edit, this.maxReplaceRatio, this.maxDeleteRatio);
+      const outcome = applyEdit(
+        current,
+        edit,
+        this.maxReplaceRatio,
+        this.maxDeleteRatio,
+        deletedChars,
+        this.maxTotalDeleteRatio,
+        ctx.text.length,
+      );
       if (outcome.ok) {
         current = outcome.text;
+        deletedChars += outcome.deletedChars;
         appliedEdits++;
         applied.push(logEdit(ctx.pass, edit));
       } else {
@@ -609,13 +630,23 @@ export class Reviser {
       let failed: { reason: string; find: string } | null = null;
       let groupApplied = 0;
 
+      let groupDeleted = 0;
       for (const edit of edits) {
-        const outcome = applyEdit(trial, edit, this.maxReplaceRatio, this.maxDeleteRatio);
+        const outcome = applyEdit(
+          trial,
+          edit,
+          this.maxReplaceRatio,
+          this.maxDeleteRatio,
+          deletedChars + groupDeleted,
+          this.maxTotalDeleteRatio,
+          ctx.text.length,
+        );
         if (!outcome.ok) {
           failed = { reason: outcome.reason, find: edit.find.slice(0, 60) };
           break;
         }
         trial = outcome.text;
+        groupDeleted += outcome.deletedChars;
         groupApplied++;
       }
 
@@ -632,6 +663,7 @@ export class Reviser {
 
       // ⚠ 整组通过才落盘 —— 半途而废的修改会留下更隐蔽的矛盾
       current = trial;
+      deletedChars += groupDeleted;
       appliedEdits += groupApplied;
       resolvedCounts.set(issueId, groupApplied);
       for (const e of edits) applied.push(logEdit(ctx.pass, e));
@@ -762,9 +794,9 @@ function findUniqueSpan(text: string, needle: string): { start: number; end: num
 }
 
 /**
- * 单条**删除**允许的最大占比（默认 0.15）。
+ * 单条**删除**允许的最大占比（默认 0.30）。
  *
- * ⚠ 为什么删除要单独设更严的上限（实测踩到严重事故）：
+ * ⚠ 为什么删除要单独限额（实测踩到严重事故）：
  *
  * 第 1 章一次改稿删掉了 3226/5458 = **59%** 的正文，稿子直接毁掉
  * （5458 → 2210 字），而当时的上限是 70%，所以被放行了。
@@ -774,10 +806,19 @@ function findUniqueSpan(text: string, needle: string): { start: number; end: num
  * 而删除一旦删错，那些情节、对话、细节就永久没了 —— 复审只能看到
  * "少了一大段"，无法判断原本写了什么，人工也难恢复。
  *
- * 15% 足以覆盖正常用途（删掉一段重复描写、删掉一句多余的话），
- * 同时挡住"一口气删掉半章"。
+ * ⚠ 但也不能设得过严：实测 15% 会把模型的**正常**改法全部拒绝。
+ *   模型处理"这段描述与后文矛盾"时，常用手段就是**删掉整段**
+ *   （实测 3 次/5 章因此被拒：删除占比 15%、16%、18%、29%）。
+ *   因此改为**双限额**：
+ *     - 单条 ≤ 30%：挡住"一条指令删掉大半章"
+ *     - 全章累计 ≤ 35%：挡住"很多条小删除拼起来掏空整章"
+ *   真正的事故形态（单条 59%）被单条限额挡住；
+ *   正常改法（单条 15~29%）被放行。
  */
-const MAX_DELETE_RATIO = 0.15;
+const MAX_DELETE_RATIO = 0.3;
+
+/** 全章删除累计上限（默认 0.35）—— 防止多条小删除拼起来掏空整章 */
+const MAX_TOTAL_DELETE_RATIO = 0.35;
 
 /**
  * 判断 `find` 是否是"把重复内容合成一份"的形态（去重）。
@@ -826,11 +867,26 @@ function applyEdit(
   edit: RevisionEdit,
   maxRatio: number,
   maxDeleteRatio: number,
-): { ok: true; text: string } | { ok: false; reason: string } {
+  /** 本次改稿中已累计删除的字符数（用于全章累计限额） */
+  deletedSoFar: number,
+  totalDeleteRatio: number,
+  originalLength: number,
+): { ok: true; text: string; deletedChars: number } | { ok: false; reason: string } {
   const ratio = edit.find.length / Math.max(1, text.length);
 
   // ⚠ 删除用更严的上限（不可逆的信息损失）
   if (edit.replace.length === 0) {
+    // 全章累计限额：防止多条小删除拼起来掏空整章
+    const afterDelete = deletedSoFar + edit.find.length;
+    if (originalLength > 0 && afterDelete / originalLength > totalDeleteRatio) {
+      return {
+        ok: false,
+        reason:
+          `累计删除将达到 ${((afterDelete / originalLength) * 100).toFixed(0)}%，` +
+          `超过全章累计上限 ${(totalDeleteRatio * 100).toFixed(0)}% —— ` +
+          '逐条删除虽小，合起来会掏空整章',
+      };
+    }
     if (ratio > maxDeleteRatio) {
       // 大范围删除只在**内容确实在别处重复**时才放行 ——
       // 这是可机械验证的判据，不是凭模型的说明。
@@ -847,7 +903,11 @@ function applyEdit(
     }
     const span = findUniqueSpan(text, edit.find);
     if (span !== null) {
-      return { ok: true, text: text.slice(0, span.start) + text.slice(span.end) };
+      return {
+        ok: true,
+        text: text.slice(0, span.start) + text.slice(span.end),
+        deletedChars: span.end - span.start,
+      };
     }
 
     // ⚠ 命中多处时删除**仍然安全**，前提是内容在别处重复 ——
@@ -857,7 +917,11 @@ function applyEdit(
     if (isRedundant(text, edit.find)) {
       const idx = text.indexOf(edit.find);
       if (idx >= 0) {
-        return { ok: true, text: text.slice(0, idx) + text.slice(idx + edit.find.length) };
+        return {
+          ok: true,
+          text: text.slice(0, idx) + text.slice(idx + edit.find.length),
+          deletedChars: edit.find.length,
+        };
       }
     }
 
@@ -911,7 +975,7 @@ function applyEdit(
     return { ok: false, reason: '原文片段在正文中找不到或有多处（无法确定改哪一处）' };
   }
 
-  return { ok: true, text: text.slice(0, span.start) + edit.replace + text.slice(span.end) };
+  return { ok: true, text: text.slice(0, span.start) + edit.replace + text.slice(span.end), deletedChars: 0 };
 }
 
 // ── Prompt（§31：模块化） ───────────────────────────────────

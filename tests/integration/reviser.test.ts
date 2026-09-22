@@ -149,11 +149,11 @@ describe('⚠ 核心保证：只改被引用的片段，其余逐字节不变', 
     expect(r.appliedEdits).toBe(1);
   });
 
-  it('⚠ 单条删除超过全文 15% → 拒绝（实测删掉 59% 正文把稿子毁掉）', async () => {
+  it('⚠ 单条删除超过全文 30% → 拒绝（实测删掉 59% 正文把稿子毁掉）', async () => {
     // 真实事故：第 1 章一次改稿删掉 3226/5458 = 59% 正文（5458 → 2210 字）。
     // 当时上限 70% 所以被放行 —— 但**删除是不可逆的信息损失**，
     // 替换（哪怕改动大）至少保留改写后的内容，删除一旦删错就永久没了。
-    const big = '他走进院子。' + '这一段描写很长。'.repeat(60); // 远超 15%
+    const big = '他走进院子。' + '这一段描写很长。'.repeat(60); // 远超 30%
     const text = big + '\n\n' + '其余正文。'.repeat(40);
     const { reviser } = reviserOf({
       edits: [{ find: big, replace: '', reason: '删除冗余段落' }],
@@ -165,7 +165,7 @@ describe('⚠ 核心保证：只改被引用的片段，其余逐字节不变', 
     expect(r.rejectedEdits).toBeGreaterThan(0);
   });
 
-  it('删除上限按占比判定，小段落删除正常放行', async () => {
+  it('删除上限按占比判定，中等段落删除正常放行', async () => {
     const target = '他走进院子。';
     const text = target + '其余正文。'.repeat(200);
     const { reviser } = reviserOf({
@@ -174,6 +174,37 @@ describe('⚠ 核心保证：只改被引用的片段，其余逐字节不变', 
     const r = await reviser.revise({ chapterNumber: 1, draftText: text, issues: [issue()] });
     expect(r.appliedEdits).toBe(1);
     expect(r.text).not.toContain('他走进院子。');
+  });
+
+  it('⚠ 多条小删除累计超过 35% → 拒绝（防掏空整章）', async () => {
+    // 单条都在 30% 以内，但合起来会掏空整章 —— 双限额的意义
+    const seg = '他走进院子。这一段描写。'.repeat(8); // 每段约 12%
+    const parts = [seg, seg, seg, seg];
+    const text = parts.join('\n\n') + '\n\n' + '其余正文。'.repeat(20);
+    const { reviser } = reviserOf({
+      edits: [
+        { find: parts[0], replace: '', reason: '' },
+        { find: parts[1], replace: '', reason: '' },
+        { find: parts[2], replace: '', reason: '' },
+      ],
+    });
+    const r = await reviser.revise({ chapterNumber: 1, draftText: text, issues: [issue()] });
+
+    // 前两条可能通过，累计超限后第三条被拒
+    expect(r.rejectedEdits).toBeGreaterThan(0);
+    expect(r.text!.length).toBeGreaterThan(text.length * 0.65);
+  });
+
+  it('⚠ 删除矛盾段落（25%）正常放行 —— 这是模型的常用改法', async () => {
+    // 实测：15% 上限会把模型的正常改法全部拒绝（3 次/5 章），
+    // 因为处理"这段与后文矛盾"的常用手段就是删掉整段。
+    const contradiction = '这一段与后文矛盾。'.repeat(40); // 约 25%
+    const text = contradiction + '\n\n' + '其余正文内容。'.repeat(120);
+    const { reviser } = reviserOf({
+      edits: [{ find: contradiction, replace: '', reason: '删除矛盾段落' }],
+    });
+    const r = await reviser.revise({ chapterNumber: 1, draftText: text, issues: [issue()] });
+    expect(r.appliedEdits).toBe(1);
   });
 
   it('⚠ 替换文本是原文的前缀（截断残迹）→ 拒绝，避免静默删掉后半段', async () => {

@@ -254,6 +254,8 @@ app.whenReady().then(async () => {
       const brief = pd.brief ?? {};
       const chars = (brief.mainCharacters ?? []).join('、');
       const ctxTokens = pd.contextTokens ?? 0;
+      // 预算值：不同实现可能叫 contextBudget / budget / tokenBudget
+      const ctxBudget = pd.contextBudget ?? pd.budget ?? pd.tokenBudget ?? 0;
       rec(
         `第 ${n} 章规划`,
         true,
@@ -342,6 +344,7 @@ app.whenReady().then(async () => {
         sd.ok ? `${String(sd.summary ?? '').slice(0, 60)}…` : `${sd.error?.code}：${String(sd.error?.message ?? '').slice(0, 100)}`,
       );
       if (!sd.ok) break;
+      const summaryLen = String(sd.summary ?? '').length;
       // 作者确认（真实使用中由人在「摘要确认」面板点；验证脚本自动确认）
       await call('summary.approve', { chapterId });
 
@@ -355,12 +358,12 @@ app.whenReady().then(async () => {
           `被拦：${cd.error?.code}：${String(cd.error?.message ?? '').slice(0, 120)}`,
         );
         // 提交被拦是门禁在起作用，不一定是 bug —— 记录下来继续看下一章
-        perChapter.push({ n, chapterId, chars, ctxTokens, memCount, committed: false });
+        perChapter.push({ n, chapterId, chars, ctxTokens, ctxBudget, memCount, summaryLen, committed: false });
         continue;
       }
       rec(`第 ${n} 章提交`, true, `${cd.status}（${cd.appliedCount} 产物）`);
 
-      perChapter.push({ n, chapterId, chars, ctxTokens, memCount, committed: true });
+      perChapter.push({ n, chapterId, chars, ctxTokens, ctxBudget, memCount, summaryLen, committed: true });
 
       // 取本章摘要用于人工评估
       const ch = await call('tool.invoke', {
@@ -376,13 +379,27 @@ app.whenReady().then(async () => {
     console.log('\n──────── 长程记忆验证 ────────');
 
     const committed = perChapter.filter((c) => c.committed);
-    rec('至少 2 章提交成功（才能验证跨章记忆）', committed.length >= 2, `${committed.length} 章`);
+    // 章数越多越能暴露累积性问题；但 1 章成功也算链路通
+    const minCommitted = Math.min(2, chapters);
+    rec(
+      `至少 ${minCommitted} 章提交成功（才能验证跨章记忆）`,
+      committed.length >= minCommitted,
+      `${committed.length} 章`,
+    );
 
     if (committed.length >= 2) {
       const first = committed[0];
       const later = committed.slice(1);
 
-      // 检查：后续章节的上下文是否真的带上了前文记忆
+      const splitNames = (v) =>
+        new Set(
+          String(v)
+            .split(/[、,，]/)
+            .map((s) => s.trim())
+            .filter(Boolean),
+        );
+
+      // ── 检查 1：后续章节的上下文是否真的带上了前文记忆 ──
       const withMemory = later.filter((c) => c.memCount > 0);
       rec(
         '⚠ 后续章节的上下文含长程记忆',
@@ -392,19 +409,21 @@ app.whenReady().then(async () => {
           : '全部为 0 —— 长程记忆未接入上下文',
       );
 
-      // 检查：角色名是否延续
-      const firstNames = new Set(
-        String(first.chars)
-          .split(/[、,，]/)
-          .map((s) => s.trim())
-          .filter(Boolean),
+      // ── 检查 2：⚠ 每一章都应带上前章记忆（不只是"有一章带了"）──
+      // 累积性问题往往表现为"前几章接上了、后面断了"，
+      // 只断言 withMemory.length > 0 会漏掉这种退化。
+      const missingMemory = later.filter((c) => c.memCount === 0).map((c) => c.n);
+      rec(
+        '⚠ 每一章都接上了前文记忆（无中途断裂）',
+        missingMemory.length === 0,
+        missingMemory.length === 0
+          ? `${later.length}/${later.length} 章均有记忆`
+          : `第 ${missingMemory.join('、')} 章记忆为 0 —— 长程记忆中途断裂`,
       );
-      const laterNames = new Set(
-        later
-          .flatMap((c) => String(c.chars).split(/[、,，]/))
-          .map((s) => s.trim())
-          .filter(Boolean),
-      );
+
+      // ── 检查 3：角色延续 ──
+      const firstNames = splitNames(first.chars);
+      const laterNames = new Set(later.flatMap((c) => [...splitNames(c.chars)]));
       const shared = [...firstNames].filter((x) => laterNames.has(x));
       rec(
         '⚠ 后续章节延续第 1 章的角色',
@@ -413,22 +432,65 @@ app.whenReady().then(async () => {
           ? `共有角色：${shared.join('、')}（第1章：${[...firstNames].join('、')}）`
           : `无共有角色 —— 第1章「${[...firstNames].join('、')}」vs 后续「${[...laterNames].join('、')}」`,
       );
+
+      // ── 检查 4：⚠ 主角贯穿全书（累积性漂移的核心指标）──
+      // 之前实测踩到：第 1 章主角「林渊」→ 第 2 章变「林秋」，
+      // 长程记忆整条断裂。只看"有共有角色"不够 ——
+      // 配角偶然重名也算共有，必须盯住主角。
+      const nameCount = new Map();
+      for (const n of splitNames(first.chars)) nameCount.set(n, (nameCount.get(n) ?? 0) + 1);
+      for (const c of later) for (const n of splitNames(c.chars)) nameCount.set(n, (nameCount.get(n) ?? 0) + 1);
+      // 出场章数最多的角色即主角（第 1 章角色优先）
+      const protagonist =
+        [...firstNames].find((n) => nameCount.get(n) === committed.length) ??
+        [...firstNames].sort((a, b) => (nameCount.get(b) ?? 0) - (nameCount.get(a) ?? 0))[0];
+      const appearedIn = committed.filter((c) => splitNames(c.chars).has(protagonist)).length;
+      rec(
+        '⚠ 主角贯穿所有已提交章节（无角色漂移）',
+        appearedIn === committed.length,
+        appearedIn === committed.length
+          ? `「${protagonist}」出现在全部 ${committed.length} 章`
+          : `「${protagonist}」只出现在 ${appearedIn}/${committed.length} 章 —— 疑似角色漂移`,
+      );
+
+      // ── 检查 5：⚠ 上下文 token 不应随章数暴涨（预算是否被撑爆）──
+      const tokenSeries = committed.map((c) => Number(c.ctxTokens) || 0);
+      const maxTokens = Math.max(...tokenSeries);
+      const budget = Number(committed[0].ctxBudget) || 0;
+      rec(
+        '⚠ 上下文未逼近预算上限（长程记忆不会挤爆上下文）',
+        budget === 0 || maxTokens < budget * 0.9,
+        budget === 0
+          ? `最大 ${maxTokens} tokens（未取到预算值）`
+          : `最大 ${maxTokens} / 预算 ${budget}（${((maxTokens / budget) * 100).toFixed(1)}%）`,
+      );
+
+      // ── 检查 6：⚠ 摘要长度稳定（防止后期摘要越写越长）──
+      const lens = committed.map((c) => Number(c.summaryLen) || 0).filter((x) => x > 0);
+      if (lens.length > 1) {
+        const minL = Math.min(...lens);
+        const maxL = Math.max(...lens);
+        rec(
+          '⚠ 各章摘要长度稳定（无逐章膨胀）',
+          maxL <= 500,
+          `摘要字数 ${minL}~${maxL}`,
+        );
+      }
     }
 
-    // 检索是否可用
-    const search = await call('search.query', { query: '林秋', limit: 10 });
+    // 检索是否可用（用主角名查，比写死的名字更有意义）
+    const probe = committed.length > 0 ? String(committed[0].chars).split(/[、,，]/)[0]?.trim() : '林秋';
+    const search = await call('search.query', { query: probe || '林秋', limit: 10 });
     if (search.ok) {
-      rec(
-        '全文检索有命中',
-        true,
-        `章节 ${search.data.chapters?.length ?? 0} 条 / 记忆 ${search.data.memories?.length ?? 0} 条`,
-      );
+      const chHits = search.data.chapters?.length ?? 0;
+      const memHits = search.data.memories?.length ?? 0;
+      rec('全文检索有命中', chHits + memHits > 0, `查「${probe}」→ 章节 ${chHits} 条 / 记忆 ${memHits} 条`);
     }
 
     console.log('\n──── 各章汇总 ────');
     for (const c of perChapter) {
       console.log(
-        `  第 ${c.n} 章：上下文 ${c.ctxTokens} tokens｜长程记忆 ${c.memCount} 条｜${c.committed ? '已提交' : '未提交'}｜角色 ${c.chars}`,
+        `  第 ${c.n} 章：上下文 ${c.ctxTokens} tokens｜长程记忆 ${c.memCount} 条｜摘要 ${c.summaryLen || 0} 字｜${c.committed ? '已提交' : '未提交'}｜角色 ${c.chars}`,
       );
     }
     console.log('────（结束）────');
