@@ -122,6 +122,18 @@ export interface MineResult {
   readonly failedGroups: number;
   /** 失败原因（如实报告，不吞） */
   readonly failures: readonly { readonly sceneFunction: string; readonly error: string }[];
+  /**
+   * ⚠ 因样本不足而跳过的组（如实报告）。
+   *
+   * 不报的话，"某个场景功能没有技能"会被误认为是"挖不出手法"，
+   * 而实际原因可能是"样本太少" —— 两者的处理方式完全不同
+   * （后者只需补语料）。
+   */
+  readonly skipped: readonly {
+    readonly sceneFunction: string;
+    readonly scenes: number;
+    readonly reason: string;
+  }[];
 }
 
 /** 场景功能 → 中文任务描述（让模型知道自己在挖什么） */
@@ -368,11 +380,27 @@ export class PatternMiner {
     const failures: { sceneFunction: string; error: string }[] = [];
     let done = 0;
 
+    // ⚠ 过小的组跳过（并**如实记录原因**）。
+    //   样本 <3 谈不上"共性"，挖出的是伪规律。
+    //   但阈值刻意低（3）—— 见 MIN_SCENES_PER_GROUP 的说明：
+    //   "没有技能"比"低置信度技能"更糟，风险由置信度折扣体现。
+    const skipped: { sceneFunction: string; scenes: number; reason: string }[] = [];
+
     // ⚠ `<= 0` 视为"全部"（调用方传 0 表示不限制，而不是"一组都不挖"）
     const limit = req.maxGroups && req.maxGroups > 0 ? req.maxGroups : Number.POSITIVE_INFINITY;
     const entries = [...groups.entries()].slice(0, limit === Number.POSITIVE_INFINITY ? undefined : limit);
 
     for (const [fn, all] of entries) {
+      if (all.length < MIN_SCENES_PER_GROUP) {
+        skipped.push({
+          sceneFunction: fn,
+          scenes: all.length,
+          reason: `样本不足 ${MIN_SCENES_PER_GROUP} 个场景（仅 ${all.length} 个），不足以判定共性`,
+        });
+        done++;
+        req.onProgress?.(done, entries.length, fn);
+        continue;
+      }
       // ⚠ 分层抽样：保证每部作品都有代表，否则跨作品证据会被抽样抹掉，
       //   导致模式被错误降档为 STYLE（虚假的"证据不足"）
       const sampled = sampleStratifiedByDocument(all, this.scenesPerGroup);
@@ -393,6 +421,7 @@ export class PatternMiner {
       groups: entries.length,
       failedGroups: failures.length,
       failures,
+      skipped,
     };
   }
 }
@@ -531,3 +560,26 @@ export function discountBySample(confidence: number, n: number): number {
   const factor = n >= 15 ? 1 : n >= 8 ? 0.8 : n >= 5 ? 0.65 : 0.5;
   return Math.round(confidence * factor * 100) / 100;
 }
+
+/**
+ * 挖掘所需的**最低样本数**（用户要求"适当放宽"）。
+ *
+ * ## ⚠ 为什么放宽是安全的：折扣已经处理了"样本少=不可靠"
+ *
+ * 早先 `scenesPerGroup` 默认 8，**隐含要求每个场景功能至少有 8 个场景**
+ * 才可能产出技能。实测后果：12 个场景功能里 CLIFFHANGER / HOOK /
+ * TRANSITION 等**一个技能都没有** —— 不是挖不出手法，而是
+ * 样本数不够 8 就从不进入挖掘。
+ *
+ * 但"样本少"的风险已经由 `discountBySample` 覆盖：
+ *   n<5 折半、n=5~7 折 0.65 —— 置信度会如实降低。
+ *   而**没有技能**是比"低置信度技能"更糟的状态：
+ *   场景拿不到任何建议（§25 的检索会返回空）。
+ *
+ * 所以放宽到 **3**：让稀有的场景功能也能产出技能，
+ * 代价（把握较低）通过置信度折扣**如实体现**，而不是靠"不产出"来回避。
+ *
+ * ⚠ 但**不降到 1~2**：1 个场景谈不上"共性"，
+ *   那会产出只反映单个场景的伪规律。
+ */
+export const MIN_SCENES_PER_GROUP = 3;

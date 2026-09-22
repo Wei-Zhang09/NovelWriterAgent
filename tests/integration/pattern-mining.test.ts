@@ -359,10 +359,16 @@ describe('⚠ 失败要如实上报，不吞', () => {
     });
     const miner = new PatternMiner({ logger, structured: caller as never });
 
+    // ⚠ 每个组需 ≥3 个场景（MIN_SCENES_PER_GROUP），否则会被"样本不足"跳过 ——
+    //   本测试要测的是"失败上报"，所以夹具必须满足样本门槛。
     const r = await miner.mine({
       scenes: [
-        scene({ id: 'a', scene_function: 'CONFLICT' }),
-        scene({ id: 'b', scene_function: 'SETUP' }),
+        scene({ id: 'a1', scene_function: 'CONFLICT' }),
+        scene({ id: 'a2', scene_function: 'CONFLICT' }),
+        scene({ id: 'a3', scene_function: 'CONFLICT' }),
+        scene({ id: 'b1', scene_function: 'SETUP' }),
+        scene({ id: 'b2', scene_function: 'SETUP' }),
+        scene({ id: 'b3', scene_function: 'SETUP' }),
       ],
       textOf: () => '正文',
       genre: '都市',
@@ -382,9 +388,15 @@ describe('⚠ maxGroups 必须真的生效（声明了却不生效比没有更�
 
     const r = await miner.mine({
       scenes: [
-        scene({ id: 'a', scene_function: 'CONFLICT' }),
-        scene({ id: 'b', scene_function: 'SETUP' }),
-        scene({ id: 'c', scene_function: 'COOLDOWN' }),
+        scene({ id: 'a1', scene_function: 'CONFLICT' }),
+        scene({ id: 'a2', scene_function: 'CONFLICT' }),
+        scene({ id: 'a3', scene_function: 'CONFLICT' }),
+        scene({ id: 'b1', scene_function: 'SETUP' }),
+        scene({ id: 'b2', scene_function: 'SETUP' }),
+        scene({ id: 'b3', scene_function: 'SETUP' }),
+        scene({ id: 'c1', scene_function: 'COOLDOWN' }),
+        scene({ id: 'c2', scene_function: 'COOLDOWN' }),
+        scene({ id: 'c3', scene_function: 'COOLDOWN' }),
       ],
       textOf: () => '正文',
       genre: '都市',
@@ -402,8 +414,12 @@ describe('⚠ maxGroups 必须真的生效（声明了却不生效比没有更�
 
     const r = await miner.mine({
       scenes: [
-        scene({ id: 'a', scene_function: 'CONFLICT' }),
-        scene({ id: 'b', scene_function: 'SETUP' }),
+        scene({ id: 'a1', scene_function: 'CONFLICT' }),
+        scene({ id: 'a2', scene_function: 'CONFLICT' }),
+        scene({ id: 'a3', scene_function: 'CONFLICT' }),
+        scene({ id: 'b1', scene_function: 'SETUP' }),
+        scene({ id: 'b2', scene_function: 'SETUP' }),
+        scene({ id: 'b3', scene_function: 'SETUP' }),
       ],
       textOf: () => '正文',
       genre: '都市',
@@ -419,15 +435,65 @@ describe('⚠ maxGroups 必须真的生效（声明了却不生效比没有更�
 
     const r = await miner.mine({
       scenes: [
-        scene({ id: 'a', scene_function: 'CONFLICT' }),
-        scene({ id: 'b', scene_function: 'SETUP' }),
-        scene({ id: 'c', scene_function: 'COOLDOWN' }),
+        scene({ id: 'a1', scene_function: 'CONFLICT' }),
+        scene({ id: 'a2', scene_function: 'CONFLICT' }),
+        scene({ id: 'a3', scene_function: 'CONFLICT' }),
+        scene({ id: 'b1', scene_function: 'SETUP' }),
+        scene({ id: 'b2', scene_function: 'SETUP' }),
+        scene({ id: 'b3', scene_function: 'SETUP' }),
+        scene({ id: 'c1', scene_function: 'COOLDOWN' }),
+        scene({ id: 'c2', scene_function: 'COOLDOWN' }),
+        scene({ id: 'c3', scene_function: 'COOLDOWN' }),
       ],
       textOf: () => '正文',
       genre: '都市',
     });
 
     expect(r.groups).toBe(3);
+  });
+});
+
+describe('⚠ 样本不足的组被跳过，且如实报告原因（用户要求放宽到 3）', () => {
+  it('⚠ 只有 2 个场景的组被跳过（谈不上共性）', async () => {
+    const caller = fakeCaller([{ ...GOOD, evidence: ['S1'] }]);
+    const miner = new PatternMiner({ logger, structured: caller as never });
+
+    const r = await miner.mine({
+      scenes: [
+        scene({ id: 'a1', scene_function: 'CLIFFHANGER' }),
+        scene({ id: 'a2', scene_function: 'CLIFFHANGER' }),
+      ],
+      textOf: () => '正文',
+      genre: '都市',
+    });
+
+    expect(r.patterns.length).toBe(0);
+    expect(r.skipped.length).toBe(1);
+    expect(r.skipped[0]!.sceneFunction).toBe('CLIFFHANGER');
+    expect(r.skipped[0]!.scenes).toBe(2);
+    // ⚠ 必须说明原因 —— 否则"某场景功能没技能"会被误认为"挖不出手法"，
+    //   而实际是"样本太少"（处理方式完全不同：补语料 vs 调 prompt）
+    expect(r.skipped[0]!.reason).toContain('样本不足');
+    // 没调用模型（跳过要真的省下调用）
+    expect(caller).not.toHaveBeenCalled();
+  });
+
+  it('恰好 3 个场景时正常挖掘（放宽后的门槛）', async () => {
+    const caller = fakeCaller([{ ...GOOD, evidence: ['S1'] }]);
+    const miner = new PatternMiner({ logger, structured: caller as never });
+
+    const r = await miner.mine({
+      scenes: [
+        scene({ id: 'a1', scene_function: 'CLIFFHANGER' }),
+        scene({ id: 'a2', scene_function: 'CLIFFHANGER' }),
+        scene({ id: 'a3', scene_function: 'CLIFFHANGER' }),
+      ],
+      textOf: () => '正文',
+      genre: '都市',
+    });
+
+    expect(r.skipped.length).toBe(0);
+    expect(r.patterns.length).toBe(1);
   });
 });
 

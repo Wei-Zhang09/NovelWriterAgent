@@ -41,6 +41,8 @@ import {
   type ReviewOutput,
   type ReviewStatus,
 } from '@nwa/shared';
+import { detectProseIssues, splitParagraphs } from '../naturalness/detectors.js';
+import { detectAiPatterns } from '../naturalness/ai-patterns.js';
 
 /** 结构化调用（与 gateway 解耦） */
 export type ReviewStructuredCaller = <T>(req: {
@@ -106,8 +108,66 @@ export class Reviewer {
    *   - 模型输出的 issues —— 需要 evidence 才采信
    *   两者的 id 前缀不同（ci_ vs ri_），便于区分来源。
    */
+  /**
+   * 对正文跑确定性检测（§34 + ADR-0007）。
+   *
+   * ⚠ 检测器失败**不得**让审稿失败 —— 它们是辅助闸门，
+   *   不是前置依赖。但失败要如实记日志（否则"检测没生效"查不出来）。
+   */
+  private detectProse(text: string): ReviewIssue[] {
+    if (!text || text.trim().length === 0) return [];
+    try {
+      const out: ReviewIssue[] = [];
+
+      // ADR-0007 的 11 个零成本检测器（工程词泄漏 / 截断 / 复读 …）
+      for (const p of detectProseIssues(text)) {
+        out.push({
+          id: `prose_${p.code}_p${p.paragraph}`,
+          severity: p.severity,
+          category: p.severity === 'BLOCKING' ? 'CONTINUITY' : 'NATURALNESS',
+          claim: p.detail,
+          evidence: [],
+          location: { paragraph: p.paragraph, excerpt: p.excerpt },
+          suggestions: [],
+        });
+      }
+
+      // §34 的 AI 味模式（模板化过渡 / 连接词堆叠 / 机械排比 …）
+      //
+      // ⚠ 全部标 MINOR，**没有 BLOCKING** —— 这些是风格判断，
+      //   用它们阻断提交等于把风格偏好当硬约束（§34 只说"减少"）。
+      const paras = splitParagraphs(text);
+      for (const h of detectAiPatterns(paras)) {
+        out.push({
+          id: `ai_${h.code}_p${h.paragraph}`,
+          severity: 'MINOR',
+          category: 'NATURALNESS',
+          claim: `${h.detail}（AI 味模式）`,
+          evidence: [],
+          location: { paragraph: h.paragraph, excerpt: h.excerpt },
+          suggestions: [],
+        });
+      }
+
+      return out;
+    } catch (e) {
+      this.logger.warn('正文确定性检测失败（跳过，不影响审稿）', {
+        error: e instanceof Error ? e.message : String(e),
+      });
+      return [];
+    }
+  }
+
   async review(req: ReviewRequest): Promise<ReviewResult> {
-    const deterministic = req.deterministicIssues ?? [];
+    // ⚠ 正文层面的**确定性检测**（零成本、零幻觉的最后一道闸门）。
+    //
+    //   实测发现：`detectProseIssues`（STEP 5 写的 11 个检测器）与
+    //   §34 的 AI 味检测器**从未被任何地方调用** —— 写了但没接线，
+    //   等于不存在。这里补上接线，否则"AI 味检测"只是文档里的功能。
+    //
+    //   ⚠ 只对**正文**跑，不对上下文跑：这些规则检查的是最终产出。
+    const proseIssues = this.detectProse(req.draftText);
+    const deterministic = [...(req.deterministicIssues ?? []), ...proseIssues];
 
     const res = await this.structured<ReviewOutput>({
       schema: ReviewOutputSchema,

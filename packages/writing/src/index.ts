@@ -7,6 +7,8 @@
  *   待办    Writer（7）、Reviewer（8）、Continuity（10）
  */
 export * from './naturalness/detectors.js';
+export { detectAiPatterns, AI_RULES } from './naturalness/ai-patterns.js';
+export type { AiPatternCode, AiPatternHit } from './naturalness/ai-patterns.js';
 
 // ── Prompt 模块化（§31） ─────────────────────────────────────
 export * from './prompts/index.js';
