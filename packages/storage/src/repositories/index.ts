@@ -52,6 +52,17 @@ export { FactRepository } from './facts.js';
 export { RunRepository } from './runs.js';
 export { ForeshadowingRepository, FORESHADOW_STATUSES, FORESHADOW_TIERS } from './foreshadowing.js';
 export { CorpusRepository, canProcess, PROCESSABLE_USAGE, CORPUS_SOURCE_TYPES, CORPUS_USAGE } from './corpus.js';
+// ⚠ 类型隔离是用户要求的硬约束，导出唯一入口避免各调用方自写过滤
+export {
+  normalizeGenre,
+  sameGenre,
+  filterSkillsByGenre,
+  filterDocumentsByGenre,
+  filterScenesByGenre,
+  listGenres,
+  SKILL_SCOPES,
+} from './genre.js';
+export type { SkillScope, SkillFilter, FilterableSkill, SkillFilterResult } from './genre.js';
 export type {
   CorpusDocumentRow,
   CorpusSceneRow,

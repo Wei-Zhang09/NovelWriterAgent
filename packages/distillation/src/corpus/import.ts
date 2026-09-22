@@ -184,6 +184,9 @@ export class CorpusImporter {
         allowedUsage: req.allowedUsage,
         contentHash: hash,
         genre: req.genre ?? null,
+        // ⚠ 简介由清洗阶段提取（含题材标签，对类型判定有价值）——
+        //   它不参与场景标注，但记入文档元信息供类型判断参考
+        ...(cleanReport?.synopsis ? { synopsis: cleanReport.synopsis } : {}),
         ...(req.qualityTags ? { qualityTags: req.qualityTags } : {}),
       });
     } catch (e) {

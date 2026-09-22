@@ -349,3 +349,64 @@ describe('⚠ dropExtras 默认不删（实测 15% 内容被误删）', () => {
     expect(r.text).not.toContain('番外正文内容');
   });
 });
+
+
+// ══════════════════════════════════════════════════════════
+describe('⚠ 平台元信息与时间戳（实测《清纯校花傻白甜》）', () => {
+  const PLATFORM = [
+    '书籍信息',
+    '书名：清纯校花傻白甜，撩我却刀刀暴击',
+    '连载状态：已完结',
+    '字数：117.9 万字',
+    '章节数：488 章',
+    '',
+    '【简介】',
+    '【恋爱日常】【单女主】【双向救赎】',
+    '因为儿时的一句承诺，陈路追求了一起长大的女孩整整七年。',
+    '',
+    '————————————————————————————————',
+    '',
+    '第1章 你如皓月，触不可及。',
+    '',
+    '章节更新时间：2023-04-30 21:17',
+    '',
+    '正文内容开始了。',
+  ].join('\n');
+
+  it('删掉平台元信息头部', () => {
+    const r = cleanWebNovel(PLATFORM);
+    expect(r.text).not.toContain('书籍信息');
+    expect(r.text).not.toContain('书名：');
+    expect(r.text).not.toContain('连载状态');
+    expect(r.text).not.toContain('字数：');
+    expect(r.text).toContain('第1章 你如皓月');
+    expect(r.text).toContain('正文内容开始了。');
+  });
+
+  it('⚠ 简介被单独提取（含题材标签，对类型判定有价值）', () => {
+    const r = cleanWebNovel(PLATFORM);
+    expect(r.report.synopsis).toBeDefined();
+    expect(r.report.synopsis).toContain('恋爱日常');
+    expect(r.report.synopsis).toContain('陈路');
+  });
+
+  it('⚠ 简介不留在正文里（它不是正文，参与标注会误判开篇手法）', () => {
+    const r = cleanWebNovel(PLATFORM);
+    expect(r.text).not.toContain('【简介】');
+    expect(r.text).not.toContain('【恋爱日常】');
+  });
+
+  it('删掉章节更新时间行（实测 488 处）', () => {
+    const r = cleanWebNovel(PLATFORM);
+    expect(r.text).not.toContain('章节更新时间');
+    expect(r.text).not.toContain('2023-04-30');
+  });
+
+  it('⚠ 卷尾后缀被去掉但不删内容', () => {
+    const t = '第61章 未来（第一卷 完）\n\n正文内容。';
+    const r = cleanWebNovel(t);
+    expect(r.text).toContain('第61章 未来');
+    expect(r.text).not.toContain('第一卷 完');
+    expect(r.text).toContain('正文内容。');
+  });
+});

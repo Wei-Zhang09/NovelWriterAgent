@@ -37,6 +37,18 @@ export {
   CORPUS_USAGE,
 } from './repositories/index.js';
 
+// ⚠ 类型隔离（用户要求：写某类型时才用该类型的内容）
+export {
+  normalizeGenre,
+  sameGenre,
+  filterSkillsByGenre,
+  filterDocumentsByGenre,
+  filterScenesByGenre,
+  listGenres,
+  SKILL_SCOPES,
+} from './repositories/index.js';
+export type { SkillScope, SkillFilter, FilterableSkill, SkillFilterResult } from './repositories/index.js';
+
 export type {
   CorpusDocumentRow,
   CorpusSceneRow,

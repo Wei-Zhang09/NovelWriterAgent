@@ -67,6 +67,39 @@ const PAREN_WM_PATTERNS: readonly RegExp[] = [
  *
  * 因此按"水印片段"删除，而不是整行删除 —— 整行删会丢掉后面的正文。
  */
+/**
+ * 书籍元信息头部（番茄/起点等平台的导出格式）。
+ *
+ * ⚠ 实测《清纯校花傻白甜》开头有：
+ *   ```
+ *   书籍信息
+ *   书名：…
+ *   连载状态：已完结
+ *   字数：117.9 万字
+ *   章节数：488 章
+ *   【简介】…
+ *   ————————————————
+ *   ```
+ *   这段是**平台元信息 + 简介**，不是正文。简介还会被当成正文
+ *   参与场景标注 —— 而它其实是"全书概要"，会让模式挖掘
+ *   误判"开篇手法"。
+ *
+ * ⚠ 但简介本身有信息量（题材标签），因此**单独提取**而非丢弃。
+ */
+const META_HEADER = /^书籍信息\s*$[\s\S]{0,4000}?(?:^[—-]{4,}\s*$)/m;
+
+/** 平台元信息字段行（书名：/字数：/章节数：/连载状态：） */
+const META_FIELD = /^(书名|作者|连载状态|字数|章节数|更新时间|标签|分类)[：:].*$/;
+
+/** 简介块标记 */
+const SYNOPSIS_MARK = /^【简介】\s*$/;
+
+/** 每章的时间戳行（实测 488 处） */
+const CHAPTER_TIMESTAMP = /^\s*章节更新时间[：:]\s*[\d\-:\s]+$/;
+
+/** 卷尾标记后缀：「第61章 未来（第一卷 完）」 */
+const VOLUME_END_SUFFIX = /[（(]第[0-9一二三四五六七八九十百千零〇两]+卷\s*完[）)]/;
+
 const INLINE_WM: readonly RegExp[] = [
   // ⚠ 新形态（实测《凡人修仙传》《诛仙》）：
   //   - `圣堂最新章节` 直接插在句子中间（11 处）
@@ -436,6 +469,80 @@ export function cleanWebNovel(input: string, opts: CleanOptions = {}): CleanResu
     samples.push({ rule: '卷+章合并标题', sample: '第九卷灵界百族第一千六百五十三章尸体与真血 → 拆两行' });
   }
 
+  // ── 规则 3f：平台元信息头部（提取简介后删除）──
+  //
+  // ⚠ 简介单独提取保存：它是"全书概要"不是正文，参与场景标注会让
+  //   模式挖掘误判"开篇手法"；但其中的题材标签对类型判定有价值。
+  let synopsis: string | undefined;
+  let metaChars = 0;
+  {
+    const m = META_HEADER.exec(text);
+    if (m) {
+      const block = m[0];
+      // 提取简介部分
+      const lines = block.split('\n');
+      const synStart = lines.findIndex((l) => SYNOPSIS_MARK.test(l.trim()));
+      if (synStart >= 0) {
+        synopsis = lines
+          .slice(synStart + 1)
+          .filter((l) => !META_FIELD.test(l.trim()) && l.trim().length > 0)
+          .join('\n')
+          .trim();
+      }
+      metaChars = block.length;
+      text = text.slice(m.index + block.length);
+    }
+  }
+  if (metaChars > 0) {
+    stats.push({ name: '平台元信息头部（简介已单独提取）', count: 1, removedChars: metaChars });
+    samples.push({ rule: '平台元信息头部', sample: '「书籍信息 / 书名：… / 字数：… / 【简介】…」整块删除' });
+  }
+
+  // ── 规则 3g：每章时间戳行 ──
+  //
+  // ⚠ 实测《清纯校花傻白甜》488 章各有「章节更新时间：2023-04-30 21:17」。
+  //   不清掉会混进场景文本（且它含数字，会污染 prose 统计）。
+  let tsCount = 0;
+  let tsChars = 0;
+  {
+    const ls = text.split('\n');
+    const out: string[] = [];
+    for (const line of ls) {
+      if (CHAPTER_TIMESTAMP.test(line)) {
+        tsCount++;
+        tsChars += line.length + 1;
+        continue;
+      }
+      out.push(line);
+    }
+    text = out.join('\n');
+  }
+  if (tsCount > 0) {
+    stats.push({ name: '章节更新时间行', count: tsCount, removedChars: tsChars });
+    samples.push({ rule: '章节更新时间行', sample: '章节更新时间：2023-04-30 21:17' });
+  }
+
+  // ── 规则 3h：卷尾后缀 ──
+  //
+  // ⚠ 实测形态：「第61章 未来（第一卷 完）」。
+  //   后缀不删会让章节标题带上"（第一卷 完）"，
+  //   影响标题文本的统计（虽不影响章号解析）。
+  let volSuffix = 0;
+  {
+    const ls = text.split('\n');
+    for (let i = 0; i < ls.length; i++) {
+      if (VOLUME_END_SUFFIX.test(ls[i]!)) {
+        ls[i] = ls[i]!.replace(VOLUME_END_SUFFIX, '').trimEnd();
+        volSuffix++;
+      }
+    }
+    if (volSuffix > 0) text = ls.join('\n');
+  }
+  if (volSuffix > 0) {
+    stats.push({ name: '卷尾后缀（不删内容）', count: volSuffix, removedChars: 0 });
+    samples.push({ rule: '卷尾后缀', sample: '第61章 未来（第一卷 完） → 第61章 未来' });
+  }
+
   // ── 规则 3e：重复的 banner 标题行（同章号且无标题正文）──
   //
   // ⚠ 实测《凡人修仙传》每章标题出现**两次**：
@@ -512,6 +619,7 @@ export function cleanWebNovel(input: string, opts: CleanOptions = {}): CleanResu
   return {
     text,
     report: {
+      ...(synopsis ? { synopsis } : {}),
       removedChars,
       removedRatio: before > 0 ? Number((removedChars / before).toFixed(4)) : 0,
       rules: stats,

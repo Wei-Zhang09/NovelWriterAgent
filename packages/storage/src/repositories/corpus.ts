@@ -18,6 +18,7 @@
 import type { Database } from '../database.js';
 import { AppError, ErrorCode } from '@nwa/core';
 import { now, requireRow } from './types.js';
+import { normalizeGenre, sameGenre, listGenres } from './genre.js';
 
 /** 来源类型（§16.2） */
 export const CORPUS_SOURCE_TYPES = [
@@ -51,11 +52,17 @@ export interface CorpusDocumentRow {
   readonly allowed_usage: string;
   readonly content_hash: string | null;
   readonly created_at: string;
+  /** 子类型（如"东方玄幻"）；迁移 0007 引入 */
+  readonly subgenre?: string | null;
+  /** 简介/文案；迁移 0007 引入 */
+  readonly synopsis?: string | null;
 }
 
 export interface CorpusSceneRow {
   readonly id: string;
   readonly document_id: string;
+  /** 类型（冗余自文档，便于按类型统计；迁移 0007 引入） */
+  readonly genre?: string | null;
   readonly chapter_number: number | null;
   readonly scene_index: number | null;
   readonly text_path: string | null;
@@ -76,6 +83,10 @@ export interface RegisterDocumentInput {
   readonly contentHash: string;
   readonly qualityTags?: readonly string[];
   readonly popularityTags?: readonly string[];
+  /** 子类型（可选） */
+  readonly subgenre?: string | null;
+  /** 简介/文案（清洗阶段提取；不参与场景标注） */
+  readonly synopsis?: string | null;
 }
 
 /**
@@ -164,8 +175,9 @@ export class CorpusRepository {
     this.db.run(
       `INSERT INTO corpus_documents
          (id, title, author, source_type, license_type, local_path, genre,
-          popularity_tags_json, quality_tags_json, allowed_usage, content_hash, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          popularity_tags_json, quality_tags_json, allowed_usage, content_hash, created_at,
+          subgenre, synopsis)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       input.id,
       input.title.trim(),
       input.author ?? null,
@@ -178,6 +190,8 @@ export class CorpusRepository {
       input.allowedUsage,
       input.contentHash,
       ts,
+      input.subgenre ?? null,
+      input.synopsis ?? null,
     );
     return this.get(input.id);
   }
@@ -212,6 +226,25 @@ export class CorpusRepository {
     );
   }
 
+  /**
+   * 按**类型**列出可处理文档（用户要求的类型隔离）。
+   *
+   * ⚠ 类型过滤必须下沉到仓储层：让每个调用方自己 filter 会导致
+   *   "某条路径忘了过滤"的漏洞，而那种漏洞只在跨类型时暴露。
+   *
+   * 归一化由 genre.ts 的 normalizeGenre 负责（仙侠/修仙/修真 视为同类）。
+   */
+  listProcessableByGenre(genre: string | null): CorpusDocumentRow[] {
+    const target = normalizeGenre(genre);
+    if (target === null) return [];
+    return this.listProcessable().filter((d) => sameGenre(d.genre, target));
+  }
+
+  /** 列出所有可用类型及文档数（供 UI 选择"写什么类型"） */
+  listGenres(): { genre: string; count: number }[] {
+    return listGenres(this.listProcessable());
+  }
+
   /** ⚠ 供蒸馏链使用：拿不到可处理的文档就报错，不静默返回空 */
   requireProcessable(id: string): CorpusDocumentRow {
     const doc = this.get(id);
@@ -235,15 +268,18 @@ export class CorpusRepository {
     readonly textPath: string | null;
     readonly sceneType: string | null;
     readonly annotationJson: string | null;
+    /** 类型（冗余自文档，便于按类型统计；迁移 0007 引入） */
+    readonly genre?: string | null;
   }): void {
     this.db.run(
       `INSERT INTO corpus_scenes
-         (id, document_id, chapter_number, scene_index, text_path, scene_type, annotation_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         (id, document_id, chapter_number, scene_index, text_path, scene_type, annotation_json, created_at, genre)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          text_path = excluded.text_path,
          scene_type = excluded.scene_type,
-         annotation_json = excluded.annotation_json`,
+         annotation_json = excluded.annotation_json,
+         genre = excluded.genre`,
       input.id,
       input.documentId,
       input.chapterNumber,
@@ -252,6 +288,7 @@ export class CorpusRepository {
       input.sceneType,
       input.annotationJson,
       now(),
+      input.genre ?? null,
     );
   }
 

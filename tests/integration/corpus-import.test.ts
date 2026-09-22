@@ -193,6 +193,35 @@ describe('章节识别（§18）', () => {
     expect(r.chapters).toHaveLength(1);
   });
 
+  it('⚠ 识别「序号|第X章」格式（实测《百岁之好》第 58 章起改用此格式）', () => {
+    // 实测踩到：该文件前 57 章是纯标题「第五十七章」，
+    // 第 58 章起变成「58|第五十七章」——
+    // 早先只认"行首即第X章"，导致第 58 章之后**全部漏检**
+    // （只检测出 60 章，文件实际有 109 个章节标记）。
+    const text = [
+      '第五十六章', '正文', '',
+      '第五十七章', '正文', '',
+      '58|第五十七章', '正文', '',
+      '59|第五十七章', '正文', '',
+      '61|第六十一章', '正文',
+    ].join('\n');
+    const r = detectChapters(text);
+    expect(r.strategy).toBe('explicit-title');
+    expect(r.chapters).toHaveLength(5);
+    expect(r.chapters[2]!.declaredNumber).toBe(58);
+    expect(r.chapters[3]!.declaredNumber).toBe(59);
+    expect(r.chapters[4]!.declaredNumber).toBe(61);
+  });
+
+  it('⚠ 竖线前缀是权威章号（标题文本可能是陈旧的）', () => {
+    // 实测：源文本 58/59/60 三章标题都写着"第五十七章"（粘贴时没更新），
+    // 但正文内容各不相同（已逐字核对）。前缀 58/59/60 才是真实章号。
+    const text = ['1|第一章', '正文一', '', '2|第一章', '正文二', '', '3|第一章', '正文三'].join('\n');
+    const r = detectChapters(text);
+    expect(r.chapters.map((c) => c.declaredNumber)).toEqual([1, 2, 3]);
+    expect(r.gaps).toEqual([]); // 不应产生假缺口
+  });
+
   it('⚠ 只有一个标题时不算章节结构（可能是正文偶然匹配）', () => {
     const r = detectChapters('第一章 唯一的标题\n\n然后是正文。\n');
     expect(r.strategy).toBe('whole-document');

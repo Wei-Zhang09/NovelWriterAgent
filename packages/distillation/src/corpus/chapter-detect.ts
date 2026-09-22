@@ -72,6 +72,17 @@ export function parseChineseNumber(input: string): number | null {
 /** 从标题里提取声明的章节号（第X回 / 第X章 / Chapter N） */
 export function declaredNumberOf(title: string | null): number | null {
   if (!title) return null;
+  // ⚠ 「序号|第X章」格式：**前缀序号才是权威章号**。
+  //
+  //   实测《百岁之好》第 58 章起改用此格式，但**标题文本是陈旧的**：
+  //     58|第五十七章 / 59|第五十七章 / 60|第五十七章 / 61|第六十一章
+  //   三个不同章节的标题都写着"第五十七章"（源文本粘贴时没更新标题），
+  //   而前缀 58/59/60 才是真实章号 —— 正文内容各不相同（已逐字核对）。
+  //
+  //   因此有前缀时**必须以前缀为准**，否则会产生
+  //   3 处假"缺章"与 4 处假"编号混乱"。
+  const piped = /^\s*(\d{1,4})\s*[|｜]\s*第\s*[0-9一二三四五六七八九十百千零〇两]+\s*[章回节篇]/.exec(title);
+  if (piped?.[1]) return Number(piped[1]);
   const cn = /第\s*([0-9一二三四五六七八九十百千零〇两]+)\s*[章回节卷篇]/.exec(title);
   if (cn?.[1]) return parseChineseNumber(cn[1]);
   const en = /Chapter\s+([0-9]+)/i.exec(title);
@@ -123,6 +134,16 @@ const TITLE_PATTERNS: readonly { readonly name: string; readonly re: RegExp }[] 
   {
     name: 'cn-numbered-colon',
     re: /^[\s\u3000]*第\s*[0-9一二三四五六七八九十百千零〇两]+\s*[章回节篇]\s*[：:]/,
+  },
+  // ⚠ 「序号|第X章」带竖线前缀（实测《百岁之好》从第 58 章起改用此格式）
+  //
+  //   实测：该文件前 57 章是纯标题「第五十七章」，
+  //   从第 58 章起变成「58|第五十七章」，一直到最后「106|第一百零六章」。
+  //   早先只认"行首即第X章"，导致**第 58 章之后全部漏检** ——
+  //   只检测出 60 章，而文件实际有 109 个章节标记。
+  {
+    name: 'piped-number',
+    re: /^[\s\u3000]*\d{1,4}\s*[|｜]\s*第\s*[0-9一二三四五六七八九十百千零〇两]+\s*[章回节篇]/,
   },
   // Chapter N / CHAPTER N
   { name: 'en-numbered', re: /^[\s\u3000]*Chapter\s+[0-9IVXLC]+\b.*$/i },
@@ -224,8 +245,8 @@ export function splitMergedTitle(line: string): { title: string; rest: string } 
   const trimmed = line.trim();
   if (trimmed.length <= 60) return { title: trimmed, rest: '' };
 
-  // 定位章节标记之后的位置
-  const m = /^第\s*[0-9一二三四五六七八九十百千零〇两]+\s*[章回节卷篇]/.exec(trimmed);
+  // 定位章节标记之后的位置（支持「第X章」与「序号|第X章」两种前缀）
+  const m = /^(?:\d{1,4}\s*[|｜]\s*)?第\s*[0-9一二三四五六七八九十百千零〇两]+\s*[章回节卷篇]/.exec(trimmed);
   const start = m ? m[0].length : 0;
   const after = trimmed.slice(start);
 

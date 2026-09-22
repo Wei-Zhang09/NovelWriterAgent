@@ -30,6 +30,7 @@ import { fileURLToPath } from 'node:url';
 import { Database, MIGRATIONS, createRepositories } from '../packages/storage/dist/index.js';
 import { Logger } from '../packages/core/dist/index.js';
 import { CorpusImporter, cleanWebNovel, detectChapters, summarizeGaps } from '../packages/distillation/dist/index.js';
+import { normalizeGenre } from '../packages/storage/dist/index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO = join(here, '..');
@@ -53,12 +54,23 @@ const BOOKS = [
     expectNoise: ['武动乾坤', '16kxs', '手机阅读', '求月票', '求推荐票', 'vip章 目录'],
   },
   {
+    // ⚠ 该文件标题有两种格式（前 57 章纯标题、58 章起「58|第五十七章」），
+    //   已修复检测。实际 108 章（用户指出应为完整版）。
     name: '百岁之好，一言为定',
     file: join(ATTACH, '百岁之好，一言为定-2.md'),
     genre: '都市校园',
     clean: false,
     sourceType: 'USER_OWNED',
     expectNoise: [],
+  },
+  {
+    // ⚠ 平台导出格式：带书籍信息头部 + 每章时间戳（488 处）
+    name: '清纯校花傻白甜，撩我却刀刀暴击',
+    file: join(ATTACH, '清纯校花傻白甜，撩我却刀刀暴击 - 夜雨i.md'),
+    genre: '都市言情',
+    clean: true,
+    sourceType: 'USER_OWNED',
+    expectNoise: ['章节更新时间', '书籍信息', '【简介】'],
   },
   {
     name: '凡人修仙传',
@@ -161,6 +173,7 @@ for (const book of BOOKS) {
     title: book.name,
     text: raw,
     genre: book.genre,
+    // 简介由清洗阶段提取（含题材标签，对类型判定有价值）
     sourceType: book.sourceType,
     licenseType: 'USER_OWNED',
     allowedUsage: 'FULL_ANALYSIS',
@@ -198,6 +211,13 @@ for (const book of BOOKS) {
 
 // ── 汇总 ──
 console.log(`\n──── 语料汇总 ────`);
+// ⚠ 类型归一化：仙侠/修仙/修真 视为同类；都市/都市校园/都市言情 视为同类
+const byGenre = new Map();
+for (const s of summary) {
+  const g = normalizeGenre(s.genre) ?? s.genre;
+  byGenre.set(g, (byGenre.get(g) ?? 0) + 1);
+}
+console.log(`  类型分布（归一化后）：${[...byGenre.entries()].map(([g, n]) => `${g}×${n}`).join('、')}`);
 for (const s of summary) {
   console.log(
     `  ${s.name}（${s.genre}）：${s.chapters} 章｜${(s.chars ?? 0).toLocaleString()} 字` +

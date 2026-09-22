@@ -54,6 +54,7 @@ describe('迁移', () => {
       '0004_chapter_review',
       '0005_fts',
       '0006_summary_approval',
+      '0007_genre_isolation',
     ]);
   });
 
@@ -80,6 +81,9 @@ describe('迁移', () => {
     //   FTS5 为每个虚拟表建 5 张影子表（_data/_idx/_content/_docsize/_config）
     //     → 2 × 5 = 10
     //   索引 27 → 28（0006 新增 idx_chapters_summary_pending）
+    //   索引 28 → 32（0007 新增 4 个：idx_skills_genre_scope、
+    //     idx_corpus_scenes_genre、idx_patterns_genre_scope、
+    //     idx_corpus_documents_genre —— 类型隔离的检索路径）
     //
     // 分组断言而不是只数总数：这样新增业务表与新增 FTS 表会分别失败，
     // 一眼能看出是哪一类变了。
@@ -99,7 +103,7 @@ describe('迁移', () => {
     const indexes = db.all<{ name: string }>(
       "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'",
     );
-    expect(indexes.length).toBe(28);
+    expect(indexes.length).toBe(32);
   });
 
   it('⚠ 全部迁移都已应用（构建产物不遗漏 SQL）', () => {
@@ -116,6 +120,7 @@ describe('迁移', () => {
       '0004_chapter_review',
       '0005_fts',
       '0006_summary_approval',
+      '0007_genre_isolation',
     ]);
   });
 
