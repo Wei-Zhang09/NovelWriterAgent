@@ -146,10 +146,15 @@ export class SceneAnnotator {
           semantic = res.data;
           annotatedCount++;
         } else {
-          annotationError = res.error.message;
+          // ⚠ 带上模型**原始输出**：只报 "hook.type: Required" 无法判断
+          //   模型到底返回了什么（可能它给的是字符串而非对象）。
+          //   实测《清纯校花》7 个失败场景就是靠这个才发现根因。
+          const head = res.rawText ? `｜原始输出：${res.rawText.slice(0, 400)}` : '';
+          annotationError = `${res.error.message}${head}`;
           this.logger.warn('场景语义标注失败（该场景不参与模式挖掘）', {
             sceneId,
             error: res.error.message,
+            rawTextHead: res.rawText?.slice(0, 300),
           });
         }
       } else {

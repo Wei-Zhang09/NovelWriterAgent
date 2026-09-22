@@ -156,23 +156,59 @@ app.whenReady().then(async () => {
 
     // ⚠ 跑真实模型标注并落库（消耗额度）
     console.log(`\n──── 标注并落库（真实模型，前 ${CHAPTERS} 章）────\n`);
-    // ⚠ 全量标注 108 章耗时以十分钟计，IPC 超时必须放宽
-    //   （默认 600s 会在跑到第 45 章时误报 TIMEOUT）
-    const persisted = await call(
-      'annotate.persistDocument',
-      {
-        documentId: docId,
-        corpusRoot: CORPUS_ROOT,
-        maxChapters: CHAPTERS,
-      },
-      3_600_000,
-    );
+    // ⚠ 分块循环，而不是一次性调用。
+    //
+    //   实测踩坑：486 章 × ~10 秒 ≈ 81 分钟，而 IPC 超时设 1 小时
+    //   → 跑到第 343 章超时，整个调用报失败（数据其实都落库了，
+    //   但脚本显示失败，掩盖了真实进度）。
+    //
+    //   分块后每次调用有界，进度靠**断点续跑**累积 ——
+    //   任何一块超时/中断都只损失一块，且下次调用自动接上。
+    const CHUNK = Number(arg('chunk', '40'));
+    let totalChapters = 0;
+    let totalScenes = 0;
+    let totalAnnotated = 0;
+    let totalFailed = 0;
+    let rounds = 0;
 
-    if (!persisted.ok) {
-      rec('标注落库', false, `${persisted.error?.code}：${persisted.error?.message}`);
-      return finish();
+    let prevAnnotated = -1;
+
+    for (let round = 1; round <= Math.ceil(CHAPTERS / CHUNK) + 3; round++) {
+      rounds = round;
+      const r = await call(
+        'annotate.persistDocument',
+        { documentId: docId, corpusRoot: CORPUS_ROOT, maxChapters: CHAPTERS },
+        1_200_000,
+      );
+      if (!r.ok) {
+        rec(`标注落库（第 ${round} 轮）`, false, `${r.error?.code}：${r.error?.message}`);
+        break;
+      }
+      const d = r.data;
+      totalChapters += d.chapters;
+      totalScenes += d.scenes;
+      totalAnnotated += d.annotated;
+      totalFailed += d.failed;
+      const prog = d.progress ?? {};
+      console.log(
+        `  第 ${round} 轮：本轮 ${d.chapters} 章 / ${d.scenes} 场景` +
+          `｜累计 ${prog.annotated ?? 0}/${prog.total ?? 0}` +
+          `（失败 ${prog.failed ?? 0}）`,
+      );
+
+      // ⚠ 停止判据必须是"**没有进展**"，不能是"annotated + failed >= total" ——
+      //   `annotationProgress` 里 failed 的定义就是 `total - annotated`，
+      //   所以那个式子**恒为真**，会让循环第一轮就退出（等于没分块）。
+      if ((prog.annotated ?? 0) <= prevAnnotated) break;
+      prevAnnotated = prog.annotated ?? 0;
+
+      // 本轮无待办（全标完）→ 收工
+      if (d.chapters === 0) break;
     }
+
+    const persisted = { ok: true, data: { chapters: totalChapters, scenes: totalScenes, annotated: totalAnnotated, failed: totalFailed } };
     const pd = persisted.data;
+    console.log(`  共 ${rounds} 轮`);
     rec(
       '标注落库',
       pd.scenes > 0,

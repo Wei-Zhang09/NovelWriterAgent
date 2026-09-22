@@ -104,10 +104,55 @@ export const InformationFlowSchema = z.object({
 });
 
 /** 钩子（章末/场景末的抓力） */
-export const HookSchema = z.object({
-  type: z.string().min(1),
-  intensity: z.number().min(0).max(1).default(0.5),
-});
+/**
+ * 钩子（悬念/期待）。
+ *
+ * ⚠ 容错：模型表达钩子时**最自然的写法是一个字符串**
+ *   （`"hook": "他是否已猜出行李箱里的电脑"`），而契约要求
+ *   `{type, intensity}`。实测《清纯校花》486 章里有 7 个场景
+ *   因此失败：
+ *     - 5 个 `hook.type: Required`（返回了对象但漏了 type）
+ *     - 2 个 `hook: Expected object, received string`（返回了字符串）
+ *
+ *   两种都是**表述形式问题，不是内容缺失** —— 模型明明给出了钩子。
+ *   因此这里做**有损但诚实的容错**：
+ *     - 字符串 → `{ type: <该字符串>, intensity: 0.5 }`
+ *     - 对象缺 type → 用 hint/description 兜底；都没有才用占位符
+ *
+ *   ⚠ 为什么不干脆放宽成 `z.union([string, object])`：
+ *     那会让下游（模式挖掘）面对两种形状，每次都要判断。
+ *     归一成一种形状，下游逻辑才简单可靠。
+ *
+ *   ⚠ 也不丢弃整个场景的语义标注：hook 只是一个字段，
+ *     丢弃会让**冲突/目标/情绪这些真正重要的信息一起消失**。
+ */
+export const HookSchema = z.preprocess(
+  (raw) => {
+    // 字符串 → 包成对象
+    if (typeof raw === 'string') {
+      const t = raw.trim();
+      return t ? { type: t, intensity: 0.5 } : undefined;
+    }
+    if (raw && typeof raw === 'object') {
+      const o = raw as Record<string, unknown>;
+      // 漏了 type：用其他可能承载描述的字段兜底
+      if (typeof o['type'] !== 'string' || (o['type'] as string).trim() === '') {
+        const alt =
+          (typeof o['hint'] === 'string' && o['hint']) ||
+          (typeof o['description'] === 'string' && o['description']) ||
+          (typeof o['question'] === 'string' && o['question']) ||
+          (typeof o['content'] === 'string' && o['content']);
+        if (alt) return { ...o, type: alt };
+        // 确实没有任何描述 → 交给下面的校验失败（不编造）
+      }
+    }
+    return raw;
+  },
+  z.object({
+    type: z.string().min(1),
+    intensity: z.number().min(0).max(1).default(0.5),
+  }),
+);
 
 /**
  * 机械可算的节奏指标。

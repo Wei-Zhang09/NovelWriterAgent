@@ -255,6 +255,69 @@ describe('场景切分（§18 六项依据）', () => {
 });
 
 // ══════════════════════════════════════════════════════════
+describe('⚠ hook 容错（表述形式问题不该毁掉整个场景的标注）', () => {
+  const { SceneAnnotationSchema } = require('@nwa/shared') as typeof import('@nwa/shared');
+
+  const BASE = {
+    sceneId: 'sc1',
+    characters: ['甲'],
+    goals: [],
+    conflicts: [],
+    actions: [],
+    emotions: [],
+    information: [],
+    foreshadowing: [],
+    payoff: [],
+  };
+
+  it('⚠ hook 是字符串 → 归一为 {type, intensity}（实测 2 个场景栽在这）', () => {
+    const r = SceneAnnotationSchema.safeParse({ ...BASE, hook: '他是否已猜出真相' });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.hook?.type).toBe('他是否已猜出真相');
+      expect(r.data.hook?.intensity).toBe(0.5);
+    }
+  });
+
+  it('⚠ hook 漏了 type → 用 hint/description 兜底（实测 5 个场景栽在这）', () => {
+    for (const alt of ['hint', 'description', 'question', 'content']) {
+      const r = SceneAnnotationSchema.safeParse({
+        ...BASE,
+        hook: { [alt]: '她会怎么反应？', intensity: 0.7 },
+      });
+      expect(r.success).toBe(true);
+      if (r.success) {
+        expect(r.data.hook?.type).toBe('她会怎么反应？');
+        expect(r.data.hook?.intensity).toBe(0.7);
+      }
+    }
+  });
+
+  it('hook 完整时原样保留', () => {
+    const r = SceneAnnotationSchema.safeParse({
+      ...BASE,
+      hook: { type: '悬念', intensity: 0.8 },
+    });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.hook).toEqual({ type: '悬念', intensity: 0.8 });
+  });
+
+  it('⚠ hook 无任何描述时仍失败（不编造占位符）', () => {
+    const r = SceneAnnotationSchema.safeParse({ ...BASE, hook: { intensity: 0.5 } });
+    expect(r.success).toBe(false);
+  });
+
+  it('⚠ 归一成单一形状（下游不必判断两种类型）', () => {
+    const a = SceneAnnotationSchema.safeParse({ ...BASE, hook: '字符串钩子' });
+    const b = SceneAnnotationSchema.safeParse({ ...BASE, hook: { type: '对象钩子' } });
+    expect(a.success && b.success).toBe(true);
+    if (a.success && b.success) {
+      expect(typeof a.data.hook).toBe('object');
+      expect(typeof b.data.hook).toBe('object');
+    }
+  });
+});
+
 describe('⚠ 语义标注失败时如实标 null（不填默认值）', () => {
   const CHAPTER = [
     '他走进教室，坐在最后一排。',
