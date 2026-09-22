@@ -9,6 +9,8 @@
  * 约定（研究报告 §3.1 决策 1）：**状态必须由产物事实驱动，不由任务状态驱动**。
  * 因此章节状态直接来自 DB 行，而非任何「任务进度」字段。
  */
+import { renderSkillPanel, renderBackupPanel } from './panels.js';
+
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
@@ -712,11 +714,51 @@ function renderChapterDetail(c) {
 // 右栏：动作 + 诊断
 // ─────────────────────────────────────────────────────────────
 
+/**
+ * 可折叠面板分组（STEP 22 UI polish）。
+ *
+ * ⚠ 用原生 `<details>`/`<summary>` 而不是自写折叠：
+ *   原生元素自带键盘可达性（Enter/Space 切换）、无障碍语义
+ *   （屏幕阅读器读作"可展开区域"）与浏览器的展开状态记忆。
+ *   自写这些要额外处理，且很容易漏 —— 而漏了无障碍是看不见的缺陷。
+ *
+ * ⚠ 分组按**使用频率**而非功能模块：日常写作只用「写作流程」，
+ *   排错才需要「系统诊断」。默认折叠诊断类，减少视觉噪声。
+ */
+function panelGroup(title, open) {
+  const d = el('details', 'panel-group');
+  if (open) d.setAttribute('open', '');
+  const sum = el('summary', 'panel-group__head', title);
+  d.append(sum);
+  return d;
+}
+
 function renderAgent() {
   const a = $('agent');
   a.replaceChildren();
 
-  a.append(el('h3', null, `已注册工具（${state.tools.length}）`));
+  // ⚠ 分组重排（STEP 22 UI polish）。
+  //
+  //   原状：14 个面板**平铺**在右栏 —— 工具列表、权限分布、模型状态
+  //   与「章节规划/正文生成/审稿/提交」混在一起，用户要滚很久才能
+  //   找到当前该点的按钮。而中栏大半是空的。
+  //
+  //   现在按**使用频率**分 4 组，诊断类默认折叠：
+  //     写作流程   ← 默认展开（日常只用这一组）
+  //     质量与记忆
+  //     检索与上下文
+  //     系统诊断   ← 默认折叠（排错时才看）
+  //
+  //   ⚠ 用原生 <details>/<summary> 而非自写折叠：原生元素自带
+  //     键盘可达性与无障碍语义，自写要额外处理这些且容易漏。
+  const g1 = panelGroup('写作流程', true);
+  const g2 = panelGroup('质量与记忆', false);
+  const g3 = panelGroup('检索与上下文', false);
+  const g4 = panelGroup('系统诊断', false);
+  a.append(g1, g2, g3, g4);
+
+  // 诊断组：工具与权限（排错用，默认折叠）
+  g4.append(el('h3', null, `已注册工具（${state.tools.length}）`));
   const list = el('div', 'tool-list');
   for (const t of state.tools) {
     const row = el('div', 'tool-row');
@@ -724,19 +766,19 @@ function renderAgent() {
     row.append(el('span', `perm perm--${t.permission.toLowerCase()}`, t.permission));
     list.append(row);
   }
-  a.append(list);
+  g4.append(list);
 
-  a.append(el('h3', null, '权限分布'));
+  g4.append(el('h3', null, '权限分布'));
   const perms = el('div', 'perm-summary');
   const entries = Object.entries(state.permissions).filter(([, names]) => names.length > 0);
   if (entries.length === 0) perms.append(el('div', 'empty', '—'));
   for (const [level, names] of entries) {
     perms.append(el('div', 'perm-line', `${level}: ${names.length} 个`));
   }
-  a.append(perms);
+  g4.append(perms);
 
   // 模型状态（STEP 3）
-  a.append(el('h3', null, '模型'));
+  g4.append(el('h3', null, '模型'));
   const modelBox = el('div', 'model-status');
   const mc = state.modelConfig;
   if (!mc) {
@@ -758,7 +800,7 @@ function renderAgent() {
       t.ok ? `连通 ✓ ${t.latencyMs}ms  in=${t.usage?.inputTokens} out=${t.usage?.outputTokens}`
            : `连通 ✗ ${t.error?.code}`));
   }
-  a.append(modelBox);
+  g4.append(modelBox);
 
   // ── Planner 面板（STEP 6） ──
   const planBox = el('div', 'form form--rail');
@@ -832,7 +874,7 @@ function renderAgent() {
     }
   });
 
-  a.append(planBox);
+  g1.append(planBox);
 
   // ── Writer 面板（STEP 7） ──
   const writeBox = el('div', 'form form--rail');
@@ -896,7 +938,7 @@ function renderAgent() {
     writeDetail.append(prev);
   });
 
-  a.append(writeBox);
+  g1.append(writeBox);
 
   // ── 一致性检查面板（STEP 8） ──
   const contBox = el('div', 'form form--rail');
@@ -954,7 +996,7 @@ function renderAgent() {
     }
   });
 
-  a.append(contBox);
+  g2.append(contBox);
 
   // ── 审阅面板（STEP 8） ──
   const revBox = el('div', 'form form--rail');
@@ -1024,7 +1066,7 @@ function renderAgent() {
     }
   });
 
-  a.append(revBox);
+  g1.append(revBox);
 
   // ── 事实 / Canon 面板（STEP 9） ──
   const canonBox = el('div', 'form form--rail');
@@ -1119,7 +1161,7 @@ function renderAgent() {
 
   canonRefreshBtn.addEventListener('click', refreshCanon);
 
-  a.append(canonBox);
+  g2.append(canonBox);
 
   // ── 改稿面板（补缺口）──
   const revBox2 = el('div', 'form form--rail');
@@ -1188,7 +1230,7 @@ function renderAgent() {
     }
   });
 
-  a.append(revBox2);
+  g1.append(revBox2);
 
   // ── 提交面板（STEP 11）【MVP 门槛】──
   const commitBox = el('div', 'form form--rail');
@@ -1250,7 +1292,7 @@ function renderAgent() {
     await refreshChapters();
   });
 
-  a.append(commitBox);
+  g1.append(commitBox);
 
   // ── 检索面板（补缺口：FTS 可用） ──
   const searchBox = el('div', 'form form--rail');
@@ -1297,7 +1339,7 @@ function renderAgent() {
     }
   });
 
-  a.append(searchBox);
+  g3.append(searchBox);
 
   // ── 摘要确认面板（ADR-0006 约束 C）──
   const sumBox = el('div', 'form form--rail');
@@ -1374,7 +1416,7 @@ function renderAgent() {
 
   sumRefreshBtn.addEventListener('click', refreshPending);
 
-  a.append(sumBox);
+  g2.append(sumBox);
 
   // ── Context Engine 面板（STEP 5） ──
   const ctxBox = el('div', 'form form--rail');
@@ -1453,14 +1495,24 @@ function renderAgent() {
       : `✗ 预期被拒但成功了：${r.error?.message ?? ''}`;
   });
 
-  a.append(ctxBox);
+  g3.append(ctxBox);
 
   // 模型设置与 Runtime 面板常驻右栏 —— 不放在中栏，因为中栏会被章节详情替换，
   // 那会让用户"点进章节后再也找不到它们"（曾在本流程验证中暴露）。
-  a.append(renderRuntimePanel());
-  a.append(renderModelSettings());
+  // ── 技能与备份（STEP 22 补的界面入口）──
+  //
+  // ⚠ STEP 17–21 把技能编译/检索与备份恢复都做完了，但界面上没有入口，
+  //   只能靠 verify 脚本调用。对用户而言"后端有、界面没有" = 没有。
+  const skillMsg = el('div', 'form-msg');
+  g2.append(renderSkillPanel({ el, state, invoke: call, msg: skillMsg }));
 
-  a.append(el('h3', null, '最近一次工具调用'));
+  const backupMsg = el('div', 'form-msg');
+  g3.append(renderBackupPanel({ el, invoke: call, msg: backupMsg }));
+
+  g4.append(renderRuntimePanel());
+  g4.append(renderModelSettings());
+
+  g4.append(el('h3', null, '最近一次工具调用'));
   const diag = el('div', 'diag');
   if (!state.lastCall) {
     diag.textContent = '（尚未调用）';
@@ -1473,7 +1525,7 @@ function renderAgent() {
       result.ok ? '' : `消息: ${result.error.message}`,
     ].filter(Boolean).join('\n');
   }
-  a.append(diag);
+  g4.append(diag);
 }
 
 // ─────────────────────────────────────────────────────────────

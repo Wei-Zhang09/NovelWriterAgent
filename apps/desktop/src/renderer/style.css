@@ -212,3 +212,54 @@ body {
   font-size: 12px;
 }
 .btn--small { font-size: 11px; padding: 2px 8px; }
+
+/* ── 可折叠面板分组（STEP 22 UI polish） ────────────────────────
+ *
+ * ⚠ 目的：右栏原本 14 个面板平铺，用户要滚很久才能找到当前该点的按钮。
+ *   分组后默认只展开「写作流程」，其余折叠。
+ *
+ * ⚠ 用 accent 色标出当前展开的组，让"我现在在哪一组"一目了然 ——
+ *   折叠面板的经典问题是展开后看不出属于哪个组。
+ */
+.panel-group {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 10px;
+  background: var(--panel, transparent);
+  overflow: hidden;
+}
+
+.panel-group__head {
+  cursor: pointer;
+  padding: 8px 10px;
+  font-weight: 600;
+  font-size: 13px;
+  user-select: none;
+  /* ⚠ 去掉浏览器默认的三角标记，改用自绘 caret（跨平台一致） */
+  list-style: none;
+}
+.panel-group__head::-webkit-details-marker { display: none; }
+
+.panel-group__head::before {
+  content: '▸';
+  display: inline-block;
+  width: 14px;
+  transition: transform 0.15s ease;
+}
+.panel-group[open] > .panel-group__head::before { transform: rotate(90deg); }
+
+.panel-group[open] > .panel-group__head {
+  border-bottom: 1px solid var(--border);
+  color: var(--accent);
+}
+
+/* 组内面板去掉重复的边框与标题层级感 */
+.panel-group > .form--rail {
+  border: none;
+  border-radius: 0;
+  margin: 0;
+  padding: 10px;
+}
+.panel-group > .form--rail + .form--rail {
+  border-top: 1px dashed var(--border);
+}

@@ -645,6 +645,68 @@ function createWindow(): void {
               }
             }
 
+            // ── STEP 22 UI polish 检查 ──
+            //
+            // ⚠ 检查的是"分组真的存在且默认状态正确"，而不是"渲染没报错" ——
+            //   面板平铺时也不会报错，但用户体验是滚不到底。
+            const groups = [...document.querySelectorAll('.panel-group')];
+            rec('⚠ 右栏已分组（不再是 14 个面板平铺）',
+                groups.length === 4, 'groups=' + groups.length);
+
+            const openGroups = groups.filter(g => g.hasAttribute('open'));
+            rec('⚠ 默认只展开「写作流程」一组',
+                openGroups.length === 1 &&
+                (openGroups[0].querySelector('summary')?.textContent ?? '').includes('写作流程'),
+                'open=' + openGroups.map(g => g.querySelector('summary')?.textContent).join('、'));
+
+            // ⚠ 原生 details 自带无障碍语义与键盘可达性 —— 断言用的是原生元素
+            rec('⚠ 折叠用原生 details/summary（自带无障碍与键盘可达）',
+                groups.every(g => g.tagName === 'DETAILS' &&
+                  g.firstElementChild?.tagName === 'SUMMARY'),
+                groups.map(g => g.tagName).join(','));
+
+            // 写作流程组里应有规划/正文/审稿/提交
+            const workflow = openGroups[0]?.textContent ?? '';
+            rec('「写作流程」含规划/正文/审稿/提交',
+                ['章节规划', '正文生成', '审稿', '提交为正式章节'].every(k => workflow.includes(k)),
+                workflow.slice(0, 60).replace(/\s+/g, ' '));
+
+            // ── 技能面板（STEP 17–21 的后端能力，此前无界面入口）──
+            const skillPanel = [...document.querySelectorAll('.form--rail')]
+              .find(f => f.querySelector('h3')?.textContent.includes('写作技能'));
+            rec('⚠ 技能面板已挂载（后端能力有了界面入口）', Boolean(skillPanel));
+
+            if (skillPanel) {
+              // 等自动加载完成
+              for (let i = 0; i < 20 && skillPanel.textContent.includes('读取中'); i++) await sleep(200);
+              const t = skillPanel.textContent;
+              // ⚠ 用"包含"而非正则：正则要穿过模板字符串与
+              //   executeJavaScript 两层转义，极易写错 —— 实测第一次就写错，
+              //   报"没读到数据"而实际读到了（误报比漏报更浪费时间）。
+              rec('⚠ 技能面板真的读到了数据（不是空壳）',
+                  t.includes('可检索') && t.includes('个'),
+                  t.replace(/\s+/g, ' ').slice(0, 90));
+              rec('技能面板显示类型隔离信息',
+                  t.includes('被类型隔离挡掉'));
+              rec('⚠ 技能面板强调「不适用的情况」（防滥用）',
+                  t.includes('不适用') || t.includes('用错场合'));
+            }
+
+            // ── 备份面板 ──
+            const backupPanel = [...document.querySelectorAll('.form--rail')]
+              .find(f => f.querySelector('h3')?.textContent.includes('备份与导出'));
+            rec('⚠ 备份面板已挂载', Boolean(backupPanel));
+            if (backupPanel) {
+              const t = backupPanel.textContent;
+              rec('备份面板含导出/校验/恢复/重建索引四项',
+                  ['导出项目', '校验完整性', '执行恢复', '重建检索索引'].every(k => t.includes(k)));
+              // ⚠ 恢复按钮必须默认禁用（破坏性操作需显式确认）
+              const restoreBtn = [...backupPanel.querySelectorAll('button')]
+                .find(b => b.textContent.trim() === '执行恢复');
+              rec('⚠ 恢复按钮默认禁用（破坏性操作需勾选确认）',
+                  Boolean(restoreBtn?.disabled));
+            }
+
             return { steps };
           })()`;
 
