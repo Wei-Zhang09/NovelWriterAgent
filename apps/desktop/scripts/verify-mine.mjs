@@ -140,10 +140,12 @@ app.whenReady().then(async () => {
           `${c.crossWork ? '' : '  ⚠ 单作品（只能算作者风格）'}`,
       );
     }
-    rec(
-      '⚠ 有可跨作品对比的组（否则模式只能算作者风格）',
-      d.comparableGroups > 0,
-      `${d.comparableGroups} 组`,
+    // ⚠ 这一条**不作为失败** —— 只有一部作品时 0 组是事实，
+    //   而且此时所有模式都该被降档为 STYLE（设计如此）。
+    //   把它当失败会掩盖真正要检查的东西（证据可回溯 / 类型隔离）。
+    console.log(
+      `  ${d.comparableGroups > 0 ? '✓' : '⚠'} 可跨作品对比的组：${d.comparableGroups}` +
+        `${d.comparableGroups === 0 ? '（单作品 → 所有模式将降档为 STYLE，无法称类型规律）' : ''}`,
     );
 
     // ── 2) 挖掘 ──
@@ -170,16 +172,42 @@ app.whenReady().then(async () => {
     }
 
     // ── 3) 读回模式，逐项检查 ──
+    //
+    // ⚠ 分两次查：默认查询（排除 STYLE）与含 STYLE。
+    //
+    //   只有一部作品时，**所有模式都会被正确降档为 STYLE**，
+    //   默认查询返回 0 条 —— 那是**设计如此**，不是失败。
+    //   早先的脚本把它当失败，掩盖了真正要检查的东西。
     const list = await call('mine.listPatterns', { genre: GENRE, limit: 50 });
     if (!list.ok) {
       rec('读回模式', false, list.error?.message);
       return finish();
     }
     const pats = list.data.patterns ?? [];
-    rec('读回模式', pats.length > 0, `${pats.length} 条`);
+
+    const withStyle = await call('mine.listPatterns', {
+      genre: GENRE,
+      limit: 200,
+      includeStyle: true,
+    });
+    const allPats = withStyle.data?.patterns ?? [];
+
+    rec(
+      '落库模式可读回（含 STYLE）',
+      allPats.length > 0,
+      `共 ${allPats.length} 条｜默认可见 ${pats.length} 条`,
+    );
+    rec(
+      '⚠ 默认查询已排除 STYLE（§21：Writer 默认不用作者策略）',
+      pats.every((p) => p.scope !== 'STYLE'),
+      pats.length === 0 ? '全部被排除（单作品场景下的正确行为）' : `默认可见 ${pats.length} 条`,
+    );
+
+    // 用含 STYLE 的集合做后续质量检查（否则单作品时全是空的）
+    const checkSet = allPats;
 
     // 七槽完整性
-    const incomplete = pats.filter((p) => {
+    const incomplete = checkSet.filter((p) => {
       const pt = p.pattern ?? {};
       return (
         !p.trigger ||
@@ -199,7 +227,7 @@ app.whenReady().then(async () => {
     );
 
     // 证据可回溯
-    const noEvidence = pats.filter(
+    const noEvidence = checkSet.filter(
       (p) => !Array.isArray(p.evidenceRefs) || p.evidenceRefs.length === 0,
     );
     rec(
@@ -209,7 +237,7 @@ app.whenReady().then(async () => {
     );
 
     // ⚠ 类型隔离：都市查询不该返回仙侠模式
-    const wrongGenre = pats.filter(
+    const wrongGenre = checkSet.filter(
       (p) => p.scope === 'GENRE' && p.genre && p.genre !== GENRE,
     );
     rec(
@@ -220,7 +248,7 @@ app.whenReady().then(async () => {
 
     // ⚠ STYLE 默认不返回（§21：Writer 默认不用作者特有策略）
     const styleLeak = pats.filter((p) => p.scope === 'STYLE');
-    rec('⚠ 默认不返回 STYLE 作用域模式（§21）', styleLeak.length === 0, `${styleLeak.length} 条`);
+    rec('⚠ 默认查询无 STYLE 泄漏（§21）', styleLeak.length === 0, `${styleLeak.length} 条`);
 
     // 降档统计
     rec(
@@ -231,9 +259,11 @@ app.whenReady().then(async () => {
 
     // 打印样本供人工判断
     console.log('\n──── 模式样本（人工判断质量）────\n');
-    for (const p of pats.slice(0, 3)) {
+    for (const p of checkSet.slice(0, 3)) {
       const pt = p.pattern ?? {};
-      console.log(`【${p.sceneFunction}】${p.trigger}`);
+      const tj = p.trigger ?? {};
+      console.log(`【${p.sceneFunction}】${tj.trigger ?? '(无触发描述)'}`);
+      console.log(`  情境: ${(tj.context ?? []).join('；')}`);
       console.log(`  作用域: ${p.scope}｜类型: ${p.genre ?? '-'}｜置信度: ${p.confidence}｜样本 ${p.sampleCount}`);
       console.log(`  手法: ${(pt.decision ?? []).join('；')}`);
       console.log(`  机制: ${p.mechanism}`);
