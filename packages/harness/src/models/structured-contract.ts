@@ -66,6 +66,31 @@ function describeZodType(schema: z.ZodTypeAny): string {
   }
 }
 
+/**
+ * 解开 schema 外层包装，取到真正的形状定义。
+ *
+ * ⚠ 需要它的原因：`.preprocess()` / `.transform()` 会包成 ZodEffects，
+ *   顶层 typeName 不再是 ZodObject，字段清单就描述不出来。
+ *   而契约注入恰恰依赖"能列出字段"。
+ */
+export function unwrapSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
+  let cur = schema;
+  for (let i = 0; i < 8; i++) {
+    const def = cur._def as { typeName?: string; innerType?: z.ZodTypeAny; schema?: z.ZodTypeAny };
+    const name = def.typeName;
+    if (name === 'ZodEffects' && def.schema) {
+      cur = def.schema;
+      continue;
+    }
+    if (name === 'ZodPipeline' && def.innerType) {
+      cur = def.innerType;
+      continue;
+    }
+    break;
+  }
+  return cur;
+}
+
 /** 是否为可选字段 */
 function isOptional(schema: z.ZodTypeAny): boolean {
   const name = (schema._def as { typeName?: string }).typeName;
@@ -80,10 +105,13 @@ function isOptional(schema: z.ZodTypeAny): boolean {
  *   更深的结构由 schema 校验兜底，并在失败时触发重试。
  */
 export function describeSchemaFields(schema: z.ZodTypeAny): string {
-  const def = schema._def as { typeName?: string; shape?: () => Record<string, z.ZodTypeAny> };
+  // ⚠ 先解开包装（ZodEffects = .preprocess/.transform/.refine，ZodPipeline = .pipe）。
+  //   否则契约退化成「顶层类型：值」，模型看不到字段清单 → 必然输出错形状。
+  const unwrapped = unwrapSchema(schema);
+  const def = unwrapped._def as { typeName?: string; shape?: () => Record<string, z.ZodTypeAny> };
 
   if (def.typeName !== 'ZodObject' || typeof def.shape !== 'function') {
-    return `（本契约的顶层类型：${describeZodType(schema)}）`;
+    return `（本契约的顶层类型：${describeZodType(unwrapped)}）`;
   }
 
   const shape = def.shape();

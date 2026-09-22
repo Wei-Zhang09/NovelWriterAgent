@@ -41,7 +41,7 @@ export {
 } from './models/secret-store.js';
 export type { CryptoBackend } from './models/secret-store.js';
 export { classifyHttpFailure, extractErrorText, isRetryable, backoffDelayMs } from './models/errors.js';
-export { buildStructuredContract, describeSchemaFields } from './models/structured-contract.js';
+export { buildStructuredContract, describeSchemaFields, unwrapSchema } from './models/structured-contract.js';
 export type {
   ChatMessage,
   ChatRequest,

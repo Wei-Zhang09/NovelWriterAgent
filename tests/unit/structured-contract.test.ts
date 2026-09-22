@@ -17,7 +17,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { buildStructuredContract, describeSchemaFields } from '@nwa/harness';
+import { buildStructuredContract, describeSchemaFields, unwrapSchema } from '@nwa/harness';
 
 describe('契约文本包含必需字段（小模型靠它才知道要输出什么）', () => {
   it('列出全部字段名与类型', () => {
@@ -98,5 +98,45 @@ describe('describeSchemaFields 的具体行为', () => {
     // 只说明 outer 是对象，不列出 inner/deep
     expect(t).toContain('"outer"');
     expect(t).not.toContain('"deep"');
+  });
+});
+
+describe('⚠ 解开 schema 外层包装（实测踩到）', () => {
+  it('z.preprocess 包装后仍能列出字段（否则契约退化成「顶层类型：值」）', () => {
+    // 实测场景：RevisionOutputSchema 用 .preprocess 容忍裸数组，
+    // 结果顶层变成 ZodEffects，字段清单描述不出来 → 模型看不到要输出什么
+    const s = z.preprocess(
+      (v) => (Array.isArray(v) ? { edits: v } : v),
+      z.object({ edits: z.array(z.object({ find: z.string() })) }),
+    );
+    const t = buildStructuredContract('RevisionOutput', s);
+
+    expect(t).toContain('"edits"');
+    expect(t).toContain('每个元素包含');
+    expect(t).toContain('"find"');
+    expect(t).not.toContain('顶层类型');
+  });
+
+  it('unwrapSchema 取出内部对象', () => {
+    const inner = z.object({ a: z.string() });
+    const wrapped = z.preprocess((v) => v, inner);
+    expect(unwrapSchema(wrapped)).toBe(inner);
+  });
+
+  it('未包装的 schema 原样返回', () => {
+    const s = z.object({ a: z.string() });
+    expect(unwrapSchema(s)).toBe(s);
+  });
+
+  it('多层包装也能解开', () => {
+    const inner = z.object({ a: z.string() });
+    const twice = z.preprocess((v) => v, z.preprocess((v) => v, inner));
+    expect(unwrapSchema(twice)).toBe(inner);
+  });
+
+  it('普通 schema 的行为完全不受影响', () => {
+    const t = buildStructuredContract('X', z.object({ a: z.string() }));
+    expect(t).toContain('"a"');
+    expect(t).toContain('字符串');
   });
 });

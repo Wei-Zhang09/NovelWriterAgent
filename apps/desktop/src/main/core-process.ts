@@ -1013,12 +1013,22 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       appliedEdits: res.appliedEdits,
       rejectedEdits: res.rejectedEdits,
       totalTargets: res.outcomes.length,
+      resolved: res.outcomes.filter((o) => o.applied).length,
       deltaChars: res.deltaChars ?? 0,
       totalChars: res.totalChars ?? 0,
+      passes: res.passes.map((p2) => ({
+        pass: p2.pass,
+        appliedEdits: p2.appliedEdits,
+        resolved: p2.resolved,
+        attempted: p2.attempted,
+      })),
+      rolledBack: res.rolledBackGroups.length,
       outcomes: res.outcomes.map((o) => ({
         severity: o.severity,
         category: o.category,
         applied: o.applied,
+        editCount: o.editCount,
+        canonical: o.canonical ?? null,
         skippedReason: o.skippedReason ?? null,
       })),
       // ⚠ 明确标注：改完必须重新审稿

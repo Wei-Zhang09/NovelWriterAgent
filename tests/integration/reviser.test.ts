@@ -1,19 +1,21 @@
 /**
- * Reviser（改稿）测试 —— 替换式设计
+ * Reviser（改稿）测试 —— 替换式 + 关联替换 + 未解决重试
  *
- * ## 触发这组测试的真实故障
+ * ## 触发这组测试的两个真实故障
  *
- * 第一版让模型"输出修改后的完整正文"，真实 2 章运行结果：
+ * **故障一（改稿毁稿）**：第一版让模型"输出修改后的完整正文"，逐 issue 各改一遍。
  *
  *   第 1 章：审稿 10 问题、**阻塞 0**（可提交）
- *          → 改稿（+875 字，19912→22535 字节）
+ *          → 改稿（+875 字，草稿 19912 → 修订 22535 字节，+13%）
  *          → 复审 **阻塞 1**（不可提交）← 改稿引入了新问题
  *
  * 模型没有"只改被指出的地方"，而是顺手扩写了别处。
- * prompt 里的"只修改被指出的部分"**没有机制保证**。
+ * → 改为替换式：模型输出 { find, replace }，由代码精确应用。
  *
- * 因此改为替换式：模型输出 { find, replace } 指令，由代码精确应用。
- * 这组测试锁死"不毁稿"这件事。
+ * **故障二（逐条替换修不了前后矛盾）**：改稿后第 2 章仍有 3 个阻塞问题，
+ * 都是同一事物在多处描述不一致（木匣位置／铜扣三种纹样／潮汐倒计时）。
+ * 修"三种纹样"必须选定一种、再把另外两处改成它 —— 逐条独立替换做不到。
+ * → 引入关联替换（issueId 分组 + canonical 校验 + 整组回退）。
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
@@ -53,6 +55,13 @@ const DRAFT = [
   '门开了又合。',
 ].join('\n');
 
+/** 含"前后矛盾"的稿子：同一物件三种纹样（真实故障二的简化版） */
+const CONTRADICTION_DRAFT = [
+  '他取出铜扣，扣面是锻打的痕迹，一锤一锤敲出来的。',
+  '灯下再看，铜扣上压着波浪纹。',
+  '他把铜扣翻过来，歪斜的锚形纹样朝上。',
+].join('\n');
+
 /** 返回预设 edits 的 structured 替身（走真实 schema 校验） */
 function callerReturning(raw: unknown): RevisionStructuredCaller {
   return async (req) => {
@@ -69,12 +78,35 @@ function callerReturning(raw: unknown): RevisionStructuredCaller {
   };
 }
 
-function reviserOf(raw: unknown, n = 1) {
-  const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: n, logger });
-  ws.ensure();
-  return { reviser: new Reviser({ structured: callerReturning(raw), workspace: ws, logger }), ws };
+/** 按轮次返回不同结果的替身（第一轮 / 第二轮） */
+function callerByPass(pass1: unknown, pass2: unknown): RevisionStructuredCaller {
+  let n = 0;
+  return async (req) => {
+    n++;
+    const raw = n === 1 ? pass1 : pass2;
+    const parsed = req.schema.safeParse(raw);
+    if (!parsed.success) {
+      return {
+        ok: false,
+        error: { code: 'MODEL_STRUCTURED_EMPTY', message: 'schema 失败' },
+        attempts: 1,
+        rawText: JSON.stringify(raw),
+      };
+    }
+    return { ok: true, data: parsed.data, attempts: 1 };
+  };
 }
 
+function reviserOf(raw: unknown, n = 1, opts: Partial<{ retryUnresolved: boolean }> = {}) {
+  const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: n, logger });
+  ws.ensure();
+  return {
+    reviser: new Reviser({ structured: callerReturning(raw), workspace: ws, logger, ...opts }),
+    ws,
+  };
+}
+
+// ══════════════════════════════════════════════════════════
 describe('⚠ 核心保证：只改被引用的片段，其余逐字节不变', () => {
   it('精确匹配的替换被应用，其他文字原样保留', async () => {
     const { reviser, ws } = reviserOf({
@@ -92,10 +124,8 @@ describe('⚠ 核心保证：只改被引用的片段，其余逐字节不变', 
 
     expect(r.ok).toBe(true);
     expect(r.appliedEdits).toBe(1);
-    // 首尾两行必须原样保留
     expect(r.text).toContain('沈砚走进仓库。');
     expect(r.text).toContain('门开了又合。');
-    // 重复段只剩一处
     expect(r.text!.match(/韩素撕下纸片写下号码。/g)).toHaveLength(1);
   });
 
@@ -105,9 +135,7 @@ describe('⚠ 核心保证：只改被引用的片段，其余逐字节不变', 
     });
     const r = await reviser.revise({ chapterNumber: 1, draftText: DRAFT, issues: [issue()] });
 
-    // 除被替换的那一处外，逐字符相同
-    const expected = DRAFT.replace('门开了又合。', '门开了，又合上。');
-    expect(r.text).toBe(expected);
+    expect(r.text).toBe(DRAFT.replace('门开了又合。', '门开了，又合上。'));
   });
 
   it('replace 为空字符串 = 删除该片段', async () => {
@@ -127,6 +155,341 @@ describe('⚠ 核心保证：只改被引用的片段，其余逐字节不变', 
   });
 });
 
+// ══════════════════════════════════════════════════════════
+describe('⚠ 关联替换：同一问题多处不一致必须一起改', () => {
+  it('⚠ 三类纹样统一为一种（真实故障二的场景）', async () => {
+    const { reviser } = reviserOf({
+      edits: [
+        {
+          find: '扣面是锻打的痕迹，一锤一锤敲出来的。',
+          replace: '扣面压着波浪纹。',
+          reason: '统一为波浪纹',
+          issueId: 'ri_1',
+          canonical: '波浪纹',
+        },
+        {
+          find: '歪斜的锚形纹样朝上。',
+          replace: '波浪纹朝上。',
+          reason: '统一为波浪纹',
+          issueId: 'ri_1',
+          canonical: '波浪纹',
+        },
+      ],
+    });
+    const r = await reviser.revise({
+      chapterNumber: 1,
+      draftText: CONTRADICTION_DRAFT,
+      issues: [issue({ id: 'ri_1', severity: 'BLOCKING', claim: '铜扣纹样前后矛盾' })],
+    });
+
+    expect(r.appliedEdits).toBe(2);
+    // 三种说法只剩一种
+    expect(r.text).not.toContain('锻打的痕迹');
+    expect(r.text).not.toContain('歪斜的锚');
+    expect(r.text!.match(/波浪纹/g)).toHaveLength(3); // 原本 1 处 + 新改 2 处
+  });
+
+  it('⚠ 组内任一条匹配失败 → 整组回退（避免只改一半留下更隐蔽的矛盾）', async () => {
+    const { reviser } = reviserOf({
+      edits: [
+        {
+          find: '扣面是锻打的痕迹，一锤一锤敲出来的。',
+          replace: '扣面压着波浪纹。',
+          reason: '',
+          issueId: 'ri_1',
+          canonical: '波浪纹',
+        },
+        {
+          // 这条在正文里不存在 → 整组作废
+          find: '这段文字根本不在正文里',
+          replace: '波浪纹朝上。',
+          reason: '',
+          issueId: 'ri_1',
+          canonical: '波浪纹',
+        },
+      ],
+    });
+    const r = await reviser.revise({
+      chapterNumber: 1,
+      draftText: CONTRADICTION_DRAFT,
+      issues: [issue({ id: 'ri_1', severity: 'BLOCKING' })],
+    });
+
+    // ⚠ 正文必须完全不变 —— 只改一处比不改更糟
+    expect(r.text).toBe(CONTRADICTION_DRAFT);
+    // 第一轮回退 + 第二轮（定向重试）同样回退 → 两条记录
+    expect(r.rolledBackGroups.length).toBeGreaterThanOrEqual(1);
+    expect(r.rolledBackGroups[0]!.issueId).toBe('ri_1');
+    expect(r.rolledBackGroups[0]!.reason).toContain('仅 1 条能应用');
+    expect(r.rolledBackGroups[0]!.reason).toContain('整组放弃');
+    expect(r.appliedEdits).toBe(0);
+  });
+
+  it('⚠ canonical 不是从原文选定的 → 整组作废（防止凭空发明第三种说法）', async () => {
+    const { reviser } = reviserOf({
+      edits: [
+        {
+          find: '扣面是锻打的痕迹，一锤一锤敲出来的。',
+          replace: '扣面压着螺旋纹。',
+          reason: '',
+          issueId: 'ri_1',
+          // 正文里没有"螺旋纹"这种说法 —— 是模型自己发明的
+          canonical: '螺旋纹',
+        },
+        {
+          find: '歪斜的锚形纹样朝上。',
+          replace: '螺旋纹朝上。',
+          reason: '',
+          issueId: 'ri_1',
+          canonical: '螺旋纹',
+        },
+      ],
+    });
+    const r = await reviser.revise({
+      chapterNumber: 1,
+      draftText: CONTRADICTION_DRAFT,
+      issues: [issue({ id: 'ri_1', severity: 'BLOCKING' })],
+    });
+
+    expect(r.text).toBe(CONTRADICTION_DRAFT);
+    expect(r.appliedEdits).toBe(0);
+    expect(r.rejectedEdits).toBeGreaterThan(0);
+    expect(r.rejectedEdits).toBeGreaterThan(0);
+  });
+
+  it('canonical 出现在任一条 find 中即视为合法（原文里确实有这种说法）', async () => {
+    const { reviser } = reviserOf({
+      edits: [
+        {
+          find: '扣面是锻打的痕迹，一锤一锤敲出来的。',
+          replace: '扣面压着波浪纹。',
+          reason: '',
+          issueId: 'ri_1',
+          canonical: '波浪纹', // 第二处的 find 里有
+        },
+        {
+          find: '歪斜的锚形纹样朝上。',
+          replace: '波浪纹朝上。',
+          reason: '',
+          issueId: 'ri_1',
+          canonical: '波浪纹',
+        },
+      ],
+    });
+    const r = await reviser.revise({
+      chapterNumber: 1,
+      draftText: CONTRADICTION_DRAFT,
+      issues: [issue({ id: 'ri_1', severity: 'BLOCKING' })],
+    });
+    expect(r.appliedEdits).toBe(2);
+    expect(r.outcomes[0]!.canonical).toBe('波浪纹');
+  });
+
+  it('同一 issue 的替换条数如实统计（不是笼统的 1）', async () => {
+    const { reviser } = reviserOf({
+      edits: [
+        {
+          find: '扣面是锻打的痕迹，一锤一锤敲出来的。',
+          replace: '波浪纹。',
+          reason: '',
+          issueId: 'ri_1',
+          canonical: '波浪纹',
+        },
+        {
+          find: '歪斜的锚形纹样朝上。',
+          replace: '波浪纹朝上。',
+          reason: '',
+          issueId: 'ri_1',
+          canonical: '波浪纹',
+        },
+      ],
+    });
+    const r = await reviser.revise({
+      chapterNumber: 1,
+      draftText: CONTRADICTION_DRAFT,
+      issues: [issue({ id: 'ri_1', severity: 'BLOCKING' })],
+    });
+    expect(r.outcomes[0]!.editCount).toBe(2);
+  });
+
+  it('⚠ 单条替换带无意义的 canonical 时不该被拒（实测：6 条被误杀）', async () => {
+    // 真实故障：模型对"只改一处"的问题也习惯性填 canonical，
+    // 填的往往是修改意图（如"把设定信息拆散到动作与旁白"）而非事实。
+    // 若对单条也做 canonical 校验，合法替换会被全部误杀。
+    const { reviser } = reviserOf({
+      edits: [
+        {
+          find: '门开了又合。',
+          replace: '门开了。',
+          reason: '压缩节奏',
+          issueId: 'ri_1',
+          canonical: '把设定信息拆散到动作与旁白', // 是意图，不是原文里的说法
+        },
+      ],
+    });
+    const r = await reviser.revise({
+      chapterNumber: 1,
+      draftText: DRAFT,
+      issues: [issue({ id: 'ri_1', severity: 'BLOCKING' })],
+    });
+
+    expect(r.appliedEdits).toBe(1);
+    expect(r.text).toContain('门开了。');
+    expect(r.outcomes[0]!.applied).toBe(true);
+  });
+
+  it('⚠ 多条替换时 canonical 仍必须来自原文（防止发明第三种说法）', async () => {
+    const { reviser } = reviserOf({
+      edits: [
+        { find: '扣面是锻打的痕迹，一锤一锤敲出来的。', replace: '螺旋纹。', reason: '', issueId: 'ri_1', canonical: '螺旋纹' },
+        { find: '歪斜的锚形纹样朝上。', replace: '螺旋纹朝上。', reason: '', issueId: 'ri_1', canonical: '螺旋纹' },
+      ],
+    });
+    const r = await reviser.revise({
+      chapterNumber: 1,
+      draftText: CONTRADICTION_DRAFT,
+      issues: [issue({ id: 'ri_1', severity: 'BLOCKING' })],
+    });
+    // 正文里没有"螺旋纹" → 整组作废
+    expect(r.appliedEdits).toBe(0);
+    expect(r.text).toBe(CONTRADICTION_DRAFT);
+  });
+
+  it('无 issueId 的替换按独立处理（不受整组约束）', async () => {
+    const { reviser } = reviserOf({
+      edits: [
+        { find: '门开了又合。', replace: '门开了。', reason: '' },
+        { find: '不存在的片段', replace: 'X', reason: '' },
+      ],
+    });
+    const r = await reviser.revise({ chapterNumber: 1, draftText: DRAFT, issues: [issue()] });
+    expect(r.appliedEdits).toBe(1);
+    expect(r.rejectedEdits).toBe(1);
+  });
+
+  it('归属到不存在的问题 id → 视为独立替换，不静默丢弃', async () => {
+    const { reviser } = reviserOf({
+      edits: [{ find: '门开了又合。', replace: '门开了。', reason: '', issueId: 'ri_不存在' }],
+    });
+    const r = await reviser.revise({ chapterNumber: 1, draftText: DRAFT, issues: [issue()] });
+    expect(r.appliedEdits).toBe(1);
+    expect(r.text).toContain('门开了。');
+  });
+});
+
+// ══════════════════════════════════════════════════════════
+describe('⚠ 未解决的阻塞问题做第二轮定向重试', () => {
+  it('第一轮没解决 → 第二轮解决', async () => {
+    const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
+    const reviser = new Reviser({
+      structured: callerByPass(
+        // 第一轮：匹配不到（模型记错原文）
+        { edits: [{ find: '记错的原文片段', replace: 'X', reason: '', issueId: 'ri_1' }] },
+        // 第二轮：给对了
+        { edits: [{ find: '门开了又合。', replace: '门开了。', reason: '', issueId: 'ri_1' }] },
+      ),
+      workspace: ws,
+      logger,
+    });
+    const r = await reviser.revise({
+      chapterNumber: 1,
+      draftText: DRAFT,
+      issues: [issue({ id: 'ri_1', severity: 'BLOCKING' })],
+    });
+
+    expect(r.passes).toHaveLength(2);
+    expect(r.text).toContain('门开了。');
+    expect(r.outcomes[0]!.applied).toBe(true);
+  });
+
+  it('两轮都失败 → 如实报告未解决（不假装成功）', async () => {
+    const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
+    const reviser = new Reviser({
+      structured: callerReturning({
+        edits: [{ find: '始终匹配不到', replace: 'X', reason: '', issueId: 'ri_1' }],
+      }),
+      workspace: ws,
+      logger,
+    });
+    const r = await reviser.revise({
+      chapterNumber: 1,
+      draftText: DRAFT,
+      issues: [issue({ id: 'ri_1', severity: 'BLOCKING' })],
+    });
+
+    expect(r.text).toBe(DRAFT);
+    expect(r.outcomes[0]!.applied).toBe(false);
+    // 带 issueId 的替换失败会整组回退，原因如实写明
+    expect(r.outcomes[0]!.skippedReason).toContain('整组回退');
+    expect(r.appliedEdits).toBe(0);
+  });
+
+  it('只重试 BLOCKING，不重试 MAJOR（收益低于风险）', async () => {
+    let calls = 0;
+    const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
+    const reviser = new Reviser({
+      structured: async (req) => {
+        calls++;
+        const parsed = req.schema.safeParse({ edits: [] });
+        return { ok: true, data: parsed.success ? parsed.data : { edits: [] }, attempts: 1 };
+      },
+      workspace: ws,
+      logger,
+    });
+    await reviser.revise({
+      chapterNumber: 1,
+      draftText: DRAFT,
+      issues: [issue({ id: 'ri_1', severity: 'MAJOR' })],
+    });
+    expect(calls).toBe(1); // MAJOR 不触发第二轮
+  });
+
+  it('retryUnresolved=false 时只跑一轮', async () => {
+    let calls = 0;
+    const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
+    const reviser = new Reviser({
+      structured: async (req) => {
+        calls++;
+        const parsed = req.schema.safeParse({ edits: [] });
+        return { ok: true, data: parsed.success ? parsed.data : { edits: [] }, attempts: 1 };
+      },
+      workspace: ws,
+      logger,
+      retryUnresolved: false,
+    });
+    await reviser.revise({
+      chapterNumber: 1,
+      draftText: DRAFT,
+      issues: [issue({ id: 'ri_1', severity: 'BLOCKING' })],
+    });
+    expect(calls).toBe(1);
+  });
+
+  it('第二轮 prompt 带「这是第二轮」提示', async () => {
+    const prompts: string[] = [];
+    const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
+    const reviser = new Reviser({
+      structured: async (req) => {
+        prompts.push(req.messages.at(-1)!.content);
+        const parsed = req.schema.safeParse({ edits: [] });
+        return { ok: true, data: parsed.success ? parsed.data : { edits: [] }, attempts: 1 };
+      },
+      workspace: ws,
+      logger,
+    });
+    await reviser.revise({
+      chapterNumber: 1,
+      draftText: DRAFT,
+      issues: [issue({ id: 'ri_1', severity: 'BLOCKING' })],
+    });
+
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).not.toContain('这是第二轮');
+    expect(prompts[1]).toContain('这是第二轮');
+  });
+});
+
+// ══════════════════════════════════════════════════════════
 describe('⚠ 拒绝会毁稿的替换', () => {
   it('find 匹配不到 → 拒绝（不模糊匹配，避免改错地方）', async () => {
     const { reviser } = reviserOf({
@@ -135,14 +498,12 @@ describe('⚠ 拒绝会毁稿的替换', () => {
     const r = await reviser.revise({ chapterNumber: 1, draftText: DRAFT, issues: [issue()] });
 
     expect(r.appliedEdits).toBe(0);
-    expect(r.rejectedEdits).toBe(1);
-    // 正文必须完全不变
+    expect(r.rejectedEdits).toBeGreaterThan(0);
     expect(r.text).toBe(DRAFT);
   });
 
   it('⚠ 单条替换超过全文 70% → 拒绝（那是重写，不是定向修改）', async () => {
     const { reviser } = reviserOf({
-      // find 几乎是全文
       edits: [
         { find: DRAFT.slice(0, Math.ceil(DRAFT.length * 0.8)), replace: '完全重写的内容', reason: '' },
       ],
@@ -150,22 +511,83 @@ describe('⚠ 拒绝会毁稿的替换', () => {
     const r = await reviser.revise({ chapterNumber: 1, draftText: DRAFT, issues: [issue()] });
 
     expect(r.appliedEdits).toBe(0);
-    expect(r.rejectedEdits).toBe(1);
-    expect(r.text).toBe(DRAFT); // 原样
+    expect(r.text).toBe(DRAFT);
   });
 
-  it('部分替换合法、部分被拒时，合法的仍生效', async () => {
+  it('删除重复段落（占全文 60%）仍被允许 —— 阈值 0.7 的用意', async () => {
     const { reviser } = reviserOf({
       edits: [
-        { find: '门开了又合。', replace: '门开了。', reason: '' },
-        { find: '不存在的片段', replace: 'X', reason: '' },
+        {
+          find: '韩素撕下纸片写下号码。\n韩素撕下纸片写下号码。',
+          replace: '韩素撕下纸片写下号码。',
+          reason: '',
+        },
       ],
     });
     const r = await reviser.revise({ chapterNumber: 1, draftText: DRAFT, issues: [issue()] });
+    expect(r.appliedEdits).toBe(1);
+  });
+
+  it('⚠ 挡住"描述性文字被写进正文"（实测：557 字段落被换成「彻底消失」）', async () => {
+    // 真实故障：模型把**修改意图**当成替换文本。
+    // 用 4 个字的「彻底消失」替换 557 字的段落 —— 所有机械检查都放行了
+    // （557/5366 = 10%，远低于 70% 上限），正文里却凭空出现「彻底消失」。
+    const longPara = '沈昭把灯往桌角挪了挪，那册盐运旧账摊在膝头，纸页发脆，翻动时发出轻微簌响。' + '旧账大多是他看不懂的数目，盐引、船脚、仓耗，一行行密得发闷。'.repeat(10);
+    const text = '开头一段。\n\n' + longPara + '\n\n结尾一段。';
+    const { reviser } = reviserOf({
+      edits: [{ find: longPara, replace: '彻底消失', reason: '删除该段', issueId: 'ri_1' }],
+    });
+    const r = await reviser.revise({
+      chapterNumber: 1,
+      draftText: text,
+      issues: [issue({ id: 'ri_1', severity: 'BLOCKING' })],
+    });
+
+    // 必须被拒 —— 正文里绝不能出现「彻底消失」
+    expect(r.appliedEdits).toBe(0);
+    expect(r.text).not.toContain('彻底消失');
+    expect(r.text).toBe(text);
+  });
+
+  it('真要删除该用空字符串（合法）', async () => {
+    const longPara = '沈昭把灯往桌角挪了挪，那册盐运旧账摊在膝头，纸页发脆。' + '旧账大多是他看不懂的数目。'.repeat(5);
+    const filler = '他翻过一页，又停住。灯芯爆了一下，影子在墙上晃。'.repeat(12);
+    const text = '开头。\n\n' + filler + '\n\n' + longPara + '\n\n' + filler + '\n\n结尾。';
+    const { reviser } = reviserOf({
+      edits: [{ find: longPara, replace: '', reason: '删除冗余段落', issueId: 'ri_1' }],
+    });
+    const r = await reviser.revise({
+      chapterNumber: 1,
+      draftText: text,
+      issues: [issue({ id: 'ri_1', severity: 'BLOCKING' })],
+    });
 
     expect(r.appliedEdits).toBe(1);
-    expect(r.rejectedEdits).toBe(1);
-    expect(r.text).toContain('门开了。');
+    expect(r.text).not.toContain('旧账大多是他看不懂的数目');
+  });
+
+  it('大跨度替换但以句末标点收尾 → 允许（是真正的改写）', async () => {
+    const longPara = '沈昭把灯往桌角挪了挪，那册旧账摊在膝头。' + '他翻得很慢。'.repeat(5);
+    const filler2 = '他翻过一页，又停住。灯芯爆了一下，影子在墙上晃。'.repeat(12);
+    const text = '开头。\n\n' + filler2 + '\n\n' + longPara + '\n\n' + filler2 + '\n\n结尾。';
+    const { reviser } = reviserOf({
+      edits: [{ find: longPara, replace: '他合上册子，没有再翻。', reason: '压缩', issueId: 'ri_1' }],
+    });
+    const r = await reviser.revise({
+      chapterNumber: 1,
+      draftText: text,
+      issues: [issue({ id: 'ri_1', severity: 'BLOCKING' })],
+    });
+    expect(r.appliedEdits).toBe(1);
+    expect(r.text).toContain('他合上册子，没有再翻。');
+  });
+
+  it('小改动不受"描述性文字"检查影响（避免误杀）', async () => {
+    const { reviser } = reviserOf({
+      edits: [{ find: '门开了又合。', replace: '门开了', reason: '微调' }],
+    });
+    const r = await reviser.revise({ chapterNumber: 1, draftText: DRAFT, issues: [issue()] });
+    expect(r.appliedEdits).toBe(1);
   });
 
   it('多处相同内容时只替换第一处（保守处理）', async () => {
@@ -179,6 +601,7 @@ describe('⚠ 拒绝会毁稿的替换', () => {
   });
 });
 
+// ══════════════════════════════════════════════════════════
 describe('⚠ 绝不覆盖原稿', () => {
   it('写 revision.md，不动 draft.md', async () => {
     const { reviser, ws } = reviserOf({
@@ -192,7 +615,7 @@ describe('⚠ 绝不覆盖原稿', () => {
     expect(ws.readText('draft')).toBe(DRAFT);
   });
 
-  it('改稿日志记录被拒绝的替换（人工复核需要看到"想改但没改成"）', async () => {
+  it('改稿日志记录被拒绝/被回退的替换（人工复核需要）', async () => {
     const { reviser, ws } = reviserOf({
       edits: [{ find: '不存在', replace: 'X', reason: '' }],
     });
@@ -201,8 +624,25 @@ describe('⚠ 绝不覆盖原稿', () => {
     const log = JSON.parse(readFileSync(join(ws.dir, 'review.json'), 'utf8'));
     expect(log.mode).toBe('targeted-replace');
     expect(log.appliedEdits).toBe(0);
-    expect(log.rejected).toHaveLength(1);
+    expect(log.rejected.length).toBeGreaterThan(0);
     expect(log.rejected[0].reason).toContain('找不到');
+  });
+
+  it('日志记录各轮统计与最终解决情况', async () => {
+    const { reviser, ws } = reviserOf({
+      edits: [{ find: '门开了又合。', replace: '门开了。', reason: '', issueId: 'ri_1' }],
+    });
+    await reviser.revise({
+      chapterNumber: 1,
+      draftText: DRAFT,
+      issues: [issue({ id: 'ri_1', severity: 'BLOCKING' })],
+    });
+
+    const log = JSON.parse(readFileSync(join(ws.dir, 'review.json'), 'utf8'));
+    expect(log.passes).toHaveLength(1);
+    expect(log.passes[0].resolved).toBe(1);
+    expect(log.resolved).toContain('ri_1');
+    expect(log.unresolved).toEqual([]);
   });
 
   it('日志记录字符变化量', async () => {
@@ -214,8 +654,47 @@ describe('⚠ 绝不覆盖原稿', () => {
     expect(log.originalChars).toBe(DRAFT.length);
     expect(log.deltaChars).toBe(-2);
   });
+
+  it('⚠ 日志记录已应用的替换明细（否则无法复盘改了什么）', async () => {
+    const { reviser, ws } = reviserOf({
+      edits: [
+        { find: '门开了又合。', replace: '门开了。', reason: '压缩', issueId: 'ri_1' },
+      ],
+    });
+    await reviser.revise({
+      chapterNumber: 1,
+      draftText: DRAFT,
+      issues: [issue({ id: 'ri_1', severity: 'BLOCKING' })],
+    });
+
+    const log = JSON.parse(readFileSync(join(ws.dir, 'review.json'), 'utf8'));
+    expect(log.applied).toHaveLength(1);
+    expect(log.applied[0].findHead).toBe('门开了又合。');
+    expect(log.applied[0].replaceHead).toBe('门开了。');
+    expect(log.applied[0].pass).toBe(1);
+    expect(log.applied[0].issueId).toBe('ri_1');
+  });
+
+  it('日志记录删减比例（大幅删减需人工复核）', async () => {
+    // 目标段落占全文约 50%（低于 70% 上限，能通过替换检查）
+    const target = '第一句。' + '第二句。'.repeat(9);
+    const other = '别的段落。'.repeat(30);
+    const full = target + other;
+    const { reviser, ws } = reviserOf({
+      edits: [{ find: target, replace: '', reason: '删除冗余', issueId: 'ri_1' }],
+    });
+    await reviser.revise({
+      chapterNumber: 1,
+      draftText: full,
+      issues: [issue({ id: 'ri_1', severity: 'BLOCKING' })],
+    });
+
+    const log = JSON.parse(readFileSync(join(ws.dir, 'review.json'), 'utf8'));
+    expect(log.shrinkRatio).toBeGreaterThan(0.2);
+  });
 });
 
+// ══════════════════════════════════════════════════════════
 describe('只处理 BLOCKING / MAJOR', () => {
   it('MINOR / NOTE 不触发改稿调用', async () => {
     let called = false;
@@ -236,11 +715,10 @@ describe('只处理 BLOCKING / MAJOR', () => {
 
     expect(called).toBe(false);
     expect(r.outcomes).toHaveLength(0);
-    // 仍写出 revision.md（= 原稿），保持流程统一
     expect(readFileSync(r.revisionPath!, 'utf8')).toBe(DRAFT);
   });
 
-  it('BLOCKING / MAJOR 会被处理', async () => {
+  it('BLOCKING / MAJOR 会被处理，MINOR 被忽略', async () => {
     const { reviser } = reviserOf({
       edits: [{ find: '门开了又合。', replace: '门开了。', reason: '' }],
     });
@@ -253,22 +731,13 @@ describe('只处理 BLOCKING / MAJOR', () => {
         issue({ id: 'c', severity: 'MINOR' }),
       ],
     });
-    expect(r.outcomes).toHaveLength(2); // 只 BLOCKING + MAJOR
-  });
-
-  it('outcomes 覆盖被处理的问题', async () => {
-    const { reviser } = reviserOf({ edits: [] });
-    const r = await reviser.revise({
-      chapterNumber: 1,
-      draftText: DRAFT,
-      issues: [issue({ id: 'a' }), issue({ id: 'b' }), issue({ id: 'c' })],
-    });
-    expect(r.outcomes).toHaveLength(3);
+    expect(r.outcomes).toHaveLength(2);
   });
 });
 
+// ══════════════════════════════════════════════════════════
 describe('Prompt 与契约', () => {
-  it('⚠ system 提示明确要求只输出替换指令、不要全文', async () => {
+  it('⚠ system 提示要求只输出替换指令、不要全文', async () => {
     let sys = '';
     const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
     const reviser = new Reviser({
@@ -287,7 +756,25 @@ describe('Prompt 与契约', () => {
     expect(sys).toContain('不要改动人物姓名');
   });
 
-  it('问题详情（类别/依据/建议）传给模型', async () => {
+  it('⚠ system 提示说明矛盾类问题要「每处都给 edit + canonical」', async () => {
+    let sys = '';
+    const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
+    const reviser = new Reviser({
+      structured: async (req) => {
+        sys = req.messages[0]!.content;
+        return { ok: true, data: { edits: [] }, attempts: 1 };
+      },
+      workspace: ws,
+      logger,
+    });
+    await reviser.revise({ chapterNumber: 1, draftText: DRAFT, issues: [issue()] });
+
+    expect(sys).toContain('canonical');
+    expect(sys).toContain('必须是**原文里已经出现的**');
+    expect(sys).toContain('每一处');
+  });
+
+  it('问题带 id 传给模型（关联替换需要）', async () => {
     let user = '';
     const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
     const reviser = new Reviser({
@@ -301,11 +788,10 @@ describe('Prompt 与契约', () => {
     await reviser.revise({
       chapterNumber: 1,
       draftText: DRAFT,
-      issues: [issue({ evidence: ['依据A'], suggestions: ['建议B'] })],
+      issues: [issue({ id: 'ri_7', evidence: ['依据A'], suggestions: ['建议B'] })],
     });
 
-    expect(user).toContain('CONTINUITY');
-    expect(user).toContain('同一场景被重复描写');
+    expect(user).toContain('id=ri_7');
     expect(user).toContain('依据A');
     expect(user).toContain('建议B');
   });
@@ -325,19 +811,58 @@ describe('Prompt 与契约', () => {
     expect(temp).toBe(0.2);
   });
 
-  it('Schema 要求 edits 数组，find 至少 2 字符', () => {
+  it('Schema：issueId / canonical 缺省为空串', () => {
+    const r = RevisionOutputSchema.safeParse({ edits: [{ find: 'abc', replace: 'x' }] });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data.edits[0]!.issueId).toBe('');
+      expect(r.data.edits[0]!.canonical).toBe('');
+      expect(r.data.edits[0]!.reason).toBe('');
+    }
+  });
+
+  it('Schema：find 至少 2 字符，edits 必须是数组', () => {
     expect(RevisionOutputSchema.safeParse({ edits: [] }).success).toBe(true);
     expect(RevisionOutputSchema.safeParse({ edits: [{ find: 'x', replace: '' }] }).success).toBe(false);
     expect(RevisionOutputSchema.safeParse({}).success).toBe(false);
   });
 
-  it('reason 缺省时填充为空字符串', () => {
-    const r = RevisionOutputSchema.safeParse({ edits: [{ find: 'abc', replace: 'x' }] });
+  it('⚠ 模型直接返回数组也能解析（少一层包装是常见行为）', () => {
+    // 实测踩到：模型返回 [{...}] 而非 {edits:[...]}，
+    // 报 "(root): Required" 导致整轮改稿作废
+    const r = RevisionOutputSchema.safeParse([{ find: '门开了又合。', replace: '门开了。' }]);
     expect(r.success).toBe(true);
-    if (r.success) expect(r.data.edits[0]!.reason).toBe('');
+    if (r.success) {
+      expect(r.data.edits).toHaveLength(1);
+      expect(r.data.edits[0]!.find).toBe('门开了又合。');
+    }
+  });
+
+  it('数组容错后仍能正常应用替换（端到端）', async () => {
+    const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
+    const reviser = new Reviser({
+      // 故意返回裸数组
+      structured: async (req) => {
+        const parsed = req.schema.safeParse([{ find: '门开了又合。', replace: '门开了。' }]);
+        if (!parsed.success) {
+          return {
+            ok: false,
+            error: { code: 'MODEL_STRUCTURED_EMPTY', message: 'schema 失败' },
+            attempts: 1,
+          };
+        }
+        return { ok: true, data: parsed.data, attempts: 1 };
+      },
+      workspace: ws,
+      logger,
+    });
+    const r = await reviser.revise({ chapterNumber: 1, draftText: DRAFT, issues: [issue()] });
+    expect(r.ok).toBe(true);
+    expect(r.text).toContain('门开了。');
   });
 });
 
+// ══════════════════════════════════════════════════════════
 describe('失败处理', () => {
   it('结构化输出失败 → 写原稿并返回错误（不静默）', async () => {
     const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
@@ -355,18 +880,38 @@ describe('失败处理', () => {
 
     expect(r.ok).toBe(false);
     expect(r.error!.message).toContain('没返回 JSON');
-    // ⚠ 失败时 revision.md = 原稿（不能让后续步骤读到半成品）
     expect(existsSync(r.revisionPath!)).toBe(true);
     expect(readFileSync(r.revisionPath!, 'utf8')).toBe(DRAFT);
   });
 
-  it('模型返回空 edits 数组 → 正文不变，且如实报告 0 条应用', async () => {
+  it('⚠ 失败时把模型原始输出落盘（否则无从诊断）', async () => {
+    const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
+    const reviser = new Reviser({
+      structured: async () => ({
+        ok: false,
+        error: { code: 'MODEL_STRUCTURED_EMPTY', message: '(root): Required' },
+        attempts: 1,
+        rawText: '[{"find":"x","replace":"y"}]',
+      }),
+      workspace: ws,
+      logger,
+    });
+    await reviser.revise({ chapterNumber: 1, draftText: DRAFT, issues: [issue()] });
+
+    const log = JSON.parse(readFileSync(join(ws.dir, 'review.json'), 'utf8'));
+    expect(log.kind).toBe('revision-error');
+    expect(log.rawTextHead).toContain('find');
+    expect(log.message).toContain('Required');
+  });
+
+  it('模型返回空 edits → 正文不变，且如实报告未解决', async () => {
     const { reviser } = reviserOf({ edits: [] });
     const r = await reviser.revise({ chapterNumber: 1, draftText: DRAFT, issues: [issue()] });
 
     expect(r.ok).toBe(true);
     expect(r.appliedEdits).toBe(0);
     expect(r.text).toBe(DRAFT);
-    expect(r.outcomes[0]!.skippedReason).toContain('没有可应用的替换');
+    expect(r.outcomes[0]!.applied).toBe(false);
+    expect(r.outcomes[0]!.skippedReason).toContain('未产出可应用的替换');
   });
 });

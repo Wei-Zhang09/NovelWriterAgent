@@ -306,7 +306,7 @@ app.whenReady().then(async () => {
           `第 ${n} 章改稿`,
           rvd.ok === true,
           rvd.ok
-            ? `应用 ${rvd.appliedEdits} 条替换（拒 ${rvd.rejectedEdits}）｜${rvd.deltaChars >= 0 ? '+' : ''}${rvd.deltaChars} 字`
+            ? `解决 ${rvd.resolved ?? 0}/${rvd.totalTargets} 个问题｜应用 ${rvd.appliedEdits} 条替换（拒 ${rvd.rejectedEdits}、回退 ${rvd.rolledBack ?? 0} 组）｜${rvd.deltaChars >= 0 ? '+' : ''}${rvd.deltaChars} 字`
             : `${rvd.error?.code}：${String(rvd.error?.message ?? '').slice(0, 100)}`,
         );
         if (rvd.ok && rvd.appliedEdits > 0) {
