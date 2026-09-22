@@ -1664,14 +1664,23 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     //   都不该让前 45 章白跑。判据是"该章**所有**场景都已落库且已标注" ——
     //   只按章号跳过会让"标注到一半中断的章"永远补不上。
     const repo0 = corpusRepo();
-    const doneChapters = new Set<number>();
+    const perChapter = new Map<number, { total: number; annotated: number }>();
     for (const r of repo0.listScenesByDocument(params.documentId)) {
-      if (r.annotated === 1 && r.chapter_number !== null) {
-        doneChapters.add(r.chapter_number);
-      }
+      if (r.chapter_number === null) continue;
+      const e = perChapter.get(r.chapter_number) ?? { total: 0, annotated: 0 };
+      e.total++;
+      if (r.annotated === 1) e.annotated++;
+      perChapter.set(r.chapter_number, e);
     }
-    // 只把"完整跑过"的章算作已完成：章号在 doneChapters 且
-    // 该章场景数 > 0（空章不算）
+    // ⚠ 判据是"该章**所有**场景都已标注"，不是"有任一场景已标注"。
+    //
+    //   早先用 `r.annotated === 1` 判断 → 一章里只要有一个场景标成功，
+    //   整章就被算作已完成 → **该章失败的场景永远不会重试**。
+    //   实测《清纯校花》第 103/177/182/204/220/245 章就是这样被跳过的。
+    const doneChapters = new Set<number>();
+    for (const [ch, e] of perChapter) {
+      if (e.total > 0 && e.annotated === e.total) doneChapters.add(ch);
+    }
     const todo = selected
       .map((f, i) => ({ file: f, chapterNumber: i + 1 }))
       .filter((x) => !doneChapters.has(x.chapterNumber));

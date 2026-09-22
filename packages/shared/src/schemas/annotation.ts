@@ -128,6 +128,10 @@ export const InformationFlowSchema = z.object({
  */
 export const HookSchema = z.preprocess(
   (raw) => {
+    // ⚠ null → undefined：模型有时用 null 表示"这个场景没有钩子"。
+    //   归一成 undefined（而不是让 null 通过），下游只需处理**一种**
+    //   "缺失"形态。`.optional()` 只接受 undefined，不接受 null。
+    if (raw === null) return undefined;
     // 字符串 → 包成对象
     if (typeof raw === 'string') {
       const t = raw.trim();
@@ -148,10 +152,19 @@ export const HookSchema = z.preprocess(
     }
     return raw;
   },
-  z.object({
-    type: z.string().min(1),
-    intensity: z.number().min(0).max(1).default(0.5),
-  }),
+  // ⚠ 内层必须 `.optional()`：`z.preprocess` 返回 `ZodEffects`，
+  //   而**外层的 `.optional()` 拦不住内层的 undefined** ——
+  //   字段缺失时 preprocess 收到 undefined 并原样返回，
+  //   内层 object schema 就报 "hook: Required"。
+  //
+  //   实测：《清纯校花》第 349/353 章报 `hook: Required` 就是这个原因
+  //   （模型没给 hook，本应合法）。这是修 hook 容错时**我自己引入的回归**。
+  z
+    .object({
+      type: z.string().min(1),
+      intensity: z.number().min(0).max(1).default(0.5),
+    })
+    .optional(),
 );
 
 /**

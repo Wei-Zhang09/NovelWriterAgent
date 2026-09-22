@@ -300,6 +300,22 @@ describe('⚠ hook 容错（表述形式问题不该毁掉整个场景的标注�
     if (r.success) expect(r.data.hook).toEqual({ type: '悬念', intensity: 0.8 });
   });
 
+  it('⚠ hook 缺失时合法（不是 Required）—— 修 preprocess 引入的回归', () => {
+    // `z.preprocess` 返回 ZodEffects，外层 `.optional()` 拦不住内层的
+    // undefined：字段缺失时 preprocess 收到 undefined 并原样返回，
+    // 内层 object schema 就报 "hook: Required"。
+    // 实测《清纯校花》第 349/353 章栽在这（模型没给 hook，本应合法）。
+    const r = SceneAnnotationSchema.safeParse({ ...BASE });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.hook).toBeUndefined();
+  });
+
+  it('⚠ hook 显式为 null 也合法，且归一为 undefined（只留一种缺失形态）', () => {
+    const r = SceneAnnotationSchema.safeParse({ ...BASE, hook: null });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.hook).toBeUndefined();
+  });
+
   it('⚠ hook 无任何描述时仍失败（不编造占位符）', () => {
     const r = SceneAnnotationSchema.safeParse({ ...BASE, hook: { intensity: 0.5 } });
     expect(r.success).toBe(false);
