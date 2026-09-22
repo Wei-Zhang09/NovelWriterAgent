@@ -42,7 +42,16 @@ import {
 } from '@nwa/harness';
 import { z } from 'zod';
 import { Planner, Writer, Reviewer, Reviser, SkillEngine } from '@nwa/writing';
-import { ChapterWorkspace, ContinuityChecker, FactExtractor, CanonPromoter } from '@nwa/story';
+import {
+  ChapterWorkspace,
+  ContinuityChecker,
+  FactExtractor,
+  CanonPromoter,
+  exportProject,
+  restoreBackup,
+  rebuildFts,
+  verifyExport,
+} from '@nwa/story';
 import { CommitEngine, SummaryIndexer, MemoryGatherer, SummaryGenerator } from '@nwa/harness';
 import {
   PatternMiner,
@@ -570,12 +579,29 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
    * 约束：v1.0 同一时刻只允许一个打开的项目。重复打开不同项目会先关闭前一个，
    * 避免多连接并发写同一批文件（ADR-0002 v2 的排他锁在 STEP 11 补）。
    */
-  'project.open': (params: { dir?: string; name?: string }) => {
+  'project.open': (params: { dir?: string; rootDir?: string; name?: string }) => {
+    // ⚠ `rootDir` 是**兼容别名**，必须接受。
+    //
+    //   实测事故：本方法只读 `params.dir`，而 8 个 verify 脚本传的是
+    //   `rootDir` —— 参数被**静默忽略**，脚本以为在临时目录里跑，
+    //   实际全部打开了用户的真实项目目录（`~/NovelWriterProjects`），
+    //   往里面写测试书目/章节/导出物。
+    //
+    //   这是"声明了却不生效的参数"的又一次翻车（前例：maxGroups、
+    //   detectProseIssues）。修法两条：
+    //     1. 接受别名，让既有调用方立刻正确（而不是等它们逐个改）
+    //     2. 两个都给且不一致时报错，不猜
+    if (params.dir && params.rootDir && params.dir !== params.rootDir) {
+      throw new AppError(
+        ErrorCode.TOOL_VALIDATION_ERROR,
+        `dir 与 rootDir 不一致（${params.dir} vs ${params.rootDir}），拒绝猜测用哪个`,
+      );
+    }
     if (opened) {
       opened.db.close();
       opened = null;
     }
-    const dir = params.dir ?? PROJECTS_ROOT;
+    const dir = params.dir ?? params.rootDir ?? PROJECTS_ROOT;
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     const dbPath = join(dir, 'project.db');
 
@@ -2181,6 +2207,80 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       throw new AppError(ErrorCode.STORAGE_QUERY_FAILED, `技能不存在：${params.skillId}`);
     }
     return { skillId: params.skillId, status: params.status };
+  },
+
+  /**
+   * 导出项目（§58）—— 真源 + 用户资产，附 manifest 与校验和。
+   *
+   * ⚠ 不含 FTS 索引（§59 派生数据）与 workspace（未验证中间产物）。
+   */
+  'backup.export': (params: { outDir?: string; includeCorpus?: boolean } = {}) => {
+    const p = requireProject();
+    const r = exportProject({
+      rootDir: p.dir,
+      logger: logger.child('backup'),
+      ...(params.outDir ? { outDir: params.outDir } : {}),
+      ...(params.includeCorpus !== undefined ? { includeCorpus: params.includeCorpus } : {}),
+    });
+    return {
+      ok: r.ok,
+      outDir: r.outDir,
+      files: r.manifest.totals.files,
+      bytes: r.manifest.totals.bytes,
+      excluded: r.manifest.excluded,
+    };
+  },
+
+  /** 校验导出物完整性（对照 manifest 的 sha256）—— 不读项目，只读备份目录 */
+  'backup.verify': (params: { dir: string }) => {
+    const r = verifyExport(params.dir);
+    return { ok: r.ok, checked: r.checked, problems: r.problems };
+  },
+
+  /**
+   * 从备份恢复（§58）。
+   *
+   * ⚠ 破坏性操作：目标已存在时必须显式 `overwrite: true`，
+   *   且会先把现状移到 `.pre-restore-*`（可回滚）。
+   */
+  'backup.restore': (params: {
+    backupDir: string;
+    targetDir?: string;
+    overwrite?: boolean;
+  }) => {
+    const p = requireProject();
+    const targetDir = params.targetDir ?? p.dir;
+    const r = restoreBackup({
+      backupDir: params.backupDir,
+      targetDir,
+      logger: logger.child('backup'),
+      // ⚠ 传分词器才能重建 FTS；不传会如实报告"未重建"
+      tokenizer: bigramTokenizer,
+      ...(params.overwrite !== undefined ? { overwrite: params.overwrite } : {}),
+    });
+    return {
+      ok: r.ok,
+      targetDir: r.targetDir,
+      verified: r.verified,
+      previousMovedTo: r.previousMovedTo,
+      ftsRebuilt: r.ftsRebuilt,
+      warnings: r.warnings,
+      error: r.error ?? null,
+    };
+  },
+
+  /**
+   * 重建 FTS 索引（§59：派生数据可重建）。
+   *
+   * ⚠ 独立入口是必要的：索引损坏或恢复后忘记重建时，
+   *   检索会**静默返回空**（看起来像"没有匹配内容"，不报错）。
+   */
+  'backup.rebuildFts': () => {
+    const p = requireProject();
+    // ⚠ 分词器取全项目唯一来源 bigramTokenizer（ADR-0004：必须带 bigram 补丁），
+    //   不要从 runtime 取 —— runtime 没有这个字段，而且分词器不该由它持有。
+    const r = rebuildFts(p.dir, bigramTokenizer, logger.child('backup'));
+    return r;
   },
 
   /**

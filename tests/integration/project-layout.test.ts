@@ -5,7 +5,7 @@
  * 因此这里逐个断言固定路径，任何改动都会让测试失败并强制走 ADR 流程。
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -151,5 +151,47 @@ describe('章节工作区', () => {
     writeFileSync(projectPaths(root).workspaceFile(1, 'draft.md'), '草稿内容', 'utf8');
     // 草稿存在于 workspace，但 chapters/ 仍为空
     expect(readdirSync(join(root, PROJECT_DIRS.chapters))).toHaveLength(0);
+  });
+});
+
+describe('⚠ verify 脚本的隔离约定（源码级防回退）', () => {
+  it('⚠ 所有 verify 脚本传给 project.open 的目录参数名必须被实现接受', () => {
+    // 实测事故：`project.open` 只读 `params.dir`，而 8 个脚本传的是
+    // `rootDir` —— 参数被**静默忽略**，脚本以为在临时目录跑，
+    // 实际全部打开了用户真实项目目录并往里写测试数据。
+    //
+    // 这类缺陷靠"跑测试"发现不了（脚本一路显示通过）。
+    // 因此在这里做**源码级**扫描：脚本里出现 project.open 时，
+    // 必须用 `dir:`，或确认实现已支持该键名。
+    const scriptsDir = join(process.cwd(), 'apps', 'desktop', 'scripts');
+    const files = readdirSync(scriptsDir).filter((f) => f.endsWith('.mjs'));
+    const offenders: string[] = [];
+
+    for (const f of files) {
+      const text = readFileSync(join(scriptsDir, f), 'utf8');
+      // 匹配 project.open({ ... }) 里用了 rootDir 的地方
+      const calls = text.matchAll(/project\.open'\s*,\s*\{([^}]*)\}/g);
+      for (const m of calls) {
+        const args = m[1] ?? '';
+        if (/\brootDir\b/.test(args) && !/\bdir\b/.test(args)) {
+          offenders.push(`${f}: ${args.trim()}`);
+        }
+      }
+    }
+
+    // ⚠ 实现已接受 rootDir 作为别名（见 core-process 的 project.open），
+    //   所以这里允许 rootDir；但**不允许**传了别名却不带 dir 的写法
+    //   在实现被改回只认 dir 时静默失效 —— 故断言"要么用 dir，
+    //   要么实现里同时接受两者"。
+    const impl = readFileSync(
+      join(process.cwd(), 'apps', 'desktop', 'src', 'main', 'core-process.ts'),
+      'utf8',
+    );
+    const implAcceptsAlias = /params\.rootDir/.test(impl);
+
+    expect(
+      offenders.length === 0 || implAcceptsAlias,
+      `脚本用了 rootDir 但实现不接受该键名：\n${offenders.join('\n')}`,
+    ).toBe(true);
   });
 });

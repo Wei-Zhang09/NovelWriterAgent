@@ -46,3 +46,9 @@ export { CanonPromoter } from './canon/canon-promoter.js';
 export type { PromotePolicy, PromoteOutcome, PromoteReport } from './canon/canon-promoter.js';
 
 export const STORY_PACKAGE_READY = true;
+
+// ── Backup / Import / Export（STEP 21 / §58 §59） ────────────
+export { exportProject, verifyExport, EXPORT_FORMAT_VERSION } from './backup/export-project.js';
+export type { ExportManifest, ExportOptions, ExportResult } from './backup/export-project.js';
+export { restoreBackup, rebuildFts, BACKUP_DIRS } from './backup/restore-backup.js';
+export type { RestoreOptions, RestoreResult } from './backup/restore-backup.js';
