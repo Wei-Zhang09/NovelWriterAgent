@@ -36,5 +36,24 @@ export { cleanWebNovel, findExtrasStart, isPromoText } from './corpus/clean-web.
 export type { CleanOptions, CleanResult } from './corpus/clean-web.js';
 export type { CleanReport, CleanRuleStat } from './corpus/types.js';
 
+// ── STEP 15：场景切分 + 叙事标注 ──────────────────────────
+export {
+  segmentScenes,
+  toParagraphs,
+  isDialogueParagraph,
+} from './parse/scene-segmenter.js';
+export type { Paragraph, SegmentedScene, SegmentOptions } from './parse/scene-segmenter.js';
+
+export { splitSentences, computePacing, computeProse, paragraphsToText } from './parse/metrics.js';
+export type { PacingMetrics, ProseMetrics } from './parse/metrics.js';
+
+export { SceneAnnotator } from './parse/annotator.js';
+export type {
+  AnnotationStructuredCaller,
+  AnnotateOptions,
+  AnnotatedScene,
+  AnnotateChapterResult,
+} from './parse/annotator.js';
+
 export { CorpusImporter } from './corpus/import.js';
 export type { ImportOptions, ImportRequest, ImportResult } from './corpus/import.js';

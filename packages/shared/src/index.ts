@@ -11,5 +11,7 @@ export * from './schemas/enums.js';
 export * from './schemas/domain.js';
 export * from './schemas/tool.js';
 export * from './schemas/plan.js';
+// ⚠ annotation 放在 plan 之后：它复用 plan.ts 的 SceneFunctionSchema
+export * from './schemas/annotation.js';
 export * from './schemas/review.js';
 export * from './schemas/fact-extraction.js';
