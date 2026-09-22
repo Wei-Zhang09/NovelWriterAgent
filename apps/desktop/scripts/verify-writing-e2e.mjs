@@ -298,18 +298,30 @@ app.whenReady().then(async () => {
           : `${rd.error?.code}：${String(rd.error?.message ?? '').slice(0, 100)}`,
       );
 
-      // 改稿（仅当审稿有问题时）—— 补缺口后新增的环节
-      if (rd.ok && rd.issueCount > 0) {
+      // 改稿（仅当**存在阻塞问题**时才做）
+      //
+      // ⚠ 触发条件必须看 blockingCount，不能看 issueCount。
+      //   实测 6 次运行的数据：
+      //     改稿前阻塞 0 → 改稿后阻塞 0：2 次（有益无害）
+      //     改稿前阻塞 0 → 改稿后阻塞 1：4 次（**把好稿改坏了**）
+      //   也就是说"本来就能提交"时改稿是负收益 ——
+      //   模型会顺手改掉没被指出的地方，引入新的矛盾，
+      //   而复审只看新稿，发现不了"这是改稿引入的"。
+      //   有阻塞问题时才值得冒这个风险（否则稿子根本提交不了）。
+      const needsRevision = rd.ok && (rd.blockingCount ?? 0) > 0;
+      if (needsRevision) {
         const rev = await call('revision.run', { chapterId }, 300_000);
         const rvd = rev.ok ? (rev.data ?? {}) : { ok: false, error: rev.error };
         rec(
           `第 ${n} 章改稿`,
           rvd.ok === true,
           rvd.ok
-            ? `解决 ${rvd.resolved ?? 0}/${rvd.totalTargets} 个问题｜应用 ${rvd.appliedEdits} 条替换（拒 ${rvd.rejectedEdits}、回退 ${rvd.rolledBack ?? 0} 组）｜${rvd.deltaChars >= 0 ? '+' : ''}${rvd.deltaChars} 字`
+            ? rvd.skipped
+              ? `跳过（无阻塞问题，改稿是负收益）`
+              : `解决 ${rvd.resolved ?? 0}/${rvd.totalTargets} 个问题｜应用 ${rvd.appliedEdits} 条替换（拒 ${rvd.rejectedEdits}、回退 ${rvd.rolledBack ?? 0} 组）｜${rvd.deltaChars >= 0 ? '+' : ''}${rvd.deltaChars} 字`
             : `${rvd.error?.code}：${String(rvd.error?.message ?? '').slice(0, 100)}`,
         );
-        if (rvd.ok && rvd.appliedEdits > 0) {
+        if (rvd.ok && rvd.appliedEdits > 0 && !rvd.skipped) {
           // ⚠ 改完必须重新审稿 —— 改稿可能引入新问题
           const redo = await call('review.run', { chapterId }, 300_000);
           const rdd = redo.ok ? (redo.data ?? {}) : {};

@@ -960,7 +960,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
    * ⚠ 改完**不自动通过**：必须重新审稿（改稿可能引入新问题），
    *   由门禁决定能否提交。
    */
-  'revision.run': async (params: { chapterId: string }) => {
+  'revision.run': async (params: { chapterId: string; force?: boolean }) => {
     const p = requireProject();
     if (!p.runtime) {
       throw new AppError(ErrorCode.MODEL_AUTH_FAILED, '尚未配置模型，无法改稿');
@@ -988,6 +988,37 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
         ErrorCode.TOOL_VALIDATION_ERROR,
         '本章还没有审稿结果，无法确定要改什么 —— 请先点「审阅当前章」',
       );
+    }
+
+    // ⚠ 无阻塞问题时**拒绝改稿**（除非调用方显式要求）。
+    //
+    // 实测 6 次真实运行的数据：
+    //   改稿前阻塞 0 → 改稿后阻塞 0：2 次
+    //   改稿前阻塞 0 → 改稿后阻塞 1：4 次（**把好稿改坏了**）
+    //
+    // 也就是说"本来就能提交"时改稿是负收益：模型会顺手改掉没被指出的
+    // 地方，引入新的矛盾；而复审只看新稿，**发现不了"这是改稿引入的"**。
+    // 只有存在阻塞问题（稿子本来提交不了）时，这个风险才值得冒。
+    const blocking = issues.filter((i) => i.severity === 'BLOCKING').length;
+    if (blocking === 0 && params.force !== true) {
+      return {
+        ok: true,
+        skipped: true,
+        reason:
+          `本章没有阻塞问题（${issues.length} 个非阻塞问题），无需改稿 —— ` +
+          '改稿在"本来就能提交"时是负收益（实测 4/6 次把好稿改坏）。' +
+          '若确要改写，请显式传 force=true。',
+        appliedEdits: 0,
+        rejectedEdits: 0,
+        totalTargets: 0,
+        resolved: 0,
+        deltaChars: 0,
+        totalChars: draft.length,
+        passes: [],
+        rolledBack: 0,
+        outcomes: [],
+        needsReReview: false,
+      };
     }
 
     const reviser = new Reviser({

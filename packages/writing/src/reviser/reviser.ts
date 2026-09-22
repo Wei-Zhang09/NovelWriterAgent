@@ -162,6 +162,13 @@ export interface RevisionOptions {
    *   由重新审稿决定最终是否可提交。
    */
   readonly maxShrinkRatio?: number;
+  /**
+   * 单条**删除**允许的最大占比（默认 0.15）。
+   *
+   * ⚠ 比 maxReplaceRatio 严得多：删除是不可逆的信息损失
+   *   （实测一次删除 59% 正文把稿子毁掉）。
+   */
+  readonly maxDeleteRatio?: number;
 }
 
 export interface EditOutcome {
@@ -250,6 +257,7 @@ export class Reviser {
   private readonly maxReplaceRatio: number;
   private readonly retryUnresolved: boolean;
   private readonly maxShrinkRatio: number;
+  private readonly maxDeleteRatio: number;
 
   constructor(opts: RevisionOptions) {
     this.structured = opts.structured;
@@ -259,6 +267,7 @@ export class Reviser {
     this.maxReplaceRatio = opts.maxReplaceRatio ?? 0.7;
     this.retryUnresolved = opts.retryUnresolved ?? true;
     this.maxShrinkRatio = opts.maxShrinkRatio ?? 0.2;
+    this.maxDeleteRatio = opts.maxDeleteRatio ?? MAX_DELETE_RATIO;
   }
 
   /**
@@ -581,7 +590,7 @@ export class Reviser {
     const applied: AppliedEditLog[] = [];
 
     for (const edit of standalone) {
-      const outcome = applyEdit(current, edit, this.maxReplaceRatio);
+      const outcome = applyEdit(current, edit, this.maxReplaceRatio, this.maxDeleteRatio);
       if (outcome.ok) {
         current = outcome.text;
         appliedEdits++;
@@ -601,7 +610,7 @@ export class Reviser {
       let groupApplied = 0;
 
       for (const edit of edits) {
-        const outcome = applyEdit(trial, edit, this.maxReplaceRatio);
+        const outcome = applyEdit(trial, edit, this.maxReplaceRatio, this.maxDeleteRatio);
         if (!outcome.ok) {
           failed = { reason: outcome.reason, find: edit.find.slice(0, 60) };
           break;
@@ -671,6 +680,9 @@ function endsAtSentenceBoundary(s: string): boolean {
 /** 大跨度替换的下限：低于此长度才值得怀疑（小改动不设限，避免误杀） */
 const META_CHECK_MIN_FIND = 25;
 
+/** 截断检测的长度下限（短片段不判，避免误杀中文短句缩写） */
+const TRUNCATION_CHECK_MIN_FIND = 60;
+
 /**
  * 检测"描述性替换"：整段被替换成一小段**不像正文**的文字。
  *
@@ -698,16 +710,188 @@ function looksLikeMetaText(find: string, replace: string): boolean {
   return replace.length < find.length * 0.5;
 }
 
+/**
+ * 在正文中定位 `needle` 对应的**唯一**片段。
+ *
+ * ⚠ 为什么要容错匹配（实测数据驱动）：
+ *
+ * 模型无法逐字复现较长的中文段落。实测同一问题产出 3~5 条替换时，
+ * **往往只有 1 条能精确匹配**，其余全部"找不到"—— 于是整组被放弃，
+ * 该问题一处都没改成，章节永远提交不了：
+ *
+ *   第1章 issue-2：3 条中仅 1 条能应用 → 整组放弃
+ *   第2章 I1：    5 条中仅 1 条能应用 → 整组放弃
+ *
+ * 但失败原因是**引文不精确**，不是"位置不存在"。因此做两级匹配：
+ *   1. 精确匹配（快路径）
+ *   2. 忽略空白后的匹配 —— 把模型引文与正文都去掉空白再比对，
+ *      命中后回填**正文中的真实区间**（用模型给的 replace 覆盖它）
+ *
+ * 安全性不打折：仍然只替换正文里**真实存在**的片段，且要求**唯一**；
+ * 多处命中一律拒绝（无法确定改哪一处）。
+ */
+function findUniqueSpan(text: string, needle: string): { start: number; end: number } | null {
+  // ── 1) 精确匹配 ──
+  const exact = text.indexOf(needle);
+  if (exact >= 0) {
+    if (text.indexOf(needle, exact + 1) >= 0) return null; // 多处 → 不明确，拒绝
+    return { start: exact, end: exact + needle.length };
+  }
+
+  // ── 2) 忽略空白后匹配 ──
+  const stripped = needle.replace(/\s+/g, '');
+  if (stripped.length === 0) return null;
+
+  // 建立"去空白文本 → 原文下标"的映射
+  const map: number[] = [];
+  let norm = '';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (/\s/.test(ch)) continue;
+    norm += ch;
+    map.push(i);
+  }
+
+  const idx = norm.indexOf(stripped);
+  if (idx < 0) return null;
+  if (norm.indexOf(stripped, idx + 1) >= 0) return null; // 多处 → 拒绝
+
+  const start = map[idx]!;
+  const end = map[idx + stripped.length - 1]! + 1;
+  return { start, end };
+}
+
+/**
+ * 单条**删除**允许的最大占比（默认 0.15）。
+ *
+ * ⚠ 为什么删除要单独设更严的上限（实测踩到严重事故）：
+ *
+ * 第 1 章一次改稿删掉了 3226/5458 = **59%** 的正文，稿子直接毁掉
+ * （5458 → 2210 字），而当时的上限是 70%，所以被放行了。
+ *
+ * 关键在于：**删除是不可逆的信息损失，替换不是**。
+ * 替换（哪怕改动很大）至少保留了"改写后的内容"，
+ * 而删除一旦删错，那些情节、对话、细节就永久没了 —— 复审只能看到
+ * "少了一大段"，无法判断原本写了什么，人工也难恢复。
+ *
+ * 15% 足以覆盖正常用途（删掉一段重复描写、删掉一句多余的话），
+ * 同时挡住"一口气删掉半章"。
+ */
+const MAX_DELETE_RATIO = 0.15;
+
+/**
+ * 判断 `find` 是否是"把重复内容合成一份"的形态（去重）。
+ *
+ * ⚠ 必须放行这种情况：find = X + X，replace = X。
+ *   它天然表现为"replace 是 find 的前缀"，若一律当作截断残迹拒绝，
+ *   删重复段落这个正当用途就废了（实测误杀）。
+ */
+function isDedupPattern(find: string, replace: string): boolean {
+  if (replace.length === 0) return false;
+  const body = replace.replace(/\s+$/, '');
+  // X + 空白 + X（两到三份）
+  const two = new RegExp(`^${escapeRe(body)}\\s*${escapeRe(body)}$`);
+  if (two.test(find.replace(/\s+$/, ''))) return true;
+  const three = new RegExp(`^${escapeRe(body)}\\s*${escapeRe(body)}\\s*${escapeRe(body)}$`);
+  return three.test(find.replace(/\s+$/, ''));
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * 判断 `needle` 的内容在 `text` 中是否**重复出现**（即属于冗余内容）。
+ *
+ * ⚠ 用于给"大范围删除"放行：只有可机械验证为冗余的删除才允许，
+ *   否则一次误判就会永久删掉独有情节。
+ */
+function isRedundant(text: string, needle: string): boolean {
+  const stripped = needle.replace(/\s+/g, '');
+  if (stripped.length < 10) return false;
+
+  let norm = '';
+  for (const ch of text) {
+    if (!/\s/.test(ch)) norm += ch;
+  }
+  const first = norm.indexOf(stripped);
+  if (first < 0) return false;
+  // 去掉这一处后，别处还有同样的内容 → 冗余
+  const rest = norm.slice(0, first) + norm.slice(first + stripped.length);
+  return rest.includes(stripped);
+}
+
 function applyEdit(
   text: string,
   edit: RevisionEdit,
   maxRatio: number,
+  maxDeleteRatio: number,
 ): { ok: true; text: string } | { ok: false; reason: string } {
   const ratio = edit.find.length / Math.max(1, text.length);
+
+  // ⚠ 删除用更严的上限（不可逆的信息损失）
+  if (edit.replace.length === 0) {
+    if (ratio > maxDeleteRatio) {
+      // 大范围删除只在**内容确实在别处重复**时才放行 ——
+      // 这是可机械验证的判据，不是凭模型的说明。
+      // 删重复段落是合理需求；删掉独有内容则可能是误判，
+      // 一旦删错那些情节就永久没了（复审只能看到"少了一段"）。
+      if (!isRedundant(text, edit.find)) {
+        return {
+          ok: false,
+          reason:
+            `单条删除占全文 ${(ratio * 100).toFixed(0)}%，超过删除上限 ${(maxDeleteRatio * 100).toFixed(0)}%，` +
+            '且被删内容在正文中**没有重复**（不是冗余内容）—— 删除不可逆，需人工确认',
+        };
+      }
+    }
+    const span = findUniqueSpan(text, edit.find);
+    if (span !== null) {
+      return { ok: true, text: text.slice(0, span.start) + text.slice(span.end) };
+    }
+
+    // ⚠ 命中多处时删除**仍然安全**，前提是内容在别处重复 ——
+    //   此时删掉哪一份，结果都一样（内容仍在正文里）。
+    //   这正是"删除重复段落"的典型场景：find 天然会出现多次，
+    //   若一律拒绝，这个正当用途就废了（实测误杀）。
+    if (isRedundant(text, edit.find)) {
+      const idx = text.indexOf(edit.find);
+      if (idx >= 0) {
+        return { ok: true, text: text.slice(0, idx) + text.slice(idx + edit.find.length) };
+      }
+    }
+
+    return { ok: false, reason: '原文片段在正文中找不到或有多处（无法确定改哪一处）' };
+  }
+
   if (ratio > maxRatio) {
     return {
       ok: false,
       reason: `替换片段占全文 ${(ratio * 100).toFixed(0)}%，超过上限 ${(maxRatio * 100).toFixed(0)}%`,
+    };
+  }
+
+  // ⚠ 挡住"replace 是 find 的前缀"这类**截断残迹**（实测踩到）。
+  //
+  // 模型输出被 maxTokens 截断时，replace 会变成 find 的开头一段，
+  // 应用后等于**静默删掉 find 的后半部分** —— 那是数据损失，
+  // 而日志里看起来只是一次普通的"缩短"。
+  //
+  // 实测：find 443 字 → replace 231 字，replace 正是 find 的前缀。
+  // ⚠ 只在**长片段**上判：截断只发生在长输出上，
+  //   而中文里短句缩写（「门开了又合。」→「门开了」）很常见，会误杀。
+  if (
+    edit.find.length >= TRUNCATION_CHECK_MIN_FIND &&
+    edit.replace.length > 0 &&
+    edit.find.startsWith(edit.replace) &&
+    edit.replace.length < edit.find.length * 0.8 &&
+    !isDedupPattern(edit.find, edit.replace)
+  ) {
+    return {
+      ok: false,
+      reason:
+        `替换文本是原文片段的**前缀**（${edit.replace.length}/${edit.find.length} 字）—— ` +
+        '疑似输出被截断，应用后会静默删掉后半段。已拒绝',
     };
   }
 
@@ -721,14 +905,13 @@ function applyEdit(
     };
   }
 
-  const idx = text.indexOf(edit.find);
-  if (idx < 0) {
-    // 模型记错了原文 —— 拒绝而不是模糊匹配（模糊匹配会改错地方）
-    return { ok: false, reason: '原文片段在正文中找不到' };
+  const span = findUniqueSpan(text, edit.find);
+  if (span === null) {
+    // 找不到，或有多处（无法确定改哪一处）—— 拒绝而不是猜
+    return { ok: false, reason: '原文片段在正文中找不到或有多处（无法确定改哪一处）' };
   }
 
-  // 只替换第一处：多处相同内容时保守处理，避免误改
-  return { ok: true, text: text.slice(0, idx) + edit.replace + text.slice(idx + edit.find.length) };
+  return { ok: true, text: text.slice(0, span.start) + edit.replace + text.slice(span.end) };
 }
 
 // ── Prompt（§31：模块化） ───────────────────────────────────
@@ -751,6 +934,8 @@ function buildSystemPrompt(): string {
     '- `find` 必须与正文**逐字一致**（含标点、空格、换行）。系统做精确匹配，',
     '  匹配不到则该条被丢弃。所以宁可短一点、准一点，不要凭记忆写。',
     '- `replace` 为空字符串表示删除该片段。',
+    '  ⚠ 但**不要用一条指令删掉大段正文**（单条删除不得超过全文 15%，会被拒绝）。',
+    '    要删就拆成若干条小范围删除；删情节请先确认它确实是重复或多余的。',
     '- `issueId` 填该替换针对的问题编号（用问题前面的 id，如 ri_3）。',
     '- 只针对被指出的问题做最小修改。不要顺手润色其他地方。',
     '- 不要改动人物姓名、地名、物品名、已确立的时间与事实。',

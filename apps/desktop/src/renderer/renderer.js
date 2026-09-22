@@ -1100,14 +1100,27 @@ function renderAgent() {
       revMsg2.textContent = `改稿失败：${d.error ? d.error.message : ''}`;
       return;
     }
-    revMsg2.className = d.revisedCount > 0 ? 'form-msg form-msg--ok' : 'form-msg form-msg--err';
-    revMsg2.textContent = d.revisedCount > 0
-      ? `已修改 ${d.revisedCount}/${d.totalTargets} 处（${d.totalChars} 字，${d.deltaChars >= 0 ? '+' : ''}${d.deltaChars}） —— 请重新审稿`
-      : `未做修改：${d.totalTargets} 个问题都被判定无需修改`;
+    // 无阻塞问题时产品会主动跳过（改稿在"本来就能提交"时是负收益）
+    if (d.skipped) {
+      revMsg2.className = 'form-msg';
+      revMsg2.textContent = d.reason || '无需改稿';
+      revDetail2.replaceChildren();
+      return;
+    }
+    revMsg2.className = d.appliedEdits > 0 ? 'form-msg form-msg--ok' : 'form-msg form-msg--err';
+    revMsg2.textContent = d.appliedEdits > 0
+      ? `已解决 ${d.resolved}/${d.totalTargets} 个问题｜应用 ${d.appliedEdits} 条替换（${d.deltaChars >= 0 ? '+' : ''}${d.deltaChars} 字） —— 请重新审稿`
+      : `未做修改：${d.totalTargets} 个问题都没有可应用的替换`;
     revDetail2.replaceChildren();
     for (const o of d.outcomes) {
       revDetail2.append(el('div', 'perm-line',
-        `${o.revised ? '✓ 已改' : '— 跳过'}［${o.category}/${o.severity}］${o.note || o.skippedReason || ''}`.slice(0, 110)));
+        `${o.applied ? '✓ 已改' : '— 未改'}［${o.category}/${o.severity}］${
+          o.applied ? `改 ${o.editCount} 处${o.canonical ? `（统一为「${o.canonical}」）` : ''}` : (o.skippedReason || '')
+        }`.slice(0, 130)));
+    }
+    if (d.rolledBack > 0) {
+      revDetail2.append(el('div', 'perm-line',
+        `⚠ ${d.rolledBack} 组替换被整组回退（同一问题需多处同改，任一处匹配失败即放弃，避免只改一半）`));
     }
   });
 

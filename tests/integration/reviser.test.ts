@@ -138,12 +138,57 @@ describe('⚠ 核心保证：只改被引用的片段，其余逐字节不变', 
     expect(r.text).toBe(DRAFT.replace('门开了又合。', '门开了，又合上。'));
   });
 
-  it('replace 为空字符串 = 删除该片段', async () => {
+  it('replace 为空字符串 = 删除该片段（小范围删除）', async () => {
+    // 用足够长的正文，使目标句占比低于 15% 删除上限
+    const text = '门开了又合。\n' + '其余正文照常进行。'.repeat(30);
     const { reviser } = reviserOf({
-      edits: [{ find: '\n韩素撕下纸片写下号码。', replace: '', reason: '删重复' }],
+      edits: [{ find: '门开了又合。', replace: '', reason: '删掉这句' }],
     });
-    const r = await reviser.revise({ chapterNumber: 1, draftText: DRAFT, issues: [issue()] });
-    expect(r.text!.match(/韩素撕下纸片写下号码。/g)).toHaveLength(1);
+    const r = await reviser.revise({ chapterNumber: 1, draftText: text, issues: [issue()] });
+    expect(r.text).not.toContain('门开了又合。');
+    expect(r.appliedEdits).toBe(1);
+  });
+
+  it('⚠ 单条删除超过全文 15% → 拒绝（实测删掉 59% 正文把稿子毁掉）', async () => {
+    // 真实事故：第 1 章一次改稿删掉 3226/5458 = 59% 正文（5458 → 2210 字）。
+    // 当时上限 70% 所以被放行 —— 但**删除是不可逆的信息损失**，
+    // 替换（哪怕改动大）至少保留改写后的内容，删除一旦删错就永久没了。
+    const big = '他走进院子。' + '这一段描写很长。'.repeat(60); // 远超 15%
+    const text = big + '\n\n' + '其余正文。'.repeat(40);
+    const { reviser } = reviserOf({
+      edits: [{ find: big, replace: '', reason: '删除冗余段落' }],
+    });
+    const r = await reviser.revise({ chapterNumber: 1, draftText: text, issues: [issue()] });
+
+    expect(r.appliedEdits).toBe(0);
+    expect(r.text).toBe(text); // 一个字都不能少
+    expect(r.rejectedEdits).toBeGreaterThan(0);
+  });
+
+  it('删除上限按占比判定，小段落删除正常放行', async () => {
+    const target = '他走进院子。';
+    const text = target + '其余正文。'.repeat(200);
+    const { reviser } = reviserOf({
+      edits: [{ find: target, replace: '', reason: '删掉这句' }],
+    });
+    const r = await reviser.revise({ chapterNumber: 1, draftText: text, issues: [issue()] });
+    expect(r.appliedEdits).toBe(1);
+    expect(r.text).not.toContain('他走进院子。');
+  });
+
+  it('⚠ 替换文本是原文的前缀（截断残迹）→ 拒绝，避免静默删掉后半段', async () => {
+    // 实测：find 443 字 → replace 231 字，replace 正是 find 的开头一段。
+    // 应用后等于静默删掉 find 的后半部分，而日志里只显示为一次"缩短"。
+    const full = '门开了又合。' + '他站在那里很久，没有动。'.repeat(8);
+    const truncated = full.slice(0, Math.floor(full.length * 0.5));
+    const text = '开头。\n\n' + full + '\n\n结尾。';
+    const { reviser } = reviserOf({
+      edits: [{ find: full, replace: truncated, reason: '缩短' }],
+    });
+    const r = await reviser.revise({ chapterNumber: 1, draftText: text, issues: [issue()] });
+
+    expect(r.appliedEdits).toBe(0);
+    expect(r.text).toBe(text);
   });
 
   it('替换后字符变化量如实报告', async () => {
@@ -583,21 +628,55 @@ describe('⚠ 拒绝会毁稿的替换', () => {
   });
 
   it('小改动不受"描述性文字"检查影响（避免误杀）', async () => {
+    const text = '门开了又合。\n' + '其余正文照常进行。'.repeat(30);
     const { reviser } = reviserOf({
       edits: [{ find: '门开了又合。', replace: '门开了', reason: '微调' }],
     });
-    const r = await reviser.revise({ chapterNumber: 1, draftText: DRAFT, issues: [issue()] });
+    const r = await reviser.revise({ chapterNumber: 1, draftText: text, issues: [issue()] });
     expect(r.appliedEdits).toBe(1);
   });
 
-  it('多处相同内容时只替换第一处（保守处理）', async () => {
+  it('⚠ 多处相同内容 → 拒绝（无法确定改哪一处，不猜）', async () => {
+    // 早先的实现是"只替换第一处"，但那是猜测 —— 若模型本意是改第二处，
+    // 就会改错地方且无人察觉。改为拒绝并让模型给出更长的定位片段。
     const dup = '重复的一句话。\n中间。\n重复的一句话。';
     const { reviser } = reviserOf({
       edits: [{ find: '重复的一句话。', replace: '改后。', reason: '' }],
     });
     const r = await reviser.revise({ chapterNumber: 1, draftText: dup, issues: [issue()] });
-    expect(r.text!.match(/重复的一句话。/g)).toHaveLength(1);
-    expect(r.text!.match(/改后。/g)).toHaveLength(1);
+
+    expect(r.appliedEdits).toBe(0);
+    expect(r.text).toBe(dup);
+    expect(r.rejectedEdits).toBeGreaterThan(0);
+  });
+
+  it('⚠ 引文不精确（空白差异）也能定位 —— 模型无法逐字复现长段落', async () => {
+    // 实测：同一问题产出 3~5 条替换时往往只有 1 条能精确匹配，
+    // 其余"找不到" → 整组放弃 → 该问题一处都没改成。
+    // 失败原因是**引文不精确**而非位置不存在，因此忽略空白后比对。
+    const text = '他取出铜扣，扣面是锻打的痕迹。\n\n灯下再看，铜扣上压着波浪纹。';
+    const { reviser } = reviserOf({
+      edits: [
+        {
+          // 模型漏掉了换行（引文与正文有空白差异）
+          find: '他取出铜扣，扣面是锻打的痕迹。灯下再看',
+          replace: '他取出铜扣，扣面压着波浪纹。灯下再看',
+          reason: '统一纹样',
+          issueId: 'ri_1',
+          canonical: '波浪纹',
+        },
+      ],
+    });
+    const r = await reviser.revise({
+      chapterNumber: 1,
+      draftText: text,
+      issues: [issue({ id: 'ri_1', severity: 'BLOCKING' })],
+    });
+
+    expect(r.appliedEdits).toBe(1);
+    // 替换必须落在正文的真实区间上（换行被一并覆盖）
+    expect(r.text).toContain('扣面压着波浪纹');
+    expect(r.text).not.toContain('锻打的痕迹');
   });
 });
 
@@ -676,12 +755,12 @@ describe('⚠ 绝不覆盖原稿', () => {
   });
 
   it('日志记录删减比例（大幅删减需人工复核）', async () => {
-    // 目标段落占全文约 50%（低于 70% 上限，能通过替换检查）
-    const target = '第一句。' + '第二句。'.repeat(9);
-    const other = '别的段落。'.repeat(30);
-    const full = target + other;
+    // 目标内容在正文中**重复出现** → 属于冗余，大删除被放行
+    const target = '他翻过一页，又停住。灯芯爆了一下。'.repeat(4);
+    const other = '别的段落。'.repeat(20);
+    const full = target + '\n\n' + other + '\n\n' + target;
     const { reviser, ws } = reviserOf({
-      edits: [{ find: target, replace: '', reason: '删除冗余', issueId: 'ri_1' }],
+      edits: [{ find: target, replace: '', reason: '删除重复段落', issueId: 'ri_1' }],
     });
     await reviser.revise({
       chapterNumber: 1,
