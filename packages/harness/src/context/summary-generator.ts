@@ -140,31 +140,114 @@ export class SummaryGenerator {
     }
 
     // 后置校验：长度与"不创作"的基本检查
-    const violations = validateSummary(res.data, req.draftText, this.maxChars);
+    let data = res.data;
+    let violations = validateSummary(data, req.draftText, this.maxChars);
+    let attempts = res.attempts;
+
+    // ⚠ 仅因"略超字数"而丢弃整段摘要是不划算的 ——
+    //   实测：520 字 vs 上限 500 字（超出 4%），却让整章无法提交。
+    //   这类问题**压缩一下就解决**，因此做一次定向重试。
+    //   注意只对**纯长度问题**重试：含占位符/未来时说明模型没读懂正文，
+    //   重试没有意义（那些必须让人看到并处理）。
+    if (violations.length > 0 && violations.every((v) => v.includes('超出上限'))) {
+      this.logger.info('摘要超字数，做一次压缩重试', {
+        chapterNumber: req.chapterNumber,
+        chars: data.summary.length,
+        maxChars: this.maxChars,
+      });
+
+      const retry = await this.structured<ChapterSummary>({
+        schema: ChapterSummarySchema,
+        schemaName: 'ChapterSummary',
+        messages: buildCompressMessages(req, data, this.maxChars),
+        maxTokens: 1200,
+        temperature: 0.1,
+      });
+
+      if (retry.ok) {
+        const retryViolations = validateSummary(retry.data, req.draftText, this.maxChars);
+        attempts += retry.attempts;
+        // 压缩重试的结果更好才采纳（避免越改越差）
+        if (retryViolations.length === 0) {
+          data = retry.data;
+          violations = [];
+        } else {
+          // 仍不合规：若压缩后只剩长度问题且更短，采纳更短的那份
+          const shorter =
+            retry.data.summary.length < data.summary.length ? retry.data : data;
+          if (retryViolations.every((v) => v.includes('超出上限'))) {
+            data = shorter;
+            violations = validateSummary(data, req.draftText, this.maxChars);
+          }
+        }
+      }
+    }
+
     if (violations.length > 0) {
       this.logger.warn('摘要未通过校验', {
         chapterNumber: req.chapterNumber,
         violations,
+        chars: data.summary.length,
       });
       return {
         ok: false,
         error: {
           code: ErrorCode.MODEL_STRUCTURED_EMPTY,
           message: `摘要校验未通过：${violations.join('；')}`,
-          details: { violations },
+          details: { violations, chars: data.summary.length },
         },
-        attempts: res.attempts,
+        attempts,
       };
     }
 
     this.logger.info('摘要生成完成', {
       chapterNumber: req.chapterNumber,
-      chars: res.data.summary.length,
-      keyFacts: res.data.keyFacts.length,
+      chars: data.summary.length,
+      keyFacts: data.keyFacts.length,
     });
 
-    return { ok: true, summary: res.data, attempts: res.attempts };
+    return { ok: true, summary: data, attempts };
   }
+}
+
+/**
+ * 压缩重试的消息。
+ *
+ * ⚠ 把**实际字数与目标**明确告知，并保留原摘要作为改写对象 ——
+ *   只说"太长了"模型往往会重新生成一份同样长的。
+ */
+function buildCompressMessages(
+  req: SummaryRequest,
+  prev: ChapterSummary,
+  maxChars: number,
+): { role: 'system' | 'user'; content: string }[] {
+  const target = Math.floor(maxChars * 0.8); // 留出余量，别贴着上限
+  const system = [
+    '你是长篇小说的章节摘要器。上一次的摘要**超字数**，需要压缩。',
+    '',
+    '硬性要求：',
+    `- summary 必须压缩到 **${target} 字以内**（当前 ${prev.summary.length} 字）。`,
+    '- 压缩方式是**删冗余、并短句**，不是删事件。',
+    '  必须保留：人物全名、地名、物品名、时间跨度、已改变的处境、章末钩子。',
+    '- 仍然只陈述正文中已发生的事，不得推断、不得添加设定。',
+    '- 仍然不要写"本章将""接下来会"这类预告，不要写占位符。',
+    '- keyFacts 与 endState 保持原样即可（除非它们本身也需要缩短）。',
+  ].join('\n');
+
+  const user = [
+    `【需要压缩的摘要（当前 ${prev.summary.length} 字，目标 ${target} 字以内）】`,
+    prev.summary,
+    '',
+    '【本章正文（用于确认哪些信息不能丢）】',
+    req.draftText,
+    '',
+    `请输出压缩后的摘要（summary 控制在 ${target} 字以内）。`,
+  ].join('\n');
+
+  return [
+    { role: 'system', content: system },
+    { role: 'user', content: user },
+  ];
 }
 
 /**

@@ -50,6 +50,25 @@ function callerReturning(raw: unknown): SummaryStructuredCaller {
   };
 }
 
+/** 按调用次序依次返回不同结果的 caller（用于测试压缩重试） */
+function callerByCall(seq: unknown[]): SummaryStructuredCaller {
+  let n = 0;
+  return async (req) => {
+    const raw = seq[Math.min(n, seq.length - 1)];
+    n++;
+    const parsed = req.schema.safeParse(raw);
+    if (!parsed.success) {
+      return {
+        ok: false,
+        error: { code: 'MODEL_STRUCTURED_EMPTY', message: 'schema 失败' },
+        attempts: 1,
+        rawText: JSON.stringify(raw),
+      };
+    }
+    return { ok: true, data: parsed.data, attempts: 1 };
+  };
+}
+
 const DRAFT = [
   '雨水顺着旧货市场的屋檐滴落。林渊坐在工作台前，镊子夹着一枚黄铜齿轮。',
   '林溪失踪已经整整四天。治安官的敷衍像一张网勒在他脖子上。',
@@ -136,8 +155,68 @@ describe('⚠ 摘要只抽取不创作（ADR-0006："错一条污染几百章"�
     expect(r.error!.message).toContain('实质内容');
   });
 
-  it('拒绝超长摘要（会挤占后续章节的上下文预算）', async () => {
-    // 上限现在是 500，用 600 字测试
+  it('超长摘要先尝试压缩重试，压缩成功则采纳', async () => {
+    // ⚠ 实测：520 字 vs 上限 500（超出 4%）曾让整章无法提交。
+    //   仅因略超字数就丢弃整段摘要不划算 —— 压缩一下即可。
+    const long = '林渊在旧货市场修表，妹妹林溪失踪。'.repeat(30); // 远超 500
+    const short = '林渊在旧货市场修表，妹妹林溪已失踪四天。老乔冒雨来访。';
+    const g = new SummaryGenerator({
+      structured: callerByCall([
+        { summary: long, keyFacts: ['林渊的妹妹林溪已失踪四天'], endState: '林渊仍在旧货市场' },
+        { summary: short, keyFacts: ['林渊的妹妹林溪已失踪四天'], endState: '林渊仍在旧货市场' },
+      ]),
+      logger,
+    });
+    const r = await g.generate({ chapterNumber: 1, draftText: DRAFT });
+
+    expect(r.ok).toBe(true);
+    expect(r.summary!.summary).toBe(short);
+    expect(r.summary!.summary.length).toBeLessThanOrEqual(500);
+  });
+
+  it('压缩重试仍超长 → 采纳较短的那份并如实报错', async () => {
+    const a = '林'.repeat(600) + '渊的故事';
+    const b = '林'.repeat(550) + '渊的故事';
+    const g = new SummaryGenerator({
+      structured: callerByCall([
+        { summary: a, keyFacts: [], endState: '仍在旧货市场' },
+        { summary: b, keyFacts: [], endState: '仍在旧货市场' },
+      ]),
+      logger,
+    });
+    const r = await g.generate({ chapterNumber: 1, draftText: DRAFT });
+
+    // 两份都超长 → 不假装成功
+    expect(r.ok).toBe(false);
+    expect(r.error!.message).toContain('超出上限');
+  });
+
+  it('⚠ 含占位符/未来时不做压缩重试（那是没读懂正文，重试无意义）', async () => {
+    let calls = 0;
+    const g = new SummaryGenerator({
+      structured: async (req) => {
+        calls++;
+        const parsed = req.schema.safeParse({
+          summary: '待确认：主角的经历。' + '林'.repeat(600),
+          keyFacts: [],
+          endState: '仍在旧货市场',
+        });
+        return {
+          ok: true,
+          data: parsed.success ? parsed.data : { summary: '', keyFacts: [], endState: '' },
+          attempts: 1,
+        };
+      },
+      logger,
+    });
+    const r = await g.generate({ chapterNumber: 1, draftText: DRAFT });
+
+    expect(r.ok).toBe(false);
+    expect(calls).toBe(1); // 只调一次，没有压缩重试
+    expect(r.error!.message).toContain('占位符');
+  });
+
+  it('拒绝超长摘要（上限 500）', async () => {
     const g = genWith(goodSummary({ summary: '林'.repeat(600) + '渊的故事' }));
     const r = await g.generate({ chapterNumber: 1, draftText: DRAFT });
     expect(r.ok).toBe(false);

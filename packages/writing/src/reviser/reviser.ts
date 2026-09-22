@@ -660,16 +660,9 @@ export class Reviser {
 // ── 单条替换的应用（纯函数，便于测试）──────────────────────
 
 /**
- * 判断一段文字是否"读起来像正文"。
- *
- * ⚠ 触发这个检查的真实故障：模型把**修改意图**当成替换文本写进了正文。
- *   实测：用 4 个字的「彻底消失」替换了 557 字的段落，
- *   于是手稿里凭空出现一句「彻底消失」—— 而所有机械检查都放行了
- *   （557/5366 = 10%，远低于 70% 上限）。
- *
- * 判据：成段正文必然以句末标点收尾。空字符串是合法的"删除"。
+ * 判断文字是否以句末标点收尾（即"是一个完整的句子/段落"）。
  */
-function endsLikeProse(s: string): boolean {
+function endsAtSentenceBoundary(s: string): boolean {
   const t = s.trimEnd();
   if (t.length === 0) return true; // 空 = 删除，合法
   return /[。！？…”』」\.\"!?]$/.test(t);
@@ -679,16 +672,29 @@ function endsLikeProse(s: string): boolean {
 const META_CHECK_MIN_FIND = 25;
 
 /**
- * 检测"描述性替换"：长片段被替换成一小段**不像正文**的文字。
+ * 检测"描述性替换"：整段被替换成一小段**不像正文**的文字。
  *
- * 典型表现：`find` 是一整段，`replace` 是「彻底消失」「才就」「他等周管事」
- * 这类短语 —— 模型在描述"应该怎么改"，而不是给出改后的文字。
+ * ⚠ 触发这个检查的真实故障：模型把**修改意图**当成替换文本写进了正文。
+ *   实测：用 4 个字的「彻底消失」替换了 557 字的段落，
+ *   于是手稿里凭空出现一句「彻底消失」—— 而所有机械检查都放行了
+ *   （557/5366 = 10%，远低于 70% 上限）。
+ *
+ * ⚠ 必须**比较两端的收尾方式**，不能只看 replace 是否以标点结尾。
+ *   替换常常是"片段级"的：find 停在句子中间，replace 也可以停在句子中间
+ *   （后面接的是未改动的原文）。只看 replace 会把这些合法替换误杀
+ *   —— 实测踩到：'船到了中流。……林砚在船篷下坐下来' 被判为描述性文字。
+ *
+ * 判据：**find 在句末收尾、replace 却在句中收尾、且短得多** → 可疑。
+ *   那意味着"一整段被换成半句话"，更像是在描述"这段该没了"。
  */
 function looksLikeMetaText(find: string, replace: string): boolean {
   if (replace.length === 0) return false; // 删除，合法
   if (find.length < META_CHECK_MIN_FIND) return false; // 小改动不设限
-  if (endsLikeProse(replace)) return false; // 像正文
-  // 大跨度替换却给出一小段非正文文字 → 判定为描述性文字
+  // find 本身没在句末收尾 → 是片段级替换，replace 停在句中也正常
+  if (!endsAtSentenceBoundary(find)) return false;
+  // find 在句末收尾，replace 也在句末收尾 → 是完整的改写
+  if (endsAtSentenceBoundary(replace)) return false;
+  // find 整段收尾、replace 半句收尾，且明显更短 → 疑似描述性文字
   return replace.length < find.length * 0.5;
 }
 
@@ -758,6 +764,16 @@ function buildSystemPrompt(): string {
     '- ⚠ `canonical` 必须是**原文里已经出现的**某个说法，不能自己发明第三种。',
     '  系统会校验：若 canonical 不在原文中，整组替换作废。',
     '- 只有"同一问题需要改多处"时才填 `canonical`；只改一处时留空即可。',
+    '',
+    '⚠⚠ `find` 要尽可能**短**，只覆盖需要改动的字句，不要整段整段地替换。',
+    '  系统限制单条替换不得超过全文 70%，整段替换会被直接拒绝。',
+    '',
+    '矛盾类问题的正确改法（示例）：',
+    '  原文：「他取出铜扣，扣面是锻打的痕迹。」…「铜扣上压着波浪纹。」…「歪斜的锚形纹样朝上。」',
+    '  ✅ 正确：只替换"有分歧的那几个字"，共 2 条 edit',
+    '     { find: "扣面是锻打的痕迹，一锤一锤敲出来的", replace: "扣面压着波浪纹", issueId: "I-001", canonical: "波浪纹" }',
+    '     { find: "歪斜的锚形纹样朝上", replace: "波浪纹朝上", issueId: "I-001", canonical: "波浪纹" }',
+    '  ❌ 错误：把包含这三句的**整段**作为 find 去替换 —— 会被拒绝，且改完你也不确定统一成了什么。',
     '',
     '不要输出整章正文，只输出 edits 数组。',
   ].join('\n');
