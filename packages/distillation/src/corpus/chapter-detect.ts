@@ -119,6 +119,11 @@ const TITLE_PATTERNS: readonly { readonly name: string; readonly re: RegExp }[] 
     name: 'cn-numbered',
     re: /^[\s\u3000]*第\s*[0-9一二三四五六七八九十百千零〇两]+\s*(?:章(?![节程])|回(?!合)|节(?!奏|目|省|约)|卷(?!轴|起|入|土)|篇)/,
   },
+  // 「第X章：标题」带全角/半角冒号（实测《凡人修仙传》番外篇用此格式）
+  {
+    name: 'cn-numbered-colon',
+    re: /^[\s\u3000]*第\s*[0-9一二三四五六七八九十百千零〇两]+\s*[章回节篇]\s*[：:]/,
+  },
   // Chapter N / CHAPTER N
   { name: 'en-numbered', re: /^[\s\u3000]*Chapter\s+[0-9IVXLC]+\b.*$/i },
   // 纯数字标题行：1 / 001 / 1.
@@ -250,6 +255,24 @@ export function detectChapters(normalized: string): DetectResult {
     if (r.hit) titleHits.push({ index: i, title: lines[i]!.trim(), patternName: r.patternName! });
   }
 
+  // ⚠ 「卷」行在同时存在「章」行时不是章节，而是**卷标**。
+  //
+  //   实测《凡人修仙传》：清洗阶段把「第九卷灵界百族第一千六百五十三章尸体与真血」
+  //   拆成两行后，卷标行「第九卷灵界百族」被当成章节（声明号 = 9），
+  //   造成 410 处章号"倒退"（如 1652 → 9）—— 全是假象。
+  //
+  //   判据：若全书以「章/回」为主（≥2 个），则「第X卷」单独成行的行只是卷标。
+  const chapterUnitHits = titleHits.filter((t) => /[章回节篇]/.test(t.title)).length;
+  if (chapterUnitHits >= 2) {
+    for (let i = titleHits.length - 1; i >= 0; i--) {
+      const t = titleHits[i]!;
+      // 只含「卷」不含「章/回」→ 卷标，剔除
+      if (/第[0-9一二三四五六七八九十百千零〇两]+\s*卷/.test(t.title) && !/[章回节篇]/.test(t.title)) {
+        titleHits.splice(i, 1);
+      }
+    }
+  }
+
   // ⚠ 纯数字标题必须构成**递增序列**才认定。
   //   实测踩到：源文本里一行孤立的「5」被当成章节标题，
   //   造出一个正文为空、章号倒退的假章节。
@@ -353,10 +376,12 @@ function findGaps(chapters: readonly DetectedChapter[]): ChapterGap[] {
     const prev = declared[i - 1]!;
     const cur = declared[i]!;
     const missing = cur - prev - 1;
-    // 跳变 ≤10 视为真实缺章；>10 或倒退视为源文本编号混乱
-    if (missing >= 1 && missing <= 10) {
+    // ⚠ 阈值 3：实测源文本的小幅乱序是 1~3 章
+    //   （如 599 → 560 是倒退 39，属乱序；457 → 456 是倒退 1）。
+    //   跳变 1~3 视为真实缺章；>3 或倒退视为源文本编号混乱。
+    if (missing >= 1 && missing <= 3) {
       gaps.push({ after: prev, before: cur, kind: 'missing', missing });
-    } else if (missing > 10 || cur <= prev) {
+    } else if (missing > 3 || cur <= prev) {
       gaps.push({ after: prev, before: cur, kind: 'numbering', missing });
     }
   }

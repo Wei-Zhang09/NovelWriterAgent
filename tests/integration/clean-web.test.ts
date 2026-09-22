@@ -269,3 +269,83 @@ describe('清洗报告（可审计性）', () => {
     expect(r.report.removedChars).toBe(0);
   });
 });
+
+
+// ══════════════════════════════════════════════════════════
+describe('⚠ 新噪声形态（实测《凡人修仙传》《诛仙》）', () => {
+  it('HTML 标签被清掉', () => {
+    const t = '他站在那儿。<strong>最新章节全文阅读..info</strong>他转过身。';
+    const r = cleanWebNovel(t);
+    expect(r.text).not.toContain('<strong>');
+    expect(r.text).not.toContain('..info');
+    expect(r.text).toContain('他站在那儿。');
+    expect(r.text).toContain('他转过身。');
+  });
+
+  it('空链接标签被清掉', () => {
+    const t = '，\n\n    <ahref=""target="_nk">http://"></a>';
+    const r = cleanWebNovel(t);
+    expect(r.text).not.toContain('http');
+    expect(r.text).not.toContain('<a');
+  });
+
+  it('「圣堂最新章节」插在句中也被清掉', () => {
+    const t = '巨兽大半头颅竟硬生生的被击入了地面之下。圣堂最新章节巨兽在头顶巨压中发出吼叫。';
+    const r = cleanWebNovel(t);
+    expect(r.text).not.toContain('圣堂');
+    expect(r.text).toContain('被击入了地面之下。');
+    expect(r.text).toContain('巨兽在头顶巨压中发出吼叫。');
+  });
+
+  it('「一秒记住【..info】，为您提供精彩小说阅读。」整行被清掉', () => {
+    const t = '正文。\n一秒记住【..info】，为您提供精彩小说阅读。\n更多正文。';
+    const r = cleanWebNovel(t);
+    expect(r.text).not.toContain('一秒记住');
+    expect(r.text).toContain('更多正文。');
+  });
+
+  it('⚠ ※※※ 是场景分隔符，必须保留', () => {
+    // 实测《诛仙》用 ※※※ 标记场景切换（133 处）—— 删掉会丢场景边界信息
+    const t = '他晕了过去。\n\n    ※※※\n\n    普智缓缓走了过来。';
+    const r = cleanWebNovel(t);
+    expect(r.text).toContain('※※※');
+  });
+
+  it('⚠ 「目录」出现在正文里时不能删', () => {
+    // 实测《凡人修仙传》有「订货目录」「丹方目录」等正当用法
+    const t = '上面记录着前不久韩立交于铁匠的订货目录。';
+    const r = cleanWebNovel(t);
+    expect(r.text).toBe(t);
+  });
+
+  it('⚠ 卷+章合并标题被归一化成两行', () => {
+    const t = '第九卷灵界百族第一千六百五十三章尸体与真血';
+    const r = cleanWebNovel(t);
+    expect(r.text).toContain('第九卷灵界百族');
+    expect(r.text).toContain('第一千六百五十三章尸体与真血');
+    expect(r.text.split('\n').length).toBe(2);
+  });
+
+  it('⚠ 卷+章归一化不删任何内容', () => {
+    const t = '第九卷灵界百族第一千六百五十三章尸体与真血';
+    const r = cleanWebNovel(t);
+    // 去掉换行后内容应完全一致
+    expect(r.text.replace(/\s/g, '')).toBe(t.replace(/\s/g, ''));
+  });
+});
+
+describe('⚠ dropExtras 默认不删（实测 15% 内容被误删）', () => {
+  it('默认保留番外篇', () => {
+    // 实测《凡人修仙传》番外 123 万字（占全文 15%），
+    // 原默认删除会静默丢掉同作者同世界观的可用材料
+    const t = ['第两百章 甲', '正文', '', '第一章 番外', '番外正文内容'].join('\n');
+    const r = cleanWebNovel(t);
+    expect(r.text).toContain('番外正文内容');
+  });
+
+  it('显式 dropExtras=true 时才删', () => {
+    const t = ['第两百章 甲', '正文', '', '第一章 番外', '番外正文内容'].join('\n');
+    const r = cleanWebNovel(t, { dropExtras: true });
+    expect(r.text).not.toContain('番外正文内容');
+  });
+});

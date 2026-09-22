@@ -68,6 +68,18 @@ const PAREN_WM_PATTERNS: readonly RegExp[] = [
  * 因此按"水印片段"删除，而不是整行删除 —— 整行删会丢掉后面的正文。
  */
 const INLINE_WM: readonly RegExp[] = [
+  // ⚠ 新形态（实测《凡人修仙传》《诛仙》）：
+  //   - `圣堂最新章节` 直接插在句子中间（11 处）
+  //   - `<strong>最新章节全文阅读..info</strong>` 带 HTML 标签（134 处）
+  //   - `一秒记住【..info】，为您提供精彩小说阅读。` 独立成行（2485 处）
+  //   - `<ahref=""target="_nk">http://"></a>` 空链接（85 处）
+  /<[a-zA-Z/][^>]{0,60}>/g, // 所有 HTML 标签
+  /圣堂最新章节/g,
+  /一秒记住\s*【[^】]{0,30}】[，,]?\s*为您提供精彩小说阅读[。.]?/g,
+  /最新章节全文阅读/g,
+  /最新章节/g,
+  /\.\.info/g,
+  /https?:\/\/\S{0,80}/g,
   // ⚠ 一律限定为 **ASCII/标点**，绝不能用 \S* ——
   //   实测 `手机快速阅读[：:]\s*\S*` 会把后面的中文正文一起吃掉
   //   （「手机快速阅读：16kxs中，药材丹药这一部分…」整段消失）。
@@ -147,11 +159,24 @@ function firstPromoIndex(s: string): number {
 
 export interface CleanOptions {
   /**
-   * 是否删除番外篇。
+   * 是否删除番外篇（默认 **false** —— 不删）。
    *
-   * ⚠ 默认 true：实测《斗破苍穹》正文结束后有作者告别 + 番外，
-   *   番外从「第一章」重新编号，会让章节序号出现巨大倒退，
-   *   污染"章节结构"这一维度的统计。
+   * ## 为什么默认不删（实测数据推翻了原设计）
+   *
+   * 原设计默认删除，理由是"番外从第一章重新编号会污染章节统计"。
+   * 但实测两部书的规模差异极大：
+   *
+   * | 作品 | 番外规模 | 占全文 |
+   * |---|---|---|
+   * | 斗破苍穹 | 31,847 字 | 0.5% |
+   * | 凡人修仙传 | **1,235,903 字** | **15%** |
+   *
+   * 静默丢掉 15% 的正文（且是同作者同世界观的可用材料）
+   * 远比"章号碰撞"严重 —— 章号碰撞已经有 `declaredNumber`
+   * 如实暴露（记为 numbering 缺口），人工能看到；
+   * 而内容一旦删掉就没了。
+   *
+   * 因此改为**默认保留**，需要删时显式传 `dropExtras: true`。
    */
   readonly dropExtras?: boolean;
   /** 生成清理报告（默认 true） */
@@ -382,9 +407,98 @@ export function cleanWebNovel(input: string, opts: CleanOptions = {}): CleanResu
     samples.push({ rule: '空壳标题行', sample: '「第五百四十章 药皇，韩枫!」后无正文，真章节在下一处' });
   }
 
+  // ── 规则 3d：卷+章合并标题归一化 ──
+  //
+  // ⚠ 实测《凡人修仙传》：388 行标题形如
+  //   「第九卷灵界百族第一千六百五十三章尸体与真血」
+  //   —— 卷名与章名挤在一行。若不归一化，chapter-detect 只认
+  //   「第X章」开头的行，这 388 章会被漏掉或与前章合并。
+  //   归一化：拆成「卷行 + 章行」两行。
+  let volChCount = 0;
+  {
+    const ls = text.split('\n');
+    const out: string[] = [];
+    const VOLCH = /^(\s*)(第[0-9一二三四五六七八九十百千零〇两]+卷[^第]{0,20}?)(第[0-9一二三四五六七八九十百千零〇两]+[章回].*)$/;
+    for (const line of ls) {
+      const m = VOLCH.exec(line);
+      if (m) {
+        out.push(`${m[1]}${m[2]}`.trimEnd());
+        out.push(`${m[1]}${m[3]}`);
+        volChCount++;
+      } else {
+        out.push(line);
+      }
+    }
+    text = out.join('\n');
+  }
+  if (volChCount > 0) {
+    stats.push({ name: '卷+章合并标题（归一化，不删内容）', count: volChCount, removedChars: 0 });
+    samples.push({ rule: '卷+章合并标题', sample: '第九卷灵界百族第一千六百五十三章尸体与真血 → 拆两行' });
+  }
+
+  // ── 规则 3e：重复的 banner 标题行（同章号且无标题正文）──
+  //
+  // ⚠ 实测《凡人修仙传》每章标题出现**两次**：
+  //     「 第二百三十二章 大衍决」        ← banner（无空格分隔标题与正文）
+  //     「    第二百三十二章大衍决」      ← 真正的章标题（缩进 4 空格）
+  //   两条都会命中标题正则，造成**同号重复**（实测 404 处假"编号混乱"）。
+  //
+  //   判据：同一声明号出现两次时，保留**带缩进**的那条（源文本用缩进标章标题），
+  //   剔除另一条。若无缩进差异则保留第一条（不猜）。
+  let bannerCount = 0;
+  {
+    const ls = text.split('\n');
+    const TITLE_ONLY = /^(\s*)第([0-9一二三四五六七八九十百千零〇两]+)[章回](.*)$/;
+    // 按声明号分组，记录出现位置
+    const byNum = new Map<string, number[]>();
+    for (let i = 0; i < ls.length; i++) {
+      const m = TITLE_ONLY.exec(ls[i]!);
+      if (!m) continue;
+      const key = m[2]!;
+      const arr = byNum.get(key) ?? [];
+      arr.push(i);
+      byNum.set(key, arr);
+    }
+    const drop = new Set<number>();
+    for (const [, idxs] of byNum) {
+      if (idxs.length < 2) continue;
+      // 相邻出现（中间只有水印/空行）才可能是 banner 重复
+      for (let k = 0; k + 1 < idxs.length; k++) {
+        const a = idxs[k]!;
+        const b = idxs[k + 1]!;
+        if (b - a > 6) continue; // 隔太远，不是 banner 重复
+        // 中间不能有别的章标题
+        let hasOther = false;
+        for (let j = a + 1; j < b; j++) {
+          if (TITLE_ONLY.test(ls[j]!) && !/^\s*$/.test(ls[j]!)) {
+            const mm = TITLE_ONLY.exec(ls[j]!);
+            if (mm && mm[2] !== ls[a]!.match(TITLE_ONLY)![2]) hasOther = true;
+          }
+        }
+        if (hasOther) continue;
+        const indentA = /^(\s*)/.exec(ls[a]!)![1]!.length;
+        const indentB = /^(\s*)/.exec(ls[b]!)![1]!.length;
+        // 保留缩进更深的那条
+        if (indentA !== indentB) {
+          drop.add(indentA > indentB ? b : a);
+        } else {
+          drop.add(a); // 缩进相同 → 保留后者（banner 通常在前）
+        }
+      }
+    }
+    if (drop.size > 0) {
+      text = ls.filter((_, i) => !drop.has(i)).join('\n');
+      bannerCount = drop.size;
+    }
+  }
+  if (bannerCount > 0) {
+    stats.push({ name: '重复 banner 标题行', count: bannerCount, removedChars: 0 });
+    samples.push({ rule: '重复 banner 标题行', sample: '「 第X章 标题」与「    第X章标题」重复 → 保留缩进版' });
+  }
+
   // ── 规则 4：番外篇（章节号重置）──
   let extrasChars = 0;
-  if (opts.dropExtras !== false) {
+  if (opts.dropExtras === true) {
     const cut = findExtrasStart(text);
     if (cut > 0) {
       extrasChars = text.length - cut;

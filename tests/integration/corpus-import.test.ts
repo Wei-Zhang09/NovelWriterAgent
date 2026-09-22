@@ -639,12 +639,19 @@ describe('⚠ 中文数字解析与回目缺口（真实数据验证暴露）', 
     expect(r.gaps[0]!.kind).toBe('numbering');
   });
 
-  it('⚠ 真实缺章（跳变 ≤10）归为 missing', () => {
-    const text = ['第九十九回 甲', '正文', '', '第一百零五回 乙', '正文'].join('\n');
+  it('⚠ 真实缺章（跳变 ≤3）归为 missing', () => {
+    // 阈值取 3：实测源文本的小幅乱序是 1~3 章
+    const text = ['第九十九回 甲', '正文', '', '第一百零二回 乙', '正文'].join('\n');
     const r = detectChapters(text);
     expect(r.gaps).toHaveLength(1);
     expect(r.gaps[0]!.kind).toBe('missing');
-    expect(r.gaps[0]!.missing).toBe(5);
+    expect(r.gaps[0]!.missing).toBe(2);
+  });
+
+  it('⚠ 跳变 >3 归为 numbering（源文本乱序）', () => {
+    const text = ['第九十九回 甲', '正文', '', '第一百零五回 乙', '正文'].join('\n');
+    const r = detectChapters(text);
+    expect(r.gaps[0]!.kind).toBe('numbering');
   });
 
   it('连续回目无缺口', () => {
@@ -655,13 +662,13 @@ describe('⚠ 中文数字解析与回目缺口（真实数据验证暴露）', 
   it('⚠ summarizeGaps 区分缺章与编号混乱（实测斗破混着两种）', () => {
     const text = [
       '第一回 甲', '正文', '',
-      '第五回 乙', '正文', '',      // 缺 2-4（missing）
+      '第三回 乙', '正文', '',      // 缺 1 章（missing）
       '第一四二四回 丙', '正文',    // 跳变巨大（numbering）
     ].join('\n');
     const r = detectChapters(text);
     const s = summarizeGaps(r.gaps);
     expect(s.missingCount).toBe(1);
-    expect(s.missingChapters).toBe(3);
+    expect(s.missingChapters).toBe(1);
     expect(s.numberingCount).toBe(1);
   });
 

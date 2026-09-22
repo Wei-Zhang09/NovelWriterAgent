@@ -60,6 +60,23 @@ const BOOKS = [
     sourceType: 'USER_OWNED',
     expectNoise: [],
   },
+  {
+    name: '凡人修仙传',
+    file: join(ATTACH, '凡人修仙传.md'),
+    genre: '修仙',
+    clean: true,
+    sourceType: 'USER_OWNED',
+    // ⚠ 注：此文件末尾含同作者番外篇（123 万字），默认保留不删
+    expectNoise: ['一秒记住', '..info', '<strong>', '<a href', '圣堂最新章节', '最新章节'],
+  },
+  {
+    name: '诛仙',
+    file: join(ATTACH, '诛仙（电视名：诛仙青云志）.md'),
+    genre: '仙侠',
+    clean: true,
+    sourceType: 'USER_OWNED',
+    expectNoise: ['..info', '<strong>', '最新章节'],
+  },
 ];
 
 const steps = [];
@@ -129,6 +146,10 @@ for (const book of BOOKS) {
 
   // ── 3) 噪声残留 ──
   const leftover = book.expectNoise.filter((w) => text.includes(w));
+  // ⚠ ※※※ 是场景分隔符（实测《诛仙》133 处），必须保留 —— 它承载场景边界信息
+  if (text.includes('※※※')) {
+    console.log(`    （保留了 ※※※ 场景分隔符 ${(text.match(/※※※/g) ?? []).length} 处）`);
+  }
   rec(
     `${book.name} 无噪声残留`,
     leftover.length === 0,
