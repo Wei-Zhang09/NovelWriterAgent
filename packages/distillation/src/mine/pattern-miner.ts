@@ -97,7 +97,12 @@ export interface PatternMinerOptions {
 export interface MinedPatternRecord extends MinedPattern {
   /** 真实 sceneId（由编号映射而来，非模型给出） */
   readonly evidenceSceneIds: readonly string[];
-  /** 来源文档 */
+  /**
+   * ⚠ 该模式的**证据**实际覆盖的来源文档（不是"样本里有哪些文档"）。
+   *
+   * 决定作用域降档的依据。用样本口径会放过"模型只看了一部作品就
+   * 宣称跨作品规律"的情况 —— 实测 64 条 GENRE 里 44 条如此。
+   */
   readonly sourceDocumentIds: readonly string[];
   /** 场景功能（分组的依据） */
   readonly sceneFunction: string;
@@ -264,7 +269,8 @@ export class PatternMiner {
       }
       const parsed = MineOutputSchema.parse(res.data);
       const records: MinedPatternRecord[] = [];
-      const docIds = new Set(scenes.map((s) => s.document_id));
+      // sceneId → document_id（用于判断证据是否真的跨作品）
+      const docOf = new Map(scenes.map((s) => [s.id, s.document_id]));
 
       for (const p of parsed.patterns) {
         // ⚠ 校验证据编号：不存在的编号 → **整条丢弃**（不修补）
@@ -287,11 +293,25 @@ export class PatternMiner {
           continue;
         }
 
+        // ⚠ **证据**实际覆盖了几部作品 —— 与"样本里有几部作品"是两件事。
+        //
+        //   实测：样本含 2 部作品，但模型给出的证据只引用同一部作品的
+        //   场景，于是 64 条 GENRE 模式里有 44 条其实只有单作品证据。
+        //   按 `sourceDocumentIds`（样本口径）降档会放过它们 ——
+        //   那是**未经验证的"类型规律"**，正是 §21 要防的东西。
+        //
+        //   因此按**证据口径**记录，`resolveScope` 据此降档。
+        const evidenceDocs = new Set<string>();
+        for (const id of valid) {
+          const d = docOf.get(id);
+          if (d) evidenceDocs.add(d);
+        }
+
         records.push({
           ...p,
           evidenceSceneIds: valid,
           droppedEvidence: dropped,
-          sourceDocumentIds: [...docIds],
+          sourceDocumentIds: [...evidenceDocs],
           sceneFunction,
           genre: normalizeGenre(genre),
           sampleCount: scenes.length,

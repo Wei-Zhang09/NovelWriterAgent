@@ -156,6 +156,65 @@ describe('⚠ 证据必须可回溯（§46）', () => {
   });
 });
 
+describe('⚠ 作用域必须按**证据**口径判定，不是按样本口径', () => {
+  it('⚠ 样本含 2 部作品但证据只引用 1 部 → 降档 STYLE', async () => {
+    // 实测缺陷：模型看到 2 部作品的样本，却只引用其中一部的场景作证据。
+    // 若按"样本里有几部作品"判定，会放过它 → 未经验证的"类型规律"。
+    const caller = fakeCaller([{ ...GOOD, evidence: ['S1', 'S2'], scope: 'GENRE' }]);
+    const miner = new PatternMiner({ logger, structured: caller as never });
+
+    const r = await miner.mineGroup({
+      scenes: [
+        scene({ id: 'sc1', document_id: 'doc_a' }),
+        scene({ id: 'sc2', document_id: 'doc_a' }),
+        scene({ id: 'sc3', document_id: 'doc_b' }),
+        scene({ id: 'sc4', document_id: 'doc_b' }),
+      ],
+      sceneFunction: 'CONFLICT',
+      textOf: () => '正文内容',
+      genre: '都市',
+    });
+
+    expect(r.patterns.length).toBe(1);
+    // 证据只落在 doc_a → 只算 1 部作品
+    expect(r.patterns[0]!.sourceDocumentIds).toEqual(['doc_a']);
+  });
+
+  it('⚠ 证据真的跨作品时 → 记录 2 部作品（这才配 GENRE）', async () => {
+    const caller = fakeCaller([{ ...GOOD, evidence: ['S1', 'S3'], scope: 'GENRE' }]);
+    const miner = new PatternMiner({ logger, structured: caller as never });
+
+    const r = await miner.mineGroup({
+      scenes: [
+        scene({ id: 'sc1', document_id: 'doc_a' }),
+        scene({ id: 'sc2', document_id: 'doc_a' }),
+        scene({ id: 'sc3', document_id: 'doc_b' }),
+        scene({ id: 'sc4', document_id: 'doc_b' }),
+      ],
+      sceneFunction: 'CONFLICT',
+      textOf: () => '正文内容',
+      genre: '都市',
+    });
+
+    expect(r.patterns[0]!.sourceDocumentIds.sort()).toEqual(['doc_a', 'doc_b']);
+  });
+
+  it('⚠ 被丢弃的编号不计入证据口径（它们指向不存在的场景）', async () => {
+    const caller = fakeCaller([{ ...GOOD, evidence: ['S1', 'S9'], scope: 'GENRE' }]);
+    const miner = new PatternMiner({ logger, structured: caller as never });
+
+    const r = await miner.mineGroup({
+      scenes: [scene({ id: 'sc1', document_id: 'doc_a' }), scene({ id: 'sc2', document_id: 'doc_b' })],
+      sceneFunction: 'CONFLICT',
+      textOf: () => '正文内容',
+      genre: '都市',
+    });
+
+    expect(r.patterns[0]!.sourceDocumentIds).toEqual(['doc_a']);
+    expect(r.patterns[0]!.droppedEvidence).toEqual(['S9']);
+  });
+});
+
 describe('⚠ 类型隔离（§21）', () => {
   it('filterByGenre 归一化后比较（修仙 与 仙侠 同类）', () => {
     const scenes = [
