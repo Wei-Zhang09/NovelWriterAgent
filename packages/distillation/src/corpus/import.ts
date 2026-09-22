@@ -26,6 +26,8 @@ import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { AppError, ErrorCode, Logger } from '@nwa/core';
 import { normalizeWithStrip, contentHash, textStats, type TextStats } from './normalize.js';
+import { cleanWebNovel, type CleanOptions } from './clean-web.js';
+import type { CleanReport } from './types.js';
 import { detectChapters, type DetectStrategy, type DetectedChapter } from './chapter-detect.js';
 import type { CorpusRepository, CorpusSourceType, CorpusUsage } from '@nwa/storage';
 
@@ -48,6 +50,22 @@ export interface ImportRequest {
   readonly allowedUsage: CorpusUsage;
   readonly genre?: string | null;
   readonly qualityTags?: readonly string[];
+  /**
+   * 是否清洗网络转载噪声（水印/作者话/番外）。
+   *
+   * ⚠ 清洗会改变文本 → content hash 也变。因此清洗前先算原始 hash
+   *   并记入报告，便于日后用原始版本重新导入时能对应上。
+   */
+  readonly clean?: boolean;
+  /** 清洗选项（clean=true 时生效） */
+  readonly cleanOptions?: CleanOptions;
+  /**
+   * 版权依据说明（人工填写的判断理由）。
+   *
+   * ⚠ 这不是形式化字段：§61 要求能说明"为什么这份内容可以处理"。
+   *   留空则报告里记为未说明。
+   */
+  readonly licenseBasis?: string;
 }
 
 export interface ImportResult {
@@ -64,6 +82,10 @@ export interface ImportResult {
   readonly hitMarkers?: readonly string[];
   /** 源文本的章节号缺口（如缺 100–110 回） */
   readonly declaredGaps?: readonly { readonly after: number; readonly before: number }[];
+  /** 清洗报告（clean=true 时存在） */
+  readonly clean?: CleanReport;
+  /** 清洗前的原始 content hash（便于追溯原始版本） */
+  readonly originalContentHash?: string;
   readonly dir?: string;
   readonly error?: { code: string; message: string };
 }
@@ -102,8 +124,27 @@ export class CorpusImporter {
       };
     }
 
+    // 0) 网络噪声清洗（可选，先于规范化）
+    //
+    // ⚠ 清洗会改文本 → hash 也变。因此先算**原始** hash 记入报告，
+    //   便于日后用原始版本重新导入时能对应上（否则会以为是两份不同文档）。
+    const originalHash = contentHash(req.text);
+    let cleanReport: CleanReport | undefined;
+    let source = req.text;
+    if (req.clean) {
+      const cleaned = cleanWebNovel(req.text, req.cleanOptions ?? {});
+      source = cleaned.text;
+      cleanReport = cleaned.report;
+      this.logger.info('网络噪声清洗完成', {
+        title: req.title,
+        removedChars: cleanReport.removedChars,
+        removedRatio: cleanReport.removedRatio,
+        rules: cleanReport.rules.map((r) => `${r.name}×${r.count}`),
+      });
+    }
+
     // 1) 规范化 + 剥离样板
-    const { text: normalized, stripped } = normalizeWithStrip(req.text);
+    const { text: normalized, stripped } = normalizeWithStrip(source);
     const hash = contentHash(normalized);
     const stats = textStats(normalized);
 
@@ -191,6 +232,16 @@ export class CorpusImporter {
             removedChars: stripped.removedChars,
             hitMarkers: stripped.hitMarkers,
           },
+          // ⚠ 版权依据：§61 要求能说明"为什么这份内容可以处理"
+          license: {
+            sourceType: req.sourceType,
+            licenseType: req.licenseType,
+            allowedUsage: req.allowedUsage,
+            basis: req.licenseBasis ?? '（未说明）',
+          },
+          // ⚠ 清洗是破坏性操作，报告 + 原始 hash 一并留存以便追溯
+          cleaning: cleanReport ?? null,
+          originalContentHash: req.clean ? originalHash : null,
           chapters: detected.chapters.map((c: DetectedChapter) => ({
             number: c.number,
             title: c.title,
@@ -223,6 +274,7 @@ export class CorpusImporter {
       strippedChars: stripped.removedChars,
       hitMarkers: stripped.hitMarkers,
       declaredGaps: detected.gaps,
+      ...(cleanReport ? { clean: cleanReport, originalContentHash: originalHash } : {}),
       dir,
     };
   }

@@ -29,8 +29,12 @@ export { stripBoilerplate } from './corpus/boilerplate.js';
 export type { StripResult } from './corpus/boilerplate.js';
 export type { TextStats } from './corpus/normalize.js';
 
-export { detectChapters, parseChineseNumber, declaredNumberOf } from './corpus/chapter-detect.js';
-export type { DetectedChapter, DetectResult, DetectStrategy } from './corpus/chapter-detect.js';
+export { detectChapters, parseChineseNumber, declaredNumberOf, summarizeGaps } from './corpus/chapter-detect.js';
+export type { DetectedChapter, DetectResult, DetectStrategy, ChapterGap } from './corpus/chapter-detect.js';
+
+export { cleanWebNovel, findExtrasStart, isPromoText } from './corpus/clean-web.js';
+export type { CleanOptions, CleanResult } from './corpus/clean-web.js';
+export type { CleanReport, CleanRuleStat } from './corpus/types.js';
 
 export { CorpusImporter } from './corpus/import.js';
 export type { ImportOptions, ImportRequest, ImportResult } from './corpus/import.js';

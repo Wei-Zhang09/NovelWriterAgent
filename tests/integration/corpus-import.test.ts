@@ -37,6 +37,7 @@ import {
   detectChapters,
   parseChineseNumber,
   declaredNumberOf,
+  summarizeGaps,
 } from '@nwa/distillation';
 
 const logger = new Logger('test:corpus', { level: 'error' });
@@ -631,12 +632,37 @@ describe('⚠ 中文数字解析与回目缺口（真实数据验证暴露）', 
       '第一一二回 丙', '正文',
     ].join('\n');
     const r = detectChapters(text);
-    expect(r.gaps).toEqual([{ after: 99, before: 111 }]);
+    // 跳变 11 章 > 10 → 归为"编号混乱"而非真实缺章
+    expect(r.gaps).toHaveLength(1);
+    expect(r.gaps[0]!.after).toBe(99);
+    expect(r.gaps[0]!.before).toBe(111);
+    expect(r.gaps[0]!.kind).toBe('numbering');
+  });
+
+  it('⚠ 真实缺章（跳变 ≤10）归为 missing', () => {
+    const text = ['第九十九回 甲', '正文', '', '第一百零五回 乙', '正文'].join('\n');
+    const r = detectChapters(text);
+    expect(r.gaps).toHaveLength(1);
+    expect(r.gaps[0]!.kind).toBe('missing');
+    expect(r.gaps[0]!.missing).toBe(5);
   });
 
   it('连续回目无缺口', () => {
     const text = ['第一回 甲', '正文', '', '第二回 乙', '正文', '', '第三回 丙', '正文'].join('\n');
     expect(detectChapters(text).gaps).toEqual([]);
+  });
+
+  it('⚠ summarizeGaps 区分缺章与编号混乱（实测斗破混着两种）', () => {
+    const text = [
+      '第一回 甲', '正文', '',
+      '第五回 乙', '正文', '',      // 缺 2-4（missing）
+      '第一四二四回 丙', '正文',    // 跳变巨大（numbering）
+    ].join('\n');
+    const r = detectChapters(text);
+    const s = summarizeGaps(r.gaps);
+    expect(s.missingCount).toBe(1);
+    expect(s.missingChapters).toBe(3);
+    expect(s.numberingCount).toBe(1);
   });
 
   it('⚠ 声明号与序号分离（序号连续、声明号会跳）', () => {
