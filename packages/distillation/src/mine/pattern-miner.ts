@@ -323,6 +323,14 @@ export class PatternMiner {
     readonly scenes: readonly CorpusSceneRow[];
     readonly textOf: (scene: CorpusSceneRow) => string;
     readonly genre: string | null;
+    /**
+     * 最多挖几组（`undefined` 或 `<= 0` 表示全部）。
+     *
+     * ⚠ 之前这个参数在 IPC 层声明了却没实现 —— 调用方传 `--groups=3`
+     *   以为只挖 3 组，实际全挖。**声明了却不生效的参数比没有更糟**：
+     *   它让调用方对代价有错误预期（挖掘按组调用模型）。
+     */
+    readonly maxGroups?: number;
     readonly onProgress?: (done: number, total: number, fn: string) => void;
   }): Promise<MineResult> {
     // 按 sceneFunction 分组
@@ -340,7 +348,11 @@ export class PatternMiner {
     const failures: { sceneFunction: string; error: string }[] = [];
     let done = 0;
 
-    for (const [fn, all] of groups) {
+    // ⚠ `<= 0` 视为"全部"（调用方传 0 表示不限制，而不是"一组都不挖"）
+    const limit = req.maxGroups && req.maxGroups > 0 ? req.maxGroups : Number.POSITIVE_INFINITY;
+    const entries = [...groups.entries()].slice(0, limit === Number.POSITIVE_INFINITY ? undefined : limit);
+
+    for (const [fn, all] of entries) {
       // ⚠ 分层抽样：保证每部作品都有代表，否则跨作品证据会被抽样抹掉，
       //   导致模式被错误降档为 STYLE（虚假的"证据不足"）
       const sampled = sampleStratifiedByDocument(all, this.scenesPerGroup);
@@ -353,12 +365,12 @@ export class PatternMiner {
       patterns.push(...r.patterns);
       if (r.error) failures.push({ sceneFunction: fn, error: r.error });
       done++;
-      req.onProgress?.(done, groups.size, fn);
+      req.onProgress?.(done, entries.length, fn);
     }
 
     return {
       patterns,
-      groups: groups.size,
+      groups: entries.length,
       failedGroups: failures.length,
       failures,
     };

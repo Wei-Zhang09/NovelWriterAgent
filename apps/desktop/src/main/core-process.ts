@@ -1861,6 +1861,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       textOf,
       genre: params.genre ?? null,
       scenes,
+      maxGroups: params.maxGroups,
       onProgress: (done, total, fn) => {
         logger.info(`挖掘进度 ${done}/${total}`, { sceneFunction: fn });
       },

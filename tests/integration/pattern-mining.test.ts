@@ -316,6 +316,62 @@ describe('⚠ 失败要如实上报，不吞', () => {
   });
 });
 
+describe('⚠ maxGroups 必须真的生效（声明了却不生效比没有更糟）', () => {
+  it('maxGroups=1 时只挖 1 组（不让调用方对代价有错误预期）', async () => {
+    const caller = fakeCaller([{ ...GOOD, evidence: ['S1'] }]);
+    const miner = new PatternMiner({ logger, structured: caller as never });
+
+    const r = await miner.mine({
+      scenes: [
+        scene({ id: 'a', scene_function: 'CONFLICT' }),
+        scene({ id: 'b', scene_function: 'SETUP' }),
+        scene({ id: 'c', scene_function: 'COOLDOWN' }),
+      ],
+      textOf: () => '正文',
+      genre: '都市',
+      maxGroups: 1,
+    });
+
+    expect(r.groups).toBe(1);
+    // 只调用了一次模型
+    expect(caller).toHaveBeenCalledTimes(1);
+  });
+
+  it('maxGroups=0 视为"全部"（0 表示不限制，不是"一组都不挖"）', async () => {
+    const caller = fakeCaller([{ ...GOOD, evidence: ['S1'] }]);
+    const miner = new PatternMiner({ logger, structured: caller as never });
+
+    const r = await miner.mine({
+      scenes: [
+        scene({ id: 'a', scene_function: 'CONFLICT' }),
+        scene({ id: 'b', scene_function: 'SETUP' }),
+      ],
+      textOf: () => '正文',
+      genre: '都市',
+      maxGroups: 0,
+    });
+
+    expect(r.groups).toBe(2);
+  });
+
+  it('不传 maxGroups 时挖全部', async () => {
+    const caller = fakeCaller([{ ...GOOD, evidence: ['S1'] }]);
+    const miner = new PatternMiner({ logger, structured: caller as never });
+
+    const r = await miner.mine({
+      scenes: [
+        scene({ id: 'a', scene_function: 'CONFLICT' }),
+        scene({ id: 'b', scene_function: 'SETUP' }),
+        scene({ id: 'c', scene_function: 'COOLDOWN' }),
+      ],
+      textOf: () => '正文',
+      genre: '都市',
+    });
+
+    expect(r.groups).toBe(3);
+  });
+});
+
 describe('分组挖掘', () => {
   it('⚠ 无 sceneFunction 的场景被跳过（不归入 unknown）', async () => {
     const caller = fakeCaller([{ ...GOOD, evidence: ['S1'] }]);

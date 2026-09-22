@@ -179,6 +179,8 @@ export class PatternStore {
     readonly textOf: (scene: CorpusSceneRow) => string;
     readonly genre: string | null;
     readonly scenes: readonly CorpusSceneRow[];
+    /** 最多挖几组（<=0 表示全部） */
+    readonly maxGroups?: number;
     readonly onProgress?: (done: number, total: number, fn: string) => void;
   }): Promise<{
     readonly mine: MineResult;
@@ -198,6 +200,7 @@ export class PatternStore {
       scenes: req.scenes,
       textOf: req.textOf,
       genre: req.genre,
+      maxGroups: req.maxGroups,
       onProgress: req.onProgress,
     });
 
