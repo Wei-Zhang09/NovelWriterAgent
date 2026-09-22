@@ -90,6 +90,56 @@ describe('describeSchemaFields 的具体行为', () => {
     expect(t).toContain('顶层类型');
   });
 
+  it('⚠ 列出深层嵌套里的枚举取值（模型无法猜出合法值）', () => {
+    // 实测踩到：技能编译 7 个组全部作废 —— 模型自创了
+    // RELATIONSHIP / INTRODUCE / GROUP_SCENE / DAILY_LIFE 等
+    // 不存在的场景类型。因为契约只说"用大写枚举"，没列取值。
+    const s = z.object({
+      trigger: z.object({
+        sceneTypes: z.array(z.enum(['CONFLICT', 'SETUP'])),
+        genres: z.array(z.string()),
+      }),
+    });
+    const t = buildStructuredContract('X', s);
+
+    // 枚举取值必须出现（路径 + 取值）
+    expect(t).toContain('trigger.sceneTypes');
+    expect(t).toContain('CONFLICT');
+    expect(t).toContain('SETUP');
+    expect(t).toContain('枚举字段的合法取值');
+  });
+
+  it('⚠ 枚举取值列出但对象结构仍保持浅（两者不冲突）', () => {
+    const s = z.object({
+      outer: z.object({ inner: z.object({ mode: z.enum(['A', 'B']) }) }),
+    });
+    const t = buildStructuredContract('X', s);
+    // 结构不展开（尊重小模型遵从度的既有取舍）
+    expect(t).not.toContain('"inner"');
+    // 但枚举取值仍要列（否则模型只能编）
+    expect(t).toContain('outer.inner.mode');
+    expect(t).toContain('A | B');
+  });
+
+  it('数组里的枚举也列出', () => {
+    const s = z.object({ items: z.array(z.enum(['X', 'Y'])) });
+    expect(buildStructuredContract('X', s)).toContain('X | Y');
+  });
+
+  it('preprocess 包装后的枚举仍能列出', () => {
+    const s = z.preprocess(
+      (v) => v,
+      z.object({ scope: z.enum(['UNIVERSAL', 'GENRE', 'STYLE']) }),
+    );
+    const t = buildStructuredContract('X', s);
+    expect(t).toContain('UNIVERSAL | GENRE | STYLE');
+  });
+
+  it('没有枚举时不留空段', () => {
+    const t = buildStructuredContract('X', z.object({ a: z.string() }));
+    expect(t).not.toContain('枚举字段的合法取值');
+  });
+
   it('不展开深层嵌套（避免小模型遵从度下降）', () => {
     const s = z.object({
       outer: z.object({ inner: z.object({ deep: z.string() }) }),

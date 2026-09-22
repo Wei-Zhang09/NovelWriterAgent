@@ -15,3 +15,4 @@ export * from './schemas/plan.js';
 export * from './schemas/annotation.js';
 export * from './schemas/review.js';
 export * from './schemas/fact-extraction.js';
+export * from './schemas/skill.js';

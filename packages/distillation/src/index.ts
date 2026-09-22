@@ -70,6 +70,25 @@ export {
   filterByGenre,
 } from './mine/pattern-store.js';
 export type { CrossWorkAnalysis, PatternStoreOptions } from './mine/pattern-store.js';
+export {
+  SkillCompiler,
+  validateSkill,
+  countTriggerHits,
+  assembleSkill,
+} from './compile/skill-compiler.js';
+export type {
+  CompiledSkillRecord,
+  CompileResult,
+  SkillCompilerOptions,
+} from './compile/skill-compiler.js';
+export {
+  SkillStore,
+  strongestScope,
+  dedupeSkills,
+  jaccardBigrams,
+  planDeprecations,
+} from './compile/skill-store.js';
+export type { CompileAndPersistResult, SkillStoreOptions } from './compile/skill-store.js';
 export type { PersistOptions, PersistResult } from './parse/persist.js';
 export type {
   AnnotationStructuredCaller,

@@ -19,6 +19,7 @@ import type { Database } from '../database.js';
 import { AppError, ErrorCode } from '@nwa/core';
 import { now, requireRow } from './types.js';
 import { normalizeGenre, sameGenre, listGenres, type SkillScope } from './genre.js';
+import type { SkillStatus } from '@nwa/shared';
 
 /** 来源类型（§16.2） */
 export const CORPUS_SOURCE_TYPES = [
@@ -56,6 +57,28 @@ export interface CorpusDocumentRow {
   readonly subgenre?: string | null;
   /** 简介/文案；迁移 0007 引入 */
   readonly synopsis?: string | null;
+}
+
+/** 编译出的技能行（§24 八要素） */
+export interface SkillRow {
+  readonly id: string;
+  readonly name: string;
+  readonly category: string;
+  /** 一句话说明这个技能解决什么问题（供 Writer 在候选里快速判断） */
+  readonly summary: string;
+  readonly trigger_json: string;
+  readonly rules_json: string;
+  readonly examples_json: string;
+  readonly anti_patterns_json: string;
+  readonly evidence_refs_json: string;
+  readonly confidence: number;
+  readonly version: number;
+  readonly status: string;
+  readonly created_at: string;
+  readonly updated_at: string;
+  readonly genre: string | null;
+  readonly scope: string;
+  readonly source_document_ids_json: string;
 }
 
 /** 挖掘出的模式行（§20 七槽） */
@@ -475,6 +498,115 @@ export class CorpusRepository {
       `SELECT scene_function, COUNT(*) AS count, AVG(confidence) AS avgConfidence
        FROM distillation_patterns GROUP BY scene_function ORDER BY count DESC`,
     );
+  }
+
+  /**
+   * 写入技能（幂等：同 id 覆盖）。
+   *
+   * ⚠ 版本管理：同 `id` 重复编译时 `version` 由调用方递增 ——
+   *   仓储不自己加（它不知道这次是"重编译"还是"修正"）。
+   *   传进来的 version 就是权威值。
+   */
+  putSkill(input: {
+    readonly id: string;
+    readonly name: string;
+    readonly category: string;
+    readonly summary: string;
+    readonly triggerJson: string;
+    readonly rulesJson: string;
+    readonly examplesJson: string;
+    readonly antiPatternsJson: string;
+    readonly evidenceRefsJson: string;
+    readonly confidence: number;
+    readonly version: number;
+    readonly status: SkillStatus;
+    readonly genre: string | null;
+    readonly scope: SkillScope;
+    readonly sourceDocumentIdsJson: string;
+  }): void {
+    this.db.run(
+      `INSERT INTO distilled_skills
+         (id, name, category, summary, trigger_json, rules_json, examples_json,
+          anti_patterns_json, evidence_refs_json, confidence, version, status,
+          created_at, updated_at, genre, scope, source_document_ids_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name,
+         category = excluded.category,
+         summary = excluded.summary,
+         trigger_json = excluded.trigger_json,
+         rules_json = excluded.rules_json,
+         examples_json = excluded.examples_json,
+         anti_patterns_json = excluded.anti_patterns_json,
+         evidence_refs_json = excluded.evidence_refs_json,
+         confidence = excluded.confidence,
+         version = excluded.version,
+         status = excluded.status,
+         updated_at = excluded.updated_at,
+         genre = excluded.genre,
+         scope = excluded.scope,
+         source_document_ids_json = excluded.source_document_ids_json`,
+      input.id,
+      input.name,
+      input.category,
+      input.summary,
+      input.triggerJson,
+      input.rulesJson,
+      input.examplesJson,
+      input.antiPatternsJson,
+      input.evidenceRefsJson,
+      input.confidence,
+      input.version,
+      input.status,
+      now(),
+      now(),
+      input.genre,
+      input.scope,
+      input.sourceDocumentIdsJson,
+    );
+  }
+
+  /** 取一个技能当前版本号（不存在返回 0，供版本递增） */
+  skillVersion(id: string): number {
+    return (
+      this.db.get<{ version: number }>(
+        'SELECT version FROM distilled_skills WHERE id = ?',
+        id,
+      )?.version ?? 0
+    );
+  }
+
+  /** 按 id 取技能 */
+  getSkill(id: string): SkillRow | null {
+    return this.db.get<SkillRow>('SELECT * FROM distilled_skills WHERE id = ?', id) ?? null;
+  }
+
+  /** 列出全部技能（调用方用 filterSkillsByGenre 做类型隔离） */
+  listSkills(): SkillRow[] {
+    return this.db.all<SkillRow>(
+      'SELECT * FROM distilled_skills ORDER BY confidence DESC, id',
+    );
+  }
+
+  /** 技能统计 */
+  skillStats(): { status: string; scope: string; genre: string | null; count: number }[] {
+    return this.db.all<{ status: string; scope: string; genre: string | null; count: number }>(
+      `SELECT status, scope, genre, COUNT(*) AS count FROM distilled_skills
+       GROUP BY status, scope, genre ORDER BY count DESC`,
+    );
+  }
+
+  /** 更新技能状态（启用/废弃） */
+  setSkillStatus(id: string, status: SkillStatus): boolean {
+    const before = this.getSkill(id);
+    if (!before) return false;
+    this.db.run(
+      'UPDATE distilled_skills SET status = ?, updated_at = ? WHERE id = ?',
+      status,
+      now(),
+      id,
+    );
+    return true;
   }
 
   /** 列出某文档的全部场景（含未标注）—— 断点续跑用 */

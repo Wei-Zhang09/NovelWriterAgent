@@ -43,7 +43,8 @@
     "verify:annotate": "electron apps/desktop/scripts/verify-annotate.mjs",
     "verify:endpoint": "electron apps/desktop/scripts/verify-endpoint.mjs",
     "verify:persist": "electron apps/desktop/scripts/verify-persist.mjs",
-    "verify:mine": "electron apps/desktop/scripts/verify-mine.mjs"
+    "verify:mine": "electron apps/desktop/scripts/verify-mine.mjs",
+    "verify:skill": "electron apps/desktop/scripts/verify-skill.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

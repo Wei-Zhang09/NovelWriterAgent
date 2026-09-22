@@ -120,8 +120,7 @@ export function describeSchemaFields(schema: z.ZodTypeAny): string {
     const optional = isOptional(field);
     const kind = describeZodType(field);
     lines.push(`  "${key}": ${kind}${optional ? '［可省略］' : ''}`);
-
-    // 数组的元素若是对象，展开其字段（这是最常需要精确填写的一层）
+    // 数组元素若是对象，展开其字段（这是最常需要精确填写的一层）
     let inner: z.ZodTypeAny = field;
     const dn = (inner._def as { typeName?: string }).typeName;
     if (dn === 'ZodOptional' || dn === 'ZodDefault') {
@@ -141,8 +140,78 @@ export function describeSchemaFields(schema: z.ZodTypeAny): string {
       }
     }
   }
+
+  // ⚠ 再补一段「枚举取值清单」：把 schema 里**任意深度**的枚举取值列出。
+  //
+  //   为什么只补枚举、不展开对象结构：
+  //     - 对象**字段名**是可猜的（模型看到 trigger 是对象，能想到里面
+  //       有 sceneTypes），展开全部嵌套会显著加长契约，
+  //       实测小模型的遵从度会下降（见测试「不展开深层嵌套」）。
+  //     - 枚举**取值**是**不可猜的**。模型无法知道 RELATIONSHIP_CHANGE
+  //       合法而 RELATIONSHIP 不合法 —— 它只能编。
+  //       实测技能编译 7 个组全部作废，就是模型自创了
+  //       RELATIONSHIP / INTRODUCE / GROUP_SCENE / DAILY_LIFE 等值。
+  //
+  //   所以：结构保持浅，取值必须全列。这是"该列的一处不漏，
+  //   不该列的一处不多"。
+  const enums = collectEnums(unwrapped);
+  if (enums.length > 0) {
+    lines.push('');
+    lines.push('【枚举字段的合法取值（必须从中选，自创值会导致整份输出作废）】');
+    for (const e of enums) {
+      lines.push(`  ${e.path}：${e.values.join(' | ')}`);
+    }
+  }
   return lines.join('\n');
 }
+
+/** 递归收集 schema 里所有枚举及其路径 */
+function collectEnums(
+  schema: z.ZodTypeAny,
+  path = '',
+  out: { path: string; values: string[] }[] = [],
+  depth = 0,
+): { path: string; values: string[] }[] {
+  if (depth > 8) return out; // 防循环引用
+  const def = schema._def as { typeName?: string; [k: string]: unknown };
+  const name = def.typeName ?? 'unknown';
+
+  switch (name) {
+    case 'ZodEnum': {
+      const values = (def['values'] as string[] | undefined) ?? [];
+      if (path && values.length > 0) out.push({ path, values });
+      break;
+    }
+    case 'ZodNativeEnum': {
+      const values = Object.values((def['values'] as Record<string, string>) ?? {});
+      if (path && values.length > 0) out.push({ path, values: values as string[] });
+      break;
+    }
+    case 'ZodOptional':
+    case 'ZodNullable':
+    case 'ZodDefault':
+      collectEnums(def['innerType'] as z.ZodTypeAny, path, out, depth + 1);
+      break;
+    case 'ZodEffects':
+      collectEnums(def['schema'] as z.ZodTypeAny, path, out, depth + 1);
+      break;
+    case 'ZodArray':
+      collectEnums(def['type'] as z.ZodTypeAny, path ? `${path}[]` : '', out, depth + 1);
+      break;
+    case 'ZodObject': {
+      const shapeFn = def['shape'] as (() => Record<string, z.ZodTypeAny>) | undefined;
+      if (typeof shapeFn !== 'function') break;
+      for (const [k, v] of Object.entries(shapeFn())) {
+        collectEnums(v, path ? `${path}.${k}` : k, out, depth + 1);
+      }
+      break;
+    }
+    default:
+      break;
+  }
+  return out;
+}
+
 
 /** 构造要追加到消息末尾的契约段 */
 export function buildStructuredContract(schemaName: string, schema: z.ZodTypeAny): string {

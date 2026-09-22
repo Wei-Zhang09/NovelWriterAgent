@@ -57,6 +57,7 @@ export type {
   RegisterDocumentInput,
   PersistSceneInput,
   PatternRow,
+  SkillRow,
   ForeshadowingRow,
   ForeshadowStatus,
   ForeshadowTier,

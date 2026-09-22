@@ -56,6 +56,7 @@ describe('迁移', () => {
       '0006_summary_approval',
       '0007_genre_isolation',
       '0008_scene_persistence',
+      '0009_skill_summary',
     ]);
   });
 
@@ -123,6 +124,7 @@ describe('迁移', () => {
       '0006_summary_approval',
       '0007_genre_isolation',
       '0008_scene_persistence',
+      '0009_skill_summary',
     ]);
   });
 

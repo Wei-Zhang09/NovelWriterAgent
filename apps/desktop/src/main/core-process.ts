@@ -20,6 +20,7 @@ import {
   Database,
   MIGRATIONS,
   createRepositories,
+  filterSkillsByGenre,
   normalizeGenre,
   type Repositories,
 } from '@nwa/storage';
@@ -48,7 +49,10 @@ import {
   PatternStore,
   SceneAnnotator,
   ScenePersister,
+  SkillCompiler,
+  SkillStore,
   analyzeCrossWork,
+  planDeprecations,
   segmentScenes,
 } from '@nwa/distillation';
 import type { CorpusSceneRow } from '@nwa/storage';
@@ -341,6 +345,17 @@ function createProbeAgents(): AgentHandler[] {
       },
     },
   ];
+}
+
+/** 汇总类型隔离的排除原因（按原因分组计数） */
+function summarizeReasons(
+  excluded: readonly { readonly reason: string }[],
+): { reason: string; count: number }[] {
+  const m = new Map<string, number>();
+  for (const e of excluded) m.set(e.reason, (m.get(e.reason) ?? 0) + 1);
+  return [...m.entries()]
+    .map(([reason, count]) => ({ reason, count }))
+    .sort((a, b) => b.count - a.count);
 }
 
 function safeJson(s: string): unknown {
@@ -1930,6 +1945,162 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
         evidenceRefs: safeJson(r.evidence_refs_json),
       })),
     };
+  },
+
+  /**
+   * 技能编译（§23 / §24）—— 把已验证的模式编译成可执行技能。
+   *
+   * ⚠ 会消耗模型额度：按 sceneFunction 分组，每组一次调用。
+   */
+  'skill.compile': async (params: {
+    genre?: string | null;
+    maxSkillsPerGroup?: number;
+    minPatternConfidence?: number;
+  }) => {
+    const p = requireProject();
+    if (!p.runtime) {
+      throw new AppError(ErrorCode.MODEL_AUTH_FAILED, '尚未配置模型，无法编译技能');
+    }
+    const repo = corpusRepo();
+    const genre = params.genre ?? null;
+
+    // ⚠ 只吃**已通过跨作品校验**的模式（GENRE/UNIVERSAL）。
+    //   STYLE 是单作品证据，编译成技能会让 Writer 套用某位作者的习惯 ——
+    //   §21 明确要求默认不用作者特有策略。
+    const patterns = repo
+      .listPatterns({
+        genre,
+        includeStyle: false,
+        minConfidence: params.minPatternConfidence ?? 0,
+      })
+      .filter((x) => x.scope === 'GENRE' || x.scope === 'UNIVERSAL');
+
+    if (patterns.length === 0) {
+      throw new AppError(
+        ErrorCode.STORAGE_QUERY_FAILED,
+        `没有可用于编译的跨作品模式（类型：${genre ?? '全部'}）。` +
+          '请先运行 mine.run，且需要至少两部同类型作品。',
+      );
+    }
+
+    const scenes = repo.listAnnotatedScenesByGenre(genre);
+
+    const compiler = new SkillCompiler({
+      logger: logger.child('compile'),
+      structured: (req) => p.runtime!.structured('utility', req),
+      maxSkillsPerGroup: params.maxSkillsPerGroup ?? 3,
+    });
+    const store = new SkillStore({ logger: logger.child('compile'), repo });
+
+    const r = await store.compileAndPersist({
+      compiler,
+      patterns,
+      scenes,
+      genre,
+      onProgress: (done, total, fn) => {
+        logger.info(`技能编译进度 ${done}/${total}`, { sceneFunction: fn });
+      },
+    });
+
+    return {
+      genre,
+      patternsUsed: patterns.length,
+      scenesUsed: scenes.length,
+      groups: r.groups,
+      persisted: r.persisted,
+      usable: r.usable,
+      unusable: r.unusable,
+      problems: r.problems,
+      failures: r.failures,
+    };
+  },
+
+  /**
+   * 列出技能（§21 类型隔离 + §24 可检索）。
+   *
+   * ⚠ 走 `filterSkillsByGenre` —— 类型隔离的唯一入口。
+   *   STYLE 默认不返回（§21：Writer 默认不用作者特有策略）。
+   */
+  'skill.list': (params: {
+    genre?: string | null;
+    allowStyle?: boolean;
+    status?: string;
+    limit?: number;
+  } = {}) => {
+    const repo = corpusRepo();
+    const all = repo.listSkills();
+    const filtered = filterSkillsByGenre(all, {
+      genre: params.genre ?? null,
+      allowStyle: params.allowStyle ?? false,
+    });
+
+    let kept = filtered.kept;
+    if (params.status) kept = kept.filter((s) => s.status === params.status);
+
+    return {
+      total: kept.length,
+      stats: repo.skillStats(),
+      /** ⚠ 被类型隔离挡掉的（如实报告，便于诊断"为什么没用到某技能"） */
+      excludedCount: filtered.excluded.length,
+      excludedReasons: summarizeReasons(filtered.excluded),
+      skills: kept.slice(0, params.limit ?? 50).map((s) => ({
+        id: s.id,
+        name: s.name,
+        category: s.category,
+        summary: s.summary,
+        scope: s.scope,
+        genre: s.genre,
+        status: s.status,
+        version: s.version,
+        confidence: s.confidence,
+        trigger: safeJson(s.trigger_json),
+        rules: safeJson(s.rules_json),
+        antiPatterns: safeJson(s.anti_patterns_json),
+        evidenceRefs: safeJson(s.evidence_refs_json),
+        sourceDocumentIds: safeJson(s.source_document_ids_json),
+      })),
+    };
+  },
+
+  /**
+   * 清理库里的近重复技能（标记 DEPRECATED，不删除）。
+   *
+   * ⚠ 用于清理"去重功能上线前"编译的历史残留。
+   *   用 DEPRECATED 而非 DELETE：可逆、可审计、不破坏证据链。
+   */
+  'skill.pruneDuplicates': (params: { threshold?: number; dryRun?: boolean } = {}) => {
+    const repo = corpusRepo();
+    const rows = repo.listSkills();
+    const plan = planDeprecations(rows, params.threshold ?? 0.45);
+
+    if (params.dryRun !== false) {
+      // ⚠ 默认只预览，不真改 —— 批量改状态是破坏性操作，
+      //   调用方必须显式传 dryRun: false 才执行。
+      return {
+        dryRun: true,
+        total: rows.length,
+        wouldDeprecate: plan.deprecate.length,
+        kept: plan.kept.length,
+        deprecated: plan.deprecate,
+      };
+    }
+
+    let changed = 0;
+    for (const id of plan.deprecate) {
+      if (repo.setSkillStatus(id, 'DEPRECATED')) changed++;
+    }
+    logger.info('已下架近重复技能', { changed, kept: plan.kept.length });
+    return { dryRun: false, deprecated: changed, kept: plan.kept.length, ids: plan.deprecate };
+  },
+
+  /** 启用/废弃技能（§24 的"禁用"能力） */
+  'skill.setStatus': (params: { skillId: string; status: string }) => {
+    const repo = corpusRepo();
+    const ok = repo.setSkillStatus(params.skillId, params.status as never);
+    if (!ok) {
+      throw new AppError(ErrorCode.STORAGE_QUERY_FAILED, `技能不存在：${params.skillId}`);
+    }
+    return { skillId: params.skillId, status: params.status };
   },
 
   /**
