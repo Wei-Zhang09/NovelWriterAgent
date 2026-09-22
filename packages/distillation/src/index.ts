@@ -48,6 +48,8 @@ export { splitSentences, computePacing, computeProse, paragraphsToText } from '.
 export type { PacingMetrics, ProseMetrics } from './parse/metrics.js';
 
 export { SceneAnnotator } from './parse/annotator.js';
+export { ScenePersister, sceneFileName, summarizePersist } from './parse/persist.js';
+export type { PersistOptions, PersistResult } from './parse/persist.js';
 export type {
   AnnotationStructuredCaller,
   AnnotateOptions,

@@ -58,6 +58,14 @@ export interface AnnotatedScene {
   readonly boundaryEvidence: string;
   /** 规则对该边界是否不确定（LLM 层介入的入口） */
   readonly boundaryUncertain: boolean;
+  /**
+   * ⚠ 场景超长且无切分依据（§18 的 LLM 切分入口）。
+   *
+   * 与 boundaryUncertain 不同：那个是"切了但依据不硬"，
+   * 这个是"**没切**，因为找不到依据"。下游统计时应当知道
+   * 这类场景内部可能还含多个叙事单元。
+   */
+  readonly oversized: boolean;
   /** 完整标注（§19） */
   readonly annotation: SceneAnnotation;
   /** ⚠ 语义标注是否成功 —— false 表示语义字段为空，下游不应参与模式挖掘 */
@@ -73,6 +81,14 @@ export interface AnnotateChapterResult {
   /** 未成功语义标注的场景数 */
   readonly unannotatedCount: number;
   readonly uncertainBoundaries: number;
+  /**
+   * ⚠ 超长且无切分依据的场景数。
+   *
+   * 这类场景**不是错误**，但下游该知道"其内部可能还有边界" ——
+   * 若占比高，说明规则层对这份文本的切分能力不足，
+   * 该上 LLM 层（§18）。
+   */
+  readonly oversizedScenes: number;
   readonly scenes: readonly AnnotatedScene[];
 }
 
@@ -172,6 +188,7 @@ export class SceneAnnotator {
         boundaryReason: sc.reason,
         boundaryEvidence: sc.evidence,
         boundaryUncertain: sc.uncertain,
+        oversized: sc.oversized,
         annotation,
         annotated: semantic !== null,
         ...(annotationError ? { annotationError } : {}),
@@ -184,6 +201,8 @@ export class SceneAnnotator {
       annotatedCount,
       unannotatedCount: out.length - annotatedCount,
       uncertainBoundaries: out.filter((s) => s.boundaryUncertain).length,
+      // ⚠ 如实报告：这些场景内部可能还含未识别的叙事单元
+      oversizedScenes: out.filter((s) => s.oversized).length,
       scenes: out,
     };
 

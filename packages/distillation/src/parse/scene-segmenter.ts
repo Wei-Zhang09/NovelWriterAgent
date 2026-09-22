@@ -55,6 +55,17 @@ export interface SegmentedScene {
    *   全章都不确定时（如通篇无显式标记），LLM 层可做整体切分。
    */
   readonly uncertain: boolean;
+  /**
+   * ⚠ 场景超出常规尺寸（段数 > maxParagraphs），且**没有可用的切分依据**。
+   *
+   * 这不是错误，而是**如实报告"这里可能存在边界，但文本没给证据"**。
+   *
+   * 与 uncertain 的区别：
+   *   - uncertain：边界**已切**，但依据不够硬（如 POV 推断）
+   *   - oversized：**没有切**，因为找不到依据 —— 这里正是 LLM 层
+   *     该介入的地方（§18 的 LLM 切分）
+   */
+  readonly oversized: boolean;
 }
 
 // ── 时间标记（§18「时间变化」） ──
@@ -165,7 +176,27 @@ export interface SegmentOptions {
    *   足够的文本支撑语义标注。
    */
   readonly minParagraphs?: number;
-  /** 最大场景段数（默认 40）—— 超过则强制再切，避免一个场景吃掉整章 */
+  /**
+   * 场景段数的**软上限**（默认 120）。
+   *
+   * ## ⚠ 这个值按真实章节结构校准，不能凭直觉定
+   *
+   * 实测《百岁之好》108 章段落数分布：
+   * ```
+   *   最小 0｜中位 82｜p75 97｜p90 113｜p95 133｜最大 389
+   *   >40 段：107/108 章    ← cap=40 时几乎每章都要强切
+   *   >120 段：8 章
+   * ```
+   *
+   * 早先设 40 基于"一章 40 段"的假设，而**都市网文每章中位 82 段**。
+   * cap 过低导致大量强切：实测第 2 章真实边界在段 46，
+   * 却因 cap=40 在段 40 硬切，造出 189 字 / 6 段的碎片场景。
+   *
+   * 取 120（p90 附近）：常规章节不受影响，只对真正的超长章
+   * （8/108）标 oversized 交 LLM 层。
+   *
+   * ⚠ 超过上限**不再强切**（不发明边界），只标 `oversized`。
+   */
   readonly maxParagraphs?: number;
 }
 
@@ -180,7 +211,7 @@ export function segmentScenes(
   opts: SegmentOptions = {},
 ): SegmentedScene[] {
   const minParas = opts.minParagraphs ?? 3;
-  const maxParas = opts.maxParagraphs ?? 40;
+  const maxParas = opts.maxParagraphs ?? 120;
   const paras = toParagraphs(chapterText);
 
   if (paras.length === 0) return [];
@@ -237,6 +268,18 @@ export function segmentScenes(
   }
   segments.push({ start: segStart, end: paras.length });
 
+  // ⚠ 关键纪律：**强切不发明边界**。
+  //
+  //   早先的实现会在找不到标记时"等距切分"（`at = target`）。
+  //   实测后果：第 2 章 82 段，真实边界在段 46（「没过多久，时针指向
+  //   九点半…」），而 cap=40 → 在段 40 硬切，切出一个 **189 字 / 6 段**
+  //   的碎片场景。这 6 段本是"办公室对话"的延续，被凭空割裂。
+  //
+  //   等距切分的本质是**发明一个文本没给出的边界**，而下游
+  //   （标注 → 模式挖掘）会把它当真实叙事结构学习 —— 错误静默扩散。
+  //
+  //   现在：只在**确实存在标记**时强切（忠于文本）；
+  //   找不到标记就不切，改标 `oversized`，把判断权交给 LLM 层。
   const forced: Cut[] = [];
   for (const seg of segments) {
     let start = seg.start;
@@ -254,18 +297,16 @@ export function segmentScenes(
           }
         }
       }
-      const at = found >= 0 ? found : target;
-      if (at - start < minParas) break; // 防碎片
+      // ⚠ 没有标记 → 不切（不发明边界）
+      if (found < 0) break;
+      if (found - start < minParas) break; // 防碎片
       forced.push({
-        at,
+        at: found,
         reason: 'EVENT_SHIFT',
-        evidence:
-          found >= 0
-            ? `（就近标记：${paras[at]!.text.slice(0, 16)}）`
-            : `（等距切分，超 ${maxParas} 段）`,
+        evidence: `（就近标记：${paras[found]!.text.slice(0, 16)}）`,
         uncertain: true,
       });
-      start = at;
+      start = found;
     }
   }
 
@@ -289,6 +330,9 @@ export function segmentScenes(
       reason: k === 0 ? 'CHAPTER_START' : bounds[k - 1]!.reason,
       evidence: k === 0 ? '（章首）' : bounds[k - 1]!.evidence,
       uncertain: k === 0 ? false : bounds[k - 1]!.uncertain,
+      // ⚠ 超长且无切分依据 —— 如实报告"这里可能有边界，但文本没给证据"。
+      //   这是 LLM 层介入的入口，不是错误。
+      oversized: slice.length > maxParas,
     });
     start = b.at;
   }

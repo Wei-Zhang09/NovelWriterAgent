@@ -41,7 +41,8 @@
     "verify:corpus": "node scripts/verify-corpus.mjs",
     "verify:books": "node scripts/verify-books.mjs",
     "verify:annotate": "electron apps/desktop/scripts/verify-annotate.mjs",
-    "verify:endpoint": "electron apps/desktop/scripts/verify-endpoint.mjs"
+    "verify:endpoint": "electron apps/desktop/scripts/verify-endpoint.mjs",
+    "verify:persist": "electron apps/desktop/scripts/verify-persist.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

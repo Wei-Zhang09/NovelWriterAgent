@@ -69,6 +69,55 @@ export interface CorpusSceneRow {
   readonly scene_type: string | null;
   readonly annotation_json: string | null;
   readonly created_at: string;
+  /**
+   * ⚠ 语义标注是否成功（迁移 0008）。
+   *
+   * 与"sceneFunction 为空"是**两件事**：
+   *   0 = 没标注（模型失败/未跑）
+   *   1 = 标注过（此时 scene_function 为空才表示"确实没有该功能"）
+   * 混为一谈会让模式挖掘把标注失败率当成叙事事实。
+   */
+  readonly annotated?: number | null;
+  /** 场景功能（冗余自 annotation_json，供聚合查询；迁移 0008） */
+  readonly scene_function?: string | null;
+  /** 机械指标（代码算，独立于语义标注；迁移 0008） */
+  readonly pacing_json?: string | null;
+  readonly prose_json?: string | null;
+  /** 切分依据（§18 六项；迁移 0008） */
+  readonly boundary_reason?: string | null;
+  readonly boundary_evidence?: string | null;
+  readonly boundary_uncertain?: number | null;
+  /** ⚠ 超长且无切分依据（没切）；迁移 0008 */
+  readonly oversized?: number | null;
+  readonly chars?: number | null;
+  readonly paragraph_count?: number | null;
+  readonly annotation_error?: string | null;
+}
+
+/** 写入场景的输入（STEP 15 的标注结果） */
+export interface PersistSceneInput {
+  readonly id: string;
+  readonly documentId: string;
+  readonly chapterNumber: number | null;
+  readonly sceneIndex: number;
+  /** 场景正文文件路径（相对项目根，便于迁移） */
+  readonly textPath: string | null;
+  /** 场景功能（未标注时为 null） */
+  readonly sceneFunction: string | null;
+  /** 完整标注 JSON（§19） */
+  readonly annotationJson: string | null;
+  readonly pacingJson: string | null;
+  readonly proseJson: string | null;
+  readonly boundaryReason: string;
+  readonly boundaryEvidence: string;
+  readonly boundaryUncertain: boolean;
+  /** ⚠ 超长且无切分依据（没切，§18 LLM 切分入口） */
+  readonly oversized: boolean;
+  readonly chars: number;
+  readonly paragraphCount: number;
+  readonly annotated: boolean;
+  readonly annotationError: string | null;
+  readonly genre?: string | null;
 }
 
 export interface RegisterDocumentInput {
@@ -259,37 +308,121 @@ export class CorpusRepository {
 
   // ── 场景（§19 标注结果的落库） ────────────────────────────
 
-  /** 写入一个场景；同 (document, chapter, scene_index) 幂等覆盖 */
-  putScene(input: {
-    readonly id: string;
-    readonly documentId: string;
-    readonly chapterNumber: number | null;
-    readonly sceneIndex: number | null;
-    readonly textPath: string | null;
-    readonly sceneType: string | null;
-    readonly annotationJson: string | null;
-    /** 类型（冗余自文档，便于按类型统计；迁移 0007 引入） */
-    readonly genre?: string | null;
-  }): void {
+  /**
+   * 写入场景标注结果（STEP 15 → STEP 16 的落库入口）。
+   *
+   * ⚠ 幂等：同 id 重复写入会覆盖。这样**重跑标注**不会产生重复行，
+   *   也便于"标注质量不满意 → 换个 prompt 重跑"。
+   */
+  persistScene(input: PersistSceneInput): void {
     this.db.run(
       `INSERT INTO corpus_scenes
-         (id, document_id, chapter_number, scene_index, text_path, scene_type, annotation_json, created_at, genre)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (id, document_id, chapter_number, scene_index, text_path, scene_type,
+          annotation_json, created_at, genre, annotated, scene_function,
+          pacing_json, prose_json, boundary_reason, boundary_evidence,
+          boundary_uncertain, chars, paragraph_count, annotation_error, oversized)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          text_path = excluded.text_path,
-         scene_type = excluded.scene_type,
+         scene_function = excluded.scene_function,
          annotation_json = excluded.annotation_json,
+         pacing_json = excluded.pacing_json,
+         prose_json = excluded.prose_json,
+         boundary_reason = excluded.boundary_reason,
+         boundary_evidence = excluded.boundary_evidence,
+         boundary_uncertain = excluded.boundary_uncertain,
+         oversized = excluded.oversized,
+         chars = excluded.chars,
+         paragraph_count = excluded.paragraph_count,
+         annotated = excluded.annotated,
+         annotation_error = excluded.annotation_error,
          genre = excluded.genre`,
       input.id,
       input.documentId,
       input.chapterNumber,
       input.sceneIndex,
       input.textPath,
-      input.sceneType,
+      input.sceneFunction, // scene_type 与 scene_function 同义，写同一值
       input.annotationJson,
       now(),
       input.genre ?? null,
+      input.annotated ? 1 : 0,
+      input.sceneFunction,
+      input.pacingJson,
+      input.proseJson,
+      input.boundaryReason,
+      input.boundaryEvidence,
+      input.boundaryUncertain ? 1 : 0,
+      input.chars,
+      input.paragraphCount,
+      input.annotationError,
+      input.oversized ? 1 : 0,
     );
+  }
+
+  /**
+   * ⚠ 只取**已标注**的场景（模式挖掘的输入）。
+   *
+   * 未标注场景的语义字段为空，但那是"没标注"而非"没有"。
+   * 混入会让统计失真 —— 因此过滤下沉到仓储层，
+   * 不依赖调用方记得加 `WHERE annotated = 1`。
+   */
+  listAnnotatedScenes(documentId: string): CorpusSceneRow[] {
+    return this.db.all<CorpusSceneRow>(
+      `SELECT * FROM corpus_scenes
+       WHERE document_id = ? AND annotated = 1
+       ORDER BY chapter_number, scene_index`,
+      documentId,
+    );
+  }
+
+  /** 按类型列出已标注场景（跨作品对比的输入） */
+  listAnnotatedScenesByGenre(genre: string | null): CorpusSceneRow[] {
+    const target = normalizeGenre(genre);
+    if (target === null) return [];
+    // ⚠ 类型归一化：库里的 genre 可能是"修仙"，查询用"仙侠"——
+    //   等值比较会漏掉。因此取回后按 sameGenre 过滤。
+    return this.db
+      .all<CorpusSceneRow>(
+        `SELECT * FROM corpus_scenes WHERE annotated = 1 ORDER BY document_id, chapter_number, scene_index`,
+      )
+      .filter((r) => sameGenre(r.genre, target));
+  }
+
+  /** 按场景功能聚合统计（§20 模式挖掘的基础） */
+  sceneFunctionStats(documentId?: string): { sceneFunction: string; count: number }[] {
+    const rows = documentId
+      ? this.db.all<{ f: string; n: number }>(
+          `SELECT scene_function AS f, COUNT(*) AS n FROM corpus_scenes
+           WHERE annotated = 1 AND document_id = ? AND scene_function IS NOT NULL
+           GROUP BY scene_function ORDER BY n DESC`,
+          documentId,
+        )
+      : this.db.all<{ f: string; n: number }>(
+          `SELECT scene_function AS f, COUNT(*) AS n FROM corpus_scenes
+           WHERE annotated = 1 AND scene_function IS NOT NULL
+           GROUP BY scene_function ORDER BY n DESC`,
+        );
+    return rows.map((r) => ({ sceneFunction: r.f, count: r.n }));
+  }
+
+  /** 标注进度（如实报告未标注数，便于判断样本是否够用） */
+  annotationProgress(documentId: string): {
+    readonly total: number;
+    readonly annotated: number;
+    readonly failed: number;
+  } {
+    const total =
+      this.db.get<{ n: number }>(
+        'SELECT COUNT(*) AS n FROM corpus_scenes WHERE document_id = ?',
+        documentId,
+      )?.n ?? 0;
+    const annotated =
+      this.db.get<{ n: number }>(
+        'SELECT COUNT(*) AS n FROM corpus_scenes WHERE document_id = ? AND annotated = 1',
+        documentId,
+      )?.n ?? 0;
+    return { total, annotated, failed: total - annotated };
   }
 
   listScenes(documentId: string): CorpusSceneRow[] {

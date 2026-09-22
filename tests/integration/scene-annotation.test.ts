@@ -184,13 +184,57 @@ describe('场景切分（§18 六项依据）', () => {
     expect(s.every((x) => x.paragraphs.length >= 1)).toBe(true);
   });
 
-  it('⚠ 超长场景强制切分且不产生碎片（实测踩到 12 字场景）', () => {
+  it('⚠ 无标记的超长章：不发明边界，只标 oversized', () => {
     // 造 60 段连续叙述（无任何标记）
+    //
+    // ⚠ 早先的实现会"等距切分"（在 maxParagraphs 处硬切）。
+    //   实测后果：《百岁之好》第 2 章 82 段，真实边界在段 46
+    //   （「没过多久，时针指向九点半…」），却因 cap=40 在段 40 硬切，
+    //   造出 **189 字 / 6 段** 的碎片场景 —— 那 6 段本是办公室对话的延续。
+    //
+    //   等距切分 = **发明文本没给出的边界**，而下游（标注 → 模式挖掘）
+    //   会把它当真实叙事结构学习。错误静默扩散。
     const paras = Array.from({ length: 60 }, (_, i) => `这是第 ${i + 1} 段连续的叙述文字内容。`);
     const t = paras.join('\n\n');
     const s = segmentScenes(t, { maxParagraphs: 20 });
-    expect(s.length).toBeGreaterThan(1);
-    // 每段不能过短
+
+    // 忠于文本：没有标记就不切
+    expect(s.length).toBe(1);
+    // 但要**如实报告**这里可能有未识别的边界（LLM 层入口）
+    expect(s[0]!.oversized).toBe(true);
+    expect(s[0]!.paragraphs.length).toBe(60);
+  });
+
+  it('⚠ 有标记的超长章：在标记处切（忠于文本）', () => {
+    // 60 段，第 25 段（index 24）是明确的时间标记
+    const paras = Array.from({ length: 60 }, (_, i) =>
+      i === 24 ? '第二天早上，他来到学校。' : `这是第 ${i + 1} 段连续的叙述文字内容。`,
+    );
+    const t = paras.join('\n\n');
+    const s = segmentScenes(t, { maxParagraphs: 30 });
+
+    // 应切，且切点正是标记所在段（不是等距的 30）
+    expect(s.length).toBe(2);
+    expect(s[1]!.startParagraph).toBe(24);
+    expect(s[1]!.reason).toBe('TIME_SHIFT');
+
+    // 场景 0 = 段 [0,24) = 24 段 < cap 30 → 尺寸正常
+    expect(s[0]!.paragraphs.length).toBe(24);
+    expect(s[0]!.oversized).toBe(false);
+
+    // 场景 1 = 段 [24,60) = 36 段 > cap 30，且内部无标记
+    // → **不切**（不发明边界），如实标 oversized 交 LLM 层
+    expect(s[1]!.paragraphs.length).toBe(36);
+    expect(s[1]!.oversized).toBe(true);
+  });
+
+  it('⚠ 强切不产生碎片场景', () => {
+    // 标记出现在离 cap 很近的地方 —— 早先会切出 1~2 段的碎片
+    const paras = Array.from({ length: 45 }, (_, i) =>
+      i === 21 ? '第二天早上，他来到学校。' : `这是第 ${i + 1} 段连续的叙述文字内容。`,
+    );
+    const t = paras.join('\n\n');
+    const s = segmentScenes(t, { maxParagraphs: 20 });
     for (const sc of s) {
       expect(sc.paragraphs.length).toBeGreaterThanOrEqual(3);
     }

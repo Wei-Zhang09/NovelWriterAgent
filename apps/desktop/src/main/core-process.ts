@@ -13,9 +13,16 @@
  */
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { Logger, AppError, ErrorCode, bookId, type ErrorCodeValue } from '@nwa/core';
-import { Database, MIGRATIONS, createRepositories, type Repositories } from '@nwa/storage';
+import {
+  CorpusRepository,
+  Database,
+  MIGRATIONS,
+  createRepositories,
+  normalizeGenre,
+  type Repositories,
+} from '@nwa/storage';
 import {
   ToolRegistry,
   createAllTools,
@@ -36,7 +43,7 @@ import { z } from 'zod';
 import { Planner, Writer, Reviewer, Reviser } from '@nwa/writing';
 import { ChapterWorkspace, ContinuityChecker, FactExtractor, CanonPromoter } from '@nwa/story';
 import { CommitEngine, SummaryIndexer, MemoryGatherer, SummaryGenerator } from '@nwa/harness';
-import { SceneAnnotator, segmentScenes } from '@nwa/distillation';
+import { SceneAnnotator, ScenePersister, segmentScenes } from '@nwa/distillation';
 import { FtsIndex } from '@nwa/storage';
 import { bigramTokenizer, Retriever, buildMatchExpression } from '@nwa/retrieval';
 import type { ReviewIssue } from '@nwa/shared';
@@ -333,6 +340,46 @@ function requireProject(): OpenProject {
     throw new AppError(ErrorCode.WORKSPACE_CORRUPTED, '尚未打开项目');
   }
   return opened;
+}
+
+/**
+ * ⚠ 语料库（NDE 知识来源）**独立于创作项目**。
+ *
+ * ## 为什么不能复用 `opened.repos.corpus`
+ *
+ * 创作项目的库是"这本书的数据"；语料库是"所有参考作品的共享知识"。
+ * 两者生命周期完全不同：
+ *   - 项目库随项目创建/删除
+ *   - 语料库跨项目长期存在（用户导入一次，所有书共用）
+ *
+ * 实测踩坑：`annotate.progress` 用项目库查询 → 永远返回 0 条，
+ * 因为语料文档根本不在项目库里。
+ *
+ * ## 路径
+ *
+ * 默认 `C:/Users/zw/NovelWriterCorpus/corpus.db`，可用
+ * `NWA_CORPUS_ROOT` 覆盖（验证脚本用）。
+ */
+let corpusHandle: { db: Database; repo: CorpusRepository } | null = null;
+
+function corpusRoot(): string {
+  return process.env['NWA_CORPUS_ROOT'] ?? 'C:/Users/zw/NovelWriterCorpus';
+}
+
+function corpusRepo(): CorpusRepository {
+  if (!corpusHandle) {
+    const dbPath = join(corpusRoot(), 'corpus.db');
+    if (!existsSync(dbPath)) {
+      throw new AppError(
+        ErrorCode.STORAGE_QUERY_FAILED,
+        `语料库不存在：${dbPath}（请先导入语料，或设 NWA_CORPUS_ROOT）`,
+      );
+    }
+    const db = new Database({ path: dbPath, migrations: MIGRATIONS });
+    corpusHandle = { db, repo: new CorpusRepository(db) };
+    logger.info('已打开语料库', { path: dbPath });
+  }
+  return corpusHandle.repo;
 }
 
 
@@ -1562,6 +1609,118 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       uncertainBoundaries: result.uncertainBoundaries,
       scenes,
     };
+  },
+
+  /**
+   * 场景标注**批量落库**（STEP 15 → STEP 16 的衔接）。
+   *
+   * ⚠ 逐章跑真实模型标注并落库。**会消耗模型额度** ——
+   *   调用方应先用少量章节验证，再决定是否全量。
+   */
+  'annotate.persistDocument': async (params: {
+    documentId: string;
+    corpusRoot?: string;
+    maxChapters?: number;
+    onProgressEvery?: number;
+  }) => {
+    const p = requireProject();
+    if (!p.runtime) {
+      throw new AppError(ErrorCode.MODEL_AUTH_FAILED, '尚未配置模型，无法标注');
+    }
+    const root = params.corpusRoot ?? 'C:/Users/zw/NovelWriterCorpus';
+    const doc = corpusRepo().get(params.documentId);
+    const chDir = join(root, 'documents', params.documentId, 'chapters');
+    if (!existsSync(chDir)) {
+      throw new AppError(
+        ErrorCode.TOOL_VALIDATION_ERROR,
+        `未找到章节目录：${chDir}（语料是否已导入？）`,
+      );
+    }
+    const files = readdirSync(chDir).filter((f) => f.endsWith('.md')).sort();
+    const limit = params.maxChapters ?? files.length;
+    const selected = files.slice(0, limit);
+
+    const annotator = new SceneAnnotator({
+      logger: logger.child('annotate'),
+      structured: (req) => p.runtime!.structured('utility', req),
+    });
+    const persister = new ScenePersister({
+      repo: corpusRepo(),
+      corpusRoot: root,
+      logger: logger.child('persist'),
+    });
+
+    const chapters = selected.map((f, i) => ({
+      chapterNumber: i + 1,
+      text: readFileSync(join(chDir, f), 'utf8'),
+    }));
+
+    const summary = await persister.persistMany({
+      documentId: params.documentId,
+      genre: doc.genre,
+      chapters,
+      annotate: (ch) =>
+        annotator.annotateChapter({
+          chapterNumber: ch.chapterNumber,
+          text: ch.text,
+          documentId: params.documentId,
+          genre: doc.genre,
+        }),
+    });
+
+    const progress = corpusRepo().annotationProgress(params.documentId);
+    logger.info('标注落库完成', { ...summary, ...progress });
+    return { ...summary, progress };
+  },
+
+  /**
+   * 列出语料文档（含类型，供 UI 与验证脚本选择"写什么类型"）。
+   *
+   * ⚠ 类型归一化后返回，便于调用方按大类匹配（仙侠/修仙/修真 同类）。
+   */
+  'corpus.listDocuments': (params: { genre?: string | null } = {}) => {
+    const repo = corpusRepo();
+    const docs = params.genre
+      ? repo.listProcessableByGenre(params.genre)
+      : repo.listProcessable();
+    return {
+      documents: docs.map((d) => ({
+        documentId: d.id,
+        title: d.title,
+        genre: d.genre,
+        subgenre: d.subgenre ?? null,
+        normalizedGenre: normalizeGenre(d.genre),
+        allowedUsage: d.allowed_usage,
+        hasSynopsis: Boolean(d.synopsis),
+      })),
+      /** 可用类型及文档数（供 UI 选择"我要写什么类型"） */
+      genres: repo.listGenres(),
+    };
+  },
+
+  /** 标注进度（如实报告未标注数，便于判断样本是否够用） */
+  'annotate.progress': (params: { documentId?: string } = {}) => {
+    const repo = corpusRepo();
+    const docs = params.documentId ? [repo.get(params.documentId)] : repo.list();
+    return {
+      documents: docs.map((d) => ({
+        documentId: d.id,
+        title: d.title,
+        genre: d.genre,
+        ...repo.annotationProgress(d.id),
+      })),
+    };
+  },
+
+  /**
+   * 场景功能分布（STEP 16 模式挖掘的基础统计）。
+   *
+   * ⚠ 只统计**已标注**场景 —— 未标注的语义字段为空，
+   *   那是"没标注"而非"没有该功能"，混入会让统计失真。
+   */
+  'annotate.sceneFunctionStats': (params: { documentId?: string; genre?: string | null } = {}) => {
+    const stats = corpusRepo().sceneFunctionStats(params.documentId);
+    return { stats, total: stats.reduce((s, x) => s + x.count, 0) };
   },
 
   /**

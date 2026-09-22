@@ -55,6 +55,7 @@ describe('迁移', () => {
       '0005_fts',
       '0006_summary_approval',
       '0007_genre_isolation',
+      '0008_scene_persistence',
     ]);
   });
 
@@ -103,7 +104,7 @@ describe('迁移', () => {
     const indexes = db.all<{ name: string }>(
       "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'",
     );
-    expect(indexes.length).toBe(32);
+    expect(indexes.length).toBe(35);
   });
 
   it('⚠ 全部迁移都已应用（构建产物不遗漏 SQL）', () => {
@@ -121,6 +122,7 @@ describe('迁移', () => {
       '0005_fts',
       '0006_summary_approval',
       '0007_genre_isolation',
+      '0008_scene_persistence',
     ]);
   });
 
