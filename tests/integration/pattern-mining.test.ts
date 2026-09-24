@@ -277,8 +277,21 @@ describe('⚠ resolveScope：按作品数覆盖模型自报的作用域', () => 
     expect(resolveScope('GENRE', 2).scope).toBe('GENRE');
   });
 
-  it('≥3 部作品 → 尊重模型判断', () => {
-    expect(resolveScope('UNIVERSAL', 3).scope).toBe('UNIVERSAL');
+  it('⚠ ≥3 部作品 + 模型说 UNIVERSAL → GENRE（旧实现放行，P0-6 修正）', () => {
+    // ⚠ 这条断言**方向被改过**，来历值得记下来。
+    //
+    // 原先是 `expect(resolveScope('UNIVERSAL', 3).scope).toBe('UNIVERSAL')`，
+    // 描述"≥3 部作品 → 尊重模型判断"。但那正是 P0-6 要修的缺陷：
+    // 旧 `resolveScope` 只数作品数、**没有类型维度**，
+    // 于是三部同类型作品（都市 A/B/C）就能让模型自报的 UNIVERSAL 原样生效 ——
+    // 而总提示词 §八 点名的正是这种情形（都市 A/B/C 不代表 Universal）。
+    //
+    // 旧断言把这个缺陷**写成了期望行为**。它与代码出自同一个假设，
+    // 所以抓不住那个假设 —— 这正是"断言和实现共享同一错误前提"的典型。
+    //
+    // 现在：(scope, count) 这个签名拿不到类型信息，按"类型未知"保守处理，
+    // 一律不升档。要判 UNIVERSAL 必须传完整的证据（见 scope-evidence.test.ts）。
+    expect(resolveScope('UNIVERSAL', 3).scope).toBe('GENRE');
   });
 });
 

@@ -257,6 +257,98 @@ app.whenReady().then(async () => {
       `本次降档 ${m.downgraded} 条`,
     );
 
+    // ── 4) P0-6：scope 由证据计算，不是模型自报 ──
+    console.log('\n──── P0-6：Scope 由证据计算（§八）────\n');
+
+    // 4a) ⚠⚠ **本次写入的**模式必须都带判定依据。
+    //
+    // ⚠ 断言对象是"本次写入"而不是"库里全部"，这一点我第一版写错了：
+    //   库里还有 0011 迁移之前写入的老行（那一列当时不存在），
+    //   它们**如实地**为 NULL —— 拿它们当失败，等于要求历史数据
+    //   具备当时还没有的字段。
+    //
+    //   而且**不能回填**：老行的 scope 是旧逻辑算的，重算需要当时的
+    //   证据口径（证据覆盖的作品及其类型），那正是当时没有记录的东西。
+    //   凭现在的库反推会给老行编造一份"看起来合理"的依据 —— 那是伪造证据。
+    //   正确做法是如实报告存在无依据的历史行。
+    const newTriggers = new Set((m.scopeEvidence ?? []).map((x) => x.trigger));
+    const justWritten = checkSet.filter((x) => newTriggers.has(x.trigger?.trigger ?? x.trigger));
+    const missingNew = justWritten.filter((x) => !x.scopeEvidence);
+    rec(
+      '⚠⚠ 本次写入的模式都带 scope 判定依据（可审计）',
+      justWritten.length > 0 && missingNew.length === 0,
+      justWritten.length === 0
+        ? '本次没有写入模式，无法判定'
+        : `${justWritten.length} 条新写入，${missingNew.length} 条缺依据`,
+    );
+
+    // 4a-2) 历史行如实报告（**不作为失败** —— 它们当时没有这一列）
+    const legacyNoEvidence = checkSet.filter((x) => !x.scopeEvidence);
+    if (legacyNoEvidence.length > 0) {
+      console.log(
+        `  ⚠ ${legacyNoEvidence.length} 条历史模式无判定依据（0011 迁移之前写入，` +
+          '当时无此列；不回填 —— 回填等于伪造当时的证据）',
+      );
+    }
+
+    // 4b) ⚠⚠ 核心断言：跨作品 ≠ 跨类型。
+    //     库里两部已标注作品都是都市类（都市校园 / 都市言情）——
+    //     所以**任何**模式都不该被判成 UNIVERSAL。这正是 §八 点名的情形。
+    const universals = checkSet.filter((x) => x.scope === 'UNIVERSAL');
+    const genreSet = new Set(checkSet.map((x) => x.genre).filter(Boolean));
+    rec(
+      `⚠⚠ 跨作品但同类型时不得判 UNIVERSAL（当前已标注类型：${[...genreSet].join('、') || '无'}）`,
+      universals.length === 0,
+      universals.length
+        ? `${universals.length} 条被判 UNIVERSAL —— 类型维度没生效`
+        : '无 UNIVERSAL（证据只跨作品、未跨类型，正确）',
+    );
+
+    // 4c) 依据里的类型分布要与实际语料一致（证明用的是**证据口径**）
+    const withEv = checkSet.filter((x) => x.scopeEvidence);
+    const crossGenreClaimed = withEv.filter(
+      (x) => (x.scopeEvidence.crossGenreCoverage ?? 0) >= 2,
+    );
+    rec(
+      '⚠ 没有任何模式声称跨类型（语料只有都市类）',
+      crossGenreClaimed.length === 0,
+      crossGenreClaimed.length ? `${crossGenreClaimed.length} 条声称跨类型` : '全部未声称',
+    );
+
+    // 4d) ⚠ stability / held_out_validation 必须如实标 NOT_RUN
+    //     —— 填一个"看起来合理"的值就是伪造证据
+    const faked = withEv.filter(
+      (x) => x.scopeEvidence.stability !== 'NOT_RUN' || x.scopeEvidence.heldOutValidation !== 'NOT_RUN',
+    );
+    rec(
+      '⚠⚠ stability / held_out_validation 如实标 NOT_RUN（不伪造证据）',
+      faked.length === 0,
+      faked.length
+        ? `${faked.length} 条声称做过未运行的实验`
+        : '全部如实标 NOT_RUN',
+    );
+
+    // 4e) counter_evidence 状态必须明确（NONE / FOUND / NOT_CHECKED 三态）
+    const ceStatuses = new Set(
+      withEv.map((x) => x.scopeEvidence.counterEvidence?.status ?? '(缺失)'),
+    );
+    rec(
+      '⚠ counter_evidence 状态明确（NONE / FOUND / NOT_CHECKED）',
+      [...ceStatuses].every((x) => ['NONE', 'FOUND', 'NOT_CHECKED'].includes(x)),
+      `状态集合：${[...ceStatuses].join('、') || '无'}`,
+    );
+
+    // 打印依据样本供人工核对
+    console.log('  依据样本：');
+    for (const x of withEv.slice(0, 4)) {
+      const e = x.scopeEvidence;
+      console.log(
+        `    [${x.scope}] 作品 ${e.support} 部｜类型 ${e.crossGenreCoverage} 个` +
+          `（${(e.genres ?? []).join('、') || '未知'}）｜未知类型 ${e.unknownGenreCount} 部` +
+          `｜反证 ${e.counterEvidence?.status}`,
+      );
+    }
+
     // 打印样本供人工判断
     console.log('\n──── 模式样本（人工判断质量）────\n');
     for (const p of checkSet.slice(0, 3)) {

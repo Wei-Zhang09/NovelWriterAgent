@@ -30,7 +30,13 @@
  * 这个分档**不交给模型判断** —— 模型看不到全局的作品分布，
  * 它只能看到我们喂的那几个片段。作品数是代码算得出来的事实。
  */
-import { Logger } from '@nwa/core';
+import {
+  Logger,
+  computeScope,
+  type ScopeDecision,
+  type ScopeEvidence,
+  type ScopeEvidenceInput,
+} from '@nwa/core';
 import type { CorpusRepository, CorpusSceneRow, SkillScope } from '@nwa/storage';
 import { normalizeGenre } from '@nwa/storage';
 import { PatternMiner, toPatternRow, type MinedPatternRecord, type MineResult } from './pattern-miner.js';
@@ -89,34 +95,59 @@ export function analyzeCrossWork(scenes: readonly CorpusSceneRow[]): CrossWorkAn
 }
 
 /**
- * ⚠ 按来源作品数决定作用域 —— **不采信模型自报的 scope**。
+ * ⚠ 按**证据**决定作用域 —— 不采信模型自报的 scope。
  *
- * 模型看不到全局作品分布，它只能看到我们喂的片段。
- * 它说 "UNIVERSAL" 时其实无从判断。
- * 作品数是代码算得出来的事实，用它覆盖模型的判断。
+ * ## 修的是什么（P0-6）
  *
- * 但也不完全丢弃模型的意见：
- *   - 模型说 GENRE 而作品数够 → 尊重（它可能识别出类型特异性）
- *   - 模型说 UNIVERSAL 但只有 1 部作品 → **降级为 STYLE**（证据不足）
+ * 旧实现只数作品数，**完全没有类型维度**：
+ *
+ * ```
+ * if (sourceDocumentCount === 2 && modelScope === 'UNIVERSAL') → GENRE
+ * return { scope: modelScope, reason: '作品数与模型判断一致' }   // ← 缺陷在这里
+ * ```
+ *
+ * 三部**同类型**作品（都市 A/B/C）就能走到最后一行，
+ * 于是"作品数够"直接放行了模型自报的 UNIVERSAL ——
+ * 正是总提示词 §八 点名的情形：都市小说 A/B/C 不代表 Universal。
+ *
+ * 而且模型的判断是**通过条件**而非输入：作品数够时它的自报原样生效。
+ * 模型看不到全局作品分布（它只看到我们喂的片段），
+ * 说 UNIVERSAL 时其实无从判断。
+ *
+ * ## 现在的规则（§八）
+ *
+ *   1 部作品              → STYLE
+ *   ≥2 部、全部同类型      → GENRE
+ *   ≥2 部、≥2 个不同类型   → 才可能 UNIVERSAL
+ *
+ * 且与模型自报取**更保守**者（只降不升），理由见 `computeScope` 的注释。
+ *
+ * ## 兼容签名
+ *
+ * 旧的 `(modelScope, count)` 调用仍然可用（第二参数为数字时走简化路径），
+ * 但**不推荐** —— 它拿不到类型信息，无法区分"三部都市"与"三部不同类型"。
+ * 新代码请传完整的 `ScopeEvidenceInput`。
  */
 export function resolveScope(
   modelScope: SkillScope,
   sourceDocumentCount: number,
+): { readonly scope: SkillScope; readonly reason: string };
+export function resolveScope(input: ScopeEvidenceInput): ScopeDecision;
+export function resolveScope(
+  arg1: SkillScope | ScopeEvidenceInput,
+  arg2?: number,
 ): { readonly scope: SkillScope; readonly reason: string } {
-  if (sourceDocumentCount <= 1) {
-    // 单作品：无法区分叙事规律与作者癖好
-    return {
-      scope: 'STYLE',
-      reason: '仅 1 部作品支持，无法区分叙事规律与作者风格',
-    };
+  if (typeof arg1 === 'string') {
+    // 简化路径：没有类型信息 → 按"类型未知"处理（不能据此升档）
+    const n = arg2 ?? 0;
+    const d = computeScope({
+      sourceGenres: Array.from({ length: n }, () => null),
+      modelScope: arg1,
+    });
+    return { scope: d.scope, reason: d.reason };
   }
-  if (sourceDocumentCount === 2 && modelScope === 'UNIVERSAL') {
-    return {
-      scope: 'GENRE',
-      reason: '2 部作品支持，不足以称跨类型通用',
-    };
-  }
-  return { scope: modelScope, reason: '作品数与模型判断一致' };
+  const d = computeScope(arg1);
+  return { scope: d.scope, reason: d.reason, evidence: d.evidence } as ScopeDecision;
 }
 
 /** 模式落库 */
@@ -138,34 +169,60 @@ export class PatternStore {
   persist(patterns: readonly MinedPatternRecord[], idPrefix = 'pat'): {
     readonly written: number;
     readonly downgraded: number;
+    /** 每条模式的证据记录（供调用方汇报，回答"为什么是这一档"） */
+    readonly evidence: readonly { readonly trigger: string; readonly scope: SkillScope; readonly evidence: ScopeEvidence }[];
   } {
     let written = 0;
     let downgraded = 0;
+    const evidenceOut: { trigger: string; scope: SkillScope; evidence: ScopeEvidence }[] = [];
+
+    // 同批其它模式的可读文本 —— 用于反证检测（counter_evidence）。
+    // ⚠ 传进去的是"同批所有模式"，包括自己；detectCounterEvidence 里
+    //   自己与自己比较必然不冲突（同一段文本极性一致），无需特意排除。
+    const siblings = patterns.map((x) => ({
+      id: hashKey(`${x.sceneFunction}|${x.trigger}|${x.genre ?? ''}`),
+      text: [x.trigger, x.decision.join('；'), x.boundary.join('；')].join('｜'),
+    }));
 
     for (const p of patterns) {
-      const { scope, reason } = resolveScope(p.scope, p.sourceDocumentIds.length);
+      const selfId = hashKey(`${p.sceneFunction}|${p.trigger}|${p.genre ?? ''}`);
+      const selfText = [p.trigger, p.decision.join('；'), p.boundary.join('；')].join('｜');
+
+      // ⚠ scope 由**证据**算，不采信模型自报（P0-6）。
+      //   证据口径 = 该模式实际引用的场景所覆盖的作品及其类型。
+      const decision = computeScope({
+        sourceGenres: p.sourceGenres,
+        modelScope: p.scope,
+        selfText,
+        siblingPatterns: siblings.filter((x) => x.id !== selfId),
+      });
+      const scope = decision.scope;
       if (scope !== p.scope) {
         downgraded++;
         this.logger.info('模式作用域已按证据降档', {
           trigger: p.trigger,
           from: p.scope,
           to: scope,
-          reason,
+          reason: decision.reason,
+          evidence: decision.evidence,
         });
       }
+      evidenceOut.push({ trigger: p.trigger, scope, evidence: decision.evidence });
 
-      const id = `${idPrefix}_${hashKey(`${p.sceneFunction}|${p.trigger}|${p.genre ?? ''}`)}`;
+      const id = `${idPrefix}_${selfId}`;
       const row = toPatternRow(p, id);
       this.repo.putPattern({
         ...row,
         scope,
         // 证据：真实 sceneId（已由编号映射校验过）
         evidenceRefsJson: JSON.stringify(p.evidenceSceneIds),
+        // P0-6：scope 判定依据随行落库，可审计
+        scopeEvidenceJson: JSON.stringify(decision.evidence),
       });
       written++;
     }
 
-    return { written, downgraded };
+    return { written, downgraded, evidence: evidenceOut };
   }
 
   /**
@@ -187,6 +244,12 @@ export class PatternStore {
     readonly written: number;
     readonly downgraded: number;
     readonly analysis: CrossWorkAnalysis;
+    /** P0-6：逐条 scope 判定依据（供调用方汇报/审计） */
+    readonly scopeEvidence: readonly {
+      readonly trigger: string;
+      readonly scope: SkillScope;
+      readonly evidence: ScopeEvidence;
+    }[];
   }> {
     const analysis = analyzeCrossWork(req.scenes);
     this.logger.info('跨作品覆盖分析', {
@@ -204,8 +267,8 @@ export class PatternStore {
       onProgress: req.onProgress,
     });
 
-    const { written, downgraded } = this.persist(mine.patterns);
-    return { mine, written, downgraded, analysis };
+    const { written, downgraded, evidence } = this.persist(mine.patterns);
+    return { mine, written, downgraded, analysis, scopeEvidence: evidence };
   }
 }
 

@@ -58,6 +58,7 @@ describe('迁移', () => {
       '0008_scene_persistence',
       '0009_skill_summary',
       '0010_workflow',
+      '0011_pattern_scope_evidence',
     ]);
   });
 
@@ -134,6 +135,7 @@ describe('迁移', () => {
       '0008_scene_persistence',
       '0009_skill_summary',
       '0010_workflow',
+      '0011_pattern_scope_evidence',
     ]);
   });
 

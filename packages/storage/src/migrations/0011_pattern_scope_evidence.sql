@@ -1,0 +1,38 @@
+-- 0011_pattern_scope_evidence.sql
+--
+-- P0-6：Scope 证据落库
+--
+-- ## 需求原话（总提示词 §八）
+--
+--   > Universal 不能仅依据「跨多本作品」。
+--   > 例如：都市小说 A / 都市小说 B / 都市小说 C —— 不代表 Universal。
+--   > 建议：1 本作品 → STYLE；2+ 同类型作品 → GENRE；2+ 不同类型作品 → 才可能 UNIVERSAL。
+--   > 最终 scope 必须尽可能由代码计算，而不是仅相信 LLM 输出。
+--   > 至少记录：support / coverage / cross_work_coverage / cross_genre_coverage /
+--   >           counter_evidence / stability / held_out_validation
+--
+-- ## 为什么依据也要落库，而不只写日志
+--
+-- 日志会滚掉。而"这条模式为什么被判成 GENRE 而不是 UNIVERSAL"是
+-- **之后每次质疑都要回答的问题** —— 尤其当使用者发现某条通用手法
+-- 没被注入、或某条类型专属手法被用在了别的题材上。
+--
+-- 只存结论（scope 一列）无法回答它。所以把判定依据整份存下来：
+-- 支持几部作品、跨几个类型、有没有反证、哪些维度**没查**。
+--
+-- ## 为什么用 JSON 而不是拆成七个列
+--
+-- 这七项是**一份记录**，总是一起读、一起写，从不单独查询或聚合
+-- （检索路径走的是 scope 列与 idx_patterns_genre_scope 索引）。
+-- 拆列会让"新增一个证据维度"变成一次迁移，而证据维度在
+-- §八 之外还可能有更多（如后续的 stability 实验）。
+-- JSON 列让它成为**数据演进**而不是 schema 演进。
+--
+-- ⚠ 与 scope 列的关系：scope 是**查询用的结论**，本列是**结论的来历**。
+--   两者必须一致 —— 写入时由同一次 computeScope 调用产生（见 pattern-store.ts），
+--   不允许分别计算。
+
+ALTER TABLE distillation_patterns ADD COLUMN scope_evidence_json TEXT;
+
+-- 不需要新索引：检索永远按 (genre, scope, confidence) 走已有索引，
+-- 不会按证据内部字段过滤。加一个不用的索引只会拖慢写入。

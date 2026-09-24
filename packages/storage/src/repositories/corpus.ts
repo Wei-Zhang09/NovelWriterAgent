@@ -97,6 +97,13 @@ export interface PatternRow {
   readonly created_at: string;
   /** 作用域：UNIVERSAL / GENRE / STYLE（§21） */
   readonly scope: string;
+  /**
+   * scope 判定依据（P0-6，JSON）。
+   *
+   * ⚠ 可空：0011 之前写入的行没有这一列。空表示"当时没有记录依据"，
+   *   不等于"依据为空"。读取方必须区分这两种情况，不能当默认值用。
+   */
+  readonly scope_evidence_json?: string | null;
 }
 
 export interface CorpusSceneRow {
@@ -420,12 +427,19 @@ export class CorpusRepository {
     readonly genre: string | null;
     readonly sceneFunction: string;
     readonly scope: SkillScope;
+    /**
+     * scope 判定依据（P0-6）。JSON，可空 ——
+     * 老行（0011 之前写入的）没有这一列，如实为 NULL，
+     * 不补造一个"看起来合理"的依据。
+     */
+    readonly scopeEvidenceJson?: string | null;
   }): void {
     this.db.run(
       `INSERT INTO distillation_patterns
          (id, category, trigger_json, pattern_json, strategy_json, evidence_refs_json,
-          confidence, sample_count, mechanism, genre, scene_function, created_at, scope)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          confidence, sample_count, mechanism, genre, scene_function, created_at, scope,
+          scope_evidence_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          trigger_json = excluded.trigger_json,
          pattern_json = excluded.pattern_json,
@@ -436,7 +450,8 @@ export class CorpusRepository {
          mechanism = excluded.mechanism,
          genre = excluded.genre,
          scene_function = excluded.scene_function,
-         scope = excluded.scope`,
+         scope = excluded.scope,
+         scope_evidence_json = excluded.scope_evidence_json`,
       input.id,
       input.category,
       input.triggerJson,
@@ -450,6 +465,7 @@ export class CorpusRepository {
       input.sceneFunction,
       now(),
       input.scope,
+      input.scopeEvidenceJson ?? null,
     );
   }
 

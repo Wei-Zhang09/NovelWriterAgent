@@ -2138,6 +2138,8 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     return {
       genre: params.genre ?? null,
       scenesUsed: scenes.length,
+      // P0-6：逐条 scope 判定依据（供 verify 脚本与人工核对）
+      scopeEvidence: r.scopeEvidence ?? [],
       groups: r.mine.groups,
       failedGroups: r.mine.failedGroups,
       failures: r.mine.failures,
@@ -2178,6 +2180,9 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
         pattern: safeJson(r.pattern_json),
         mechanism: r.mechanism,
         evidenceRefs: safeJson(r.evidence_refs_json),
+        // P0-6：scope 判定依据。⚠ null 表示"当时没记录"（0011 之前写入的行），
+        //   不等于"依据为空" —— 不能当默认值用。
+        scopeEvidence: safeJson(r.scope_evidence_json ?? ''),
       })),
     };
   },

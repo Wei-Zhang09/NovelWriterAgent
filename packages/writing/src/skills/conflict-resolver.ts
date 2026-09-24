@@ -53,6 +53,11 @@
  */
 
 import type { Skill } from '@nwa/shared';
+// ⚠ 判据本体在 core（见下方"冲突判据"段注释）；此处 import 而非本地定义
+import { detectRuleConflict } from '@nwa/core';
+
+// 转发导出：既有调用方（tests / writing 包内）继续从本模块取用
+export { detectRuleConflict };
 
 /** Scope 优先级（数值越大越具体） */
 export const SCOPE_RANK: Readonly<Record<string, number>> = {
@@ -67,94 +72,13 @@ function rankOf(scope: string | null | undefined): number {
 }
 
 // ── 冲突判据 ──────────────────────────────────────────────
-
-/**
- * 否定极性词 —— 出现即表示"不要这么做"。
- *
- * ⚠ 与肯定词**同时出现**时极性归零（见 `polarityOf`）：
- * 中文写作规则常写"不要直接解释情绪，而要用行为暗示"，
- * 句里同时有"不要"和"要"，此时按极性相反去配对会把
- * **同一技能内部的两条互补规则**误判成冲突。
- */
-const NEGATIVE = [
-  '不要', '避免', '禁止', '不得', '严禁', '不应', '不能', '不必',
-  '无需', '少用', '减少', '克制', '不要用',
-];
-
-/** 肯定极性词 —— 出现即表示"可以/应该这么做" */
-const POSITIVE = [
-  '可以', '允许', '应当', '应该', '必须', '需要', '多用', '增加',
-  '适度', '短暂', '保持', '要',
-];
-
-/**
- * 话题词表 —— **必须是有界的**。
- *
- * ⚠ 为什么不用 bigram 重叠当"共同话题"：实测同一组规则里，
- *   互补的两条（"用行为暗示情绪" / "避免直接说明情绪"）bigram
- *   相似度 0.071，而**真正冲突**的一对（用户给的例子）也只有 0.077
- *   —— 两者区分不开。bigram 只能证明"措辞像"，
- *   而冲突需要的是"谈的是同一件事，却给出相反指示"。
- *   所以用有界话题词表 + 极性配对，实测 9/9 判对（含 4 个易误判的负例）。
- *
- * 局限如实说明：词表是**有界的**，话题落在词表之外的冲突检测不到。
- * 这是刻意的取舍 —— 宁可漏判（三条规则都保留，Writer 看到矛盾时
- * 仍可自行取舍），也不误判（把互补规则删掉，永久丢失一个手法）。
- */
-const TOPIC_WORDS = [
-  '情绪', '情感', '对话', '节奏', '冲突', '张力', '描写', '环境',
-  '伏笔', '视角', '信息', '场景', '心理', '动作', '悬念', '氛围',
-  '语气', '留白', '细节', '解释', '说明', '揭示', '铺垫', '抒情',
-];
-
-/**
- * 互斥属性对 —— 同一属性维度上的相反取值。
- *
- * 这类冲突的极性词可能完全相同（"对话保持简短" vs "对话可以适当拉长"
- * 都含肯定词），所以极性判据抓不到，需要靠属性对。
- */
-const OPPOSED_ATTRS: readonly (readonly [string, string])[] = [
-  ['简短', '拉长'],
-  ['精简', '铺陈'],
-  ['含蓄', '直白'],
-  ['直接', '间接'],
-  ['快', '慢'],
-  ['克制', '渲染'],
-  ['留白', '铺陈'],
-  ['略写', '详写'],
-  ['冷', '热'],
-];
-
-function polarityOf(text: string): -1 | 0 | 1 {
-  const neg = NEGATIVE.some((w) => text.includes(w));
-  const pos = POSITIVE.some((w) => text.includes(w));
-  if (neg && !pos) return -1;
-  if (pos && !neg) return 1;
-  return 0;
-}
-
-function topicsOf(text: string): string[] {
-  return TOPIC_WORDS.filter((w) => text.includes(w));
-}
-
-/** 两条规则文本是否构成**明确冲突**；返回冲突说明，不冲突返回 null */
-export function detectRuleConflict(a: string, b: string): string | null {
-  const shared = topicsOf(a).filter((t) => topicsOf(b).includes(t));
-  if (shared.length === 0) return null;
-
-  const pa = polarityOf(a);
-  const pb = polarityOf(b);
-  if (pa !== 0 && pb !== 0 && pa !== pb) {
-    return `同一话题「${shared.join('、')}」上极性相反（${pa < 0 ? '否定' : '肯定'} vs ${pb < 0 ? '否定' : '肯定'}）`;
-  }
-
-  for (const [x, y] of OPPOSED_ATTRS) {
-    if ((a.includes(x) && b.includes(y)) || (a.includes(y) && b.includes(x))) {
-      return `同一话题「${shared.join('、')}」上属性互斥（${x} / ${y}）`;
-    }
-  }
-  return null;
-}
+//
+// ⚠ 判据本体（有界话题词表 + 极性配对 + 互斥属性对）已上提到 `@nwa/core`
+//   的 `rule-conflict.ts`。原因：P0-6 的 `counter_evidence`（反证检测）
+//   要用**同一套**判据，而 `distillation` 不能依赖 `writing`。
+//   若在此处保留副本，两处阈值会各自漂移 —— 编译期认为两条模式冲突并记了反证，
+//   运行时却认为不冲突、两条都注入给 Writer。**同一判据出现两份，
+//   就是等着其中一份被调参。** 所以只保留 re-export，不再本地定义。
 
 // ── 接口 ──────────────────────────────────────────────────
 

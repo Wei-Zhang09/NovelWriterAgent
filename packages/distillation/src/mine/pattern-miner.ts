@@ -104,6 +104,13 @@ export interface MinedPatternRecord extends MinedPattern {
    * 宣称跨作品规律"的情况 —— 实测 64 条 GENRE 里 44 条如此。
    */
   readonly sourceDocumentIds: readonly string[];
+  /**
+   * 证据覆盖的每部作品各自的**归一化类型**（P0-6）。
+   *
+   * 与 `sourceDocumentIds` 一一对应；`null` = 该作品类型未知。
+   * scope 由 `computeScope` 依据它计算 —— 而不是由模型自报。
+   */
+  readonly sourceGenres: readonly (string | null)[];
   /** 场景功能（分组的依据） */
   readonly sceneFunction: string;
   /** 归一化类型 */
@@ -206,6 +213,15 @@ export class PatternMiner {
       }
     }
     const docCount = docLabel.size;
+
+    // ⚠ 作品 → 类型（P0-6）。同一作品的所有场景类型一致，取第一个非空值。
+    //   归一化后再存：库里可能写"都市校园"，而查询/比较用"都市"。
+    const docGenreOf = new Map<string, string | null>();
+    for (const sc of scenes) {
+      if (!docGenreOf.has(sc.document_id)) {
+        docGenreOf.set(sc.document_id, normalizeGenre(sc.genre ?? null));
+      }
+    }
 
     const blocks: string[] = [];
     for (let i = 0; i < scenes.length; i++) {
@@ -319,11 +335,23 @@ export class PatternMiner {
           if (d) evidenceDocs.add(d);
         }
 
+        // ⚠ 证据覆盖的每部作品**各自的类型** —— P0-6 的 scope 计算依据。
+        //
+        //   只数作品数是不够的：三部同类型作品（都市 A/B/C）不代表
+        //   跨类型通用（总提示词 §八 点名这种情形）。所以必须把
+        //   "证据覆盖了哪些类型"一并算出来，交给 computeScope。
+        //
+        //   类型取自场景行（corpus_scenes.genre，迁移 0007 冗余写入）。
+        //   取不到就是 null —— computeScope 会把它算作"类型未知、不能据此升档"，
+        //   而不是当成一个独立类型。
+        const evidenceGenres = [...evidenceDocs].map((d) => docGenreOf.get(d) ?? null);
+
         records.push({
           ...p,
           evidenceSceneIds: valid,
           droppedEvidence: dropped,
           sourceDocumentIds: [...evidenceDocs],
+          sourceGenres: evidenceGenres,
           sceneFunction,
           genre: normalizeGenre(genre),
           sampleCount: scenes.length,
