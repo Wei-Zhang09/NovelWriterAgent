@@ -28,6 +28,8 @@ export { createContinuityTools } from './tools/continuity-tools.js';
 export { createReviewTools } from './tools/review-tools.js';
 export { createFactTools } from './tools/fact-tools.js';
 export { createCharacterTools } from './tools/character-tools.js';
+export { createTimelineTools } from './tools/timeline-tools.js';
+export type { TimelineToolOptions } from './tools/timeline-tools.js';
 export { createBookTools } from './tools/book-tools.js';
 export { createCommitTools } from './tools/commit-tools.js';
 export type { AnyToolDefinition } from '@nwa/shared';

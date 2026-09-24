@@ -85,6 +85,13 @@ const SYSTEM_PROMPT = `你是长篇小说的设定管理员。你的唯一任务
 4. **时间线事件只写叙事上真实发生的事件**，不写心理活动、不写环境描写。
    好："架阁库失火，卷宗尽毁"
    差："陆明远感到不安"（心理活动不是事件）
+   ⚠ 尽量填 storyTimeDisplay（正文里出现的**时间原文**，如"21:30"、"第三天傍晚"）。
+   它是时间线一致性检查的依据；不要自己换算成数字，原文照抄即可。
+   ⚠ 同时尽量填 characters（参与的角色名）与 location（地点）。
+   这两项用于检查"同一角色同一时刻出现在两地"这类不可能事件。
+   ⚠ 如果这一段是**回忆/倒叙**，narrativeMode 填 "FLASHBACK"；
+   如果是**预告/前瞻**，填 "ANTICIPATION"；顺叙填 "FOREGROUND" 或不填。
+   漏填会让正常的倒叙被报成时间线错误。
 
 5. **伏笔动作用动作而非状态**：
    - PLANT   —— 这里**新埋下**了一个以后要回收的东西
@@ -106,7 +113,48 @@ function buildUserPrompt(req: StateExtractionRequest): string {
     );
   }
   parts.push(`## 本章正文\n\n${req.draftText}`);
-  parts.push('## 请输出结构化结果（characterStates / timelineEvents / foreshadowing）');
+  // ⚠⚠ 这一段是**实测踩出来的**，不是客套的格式说明。
+  //
+  // 实测（deepseek-v4-flash，多次复现）：只写一句
+  // "请输出 characterStates / timelineEvents / foreshadowing"，
+  // 模型会**只填 foreshadowing**，另外两个数组整个省略 ——
+  // 于是时间线永远是 0 条事件，P0-5 的检查在真实数据上完全空转
+  // （与 P0-4「模型不给字偏移」同类：契约要求的东西，模型不一定给）。
+  //
+  // 所以这里把三个数组**逐一点名**，并要求"没有内容就显式给空数组"。
+  // 空数组是合法答案，但**省略字段不是** —— 两者在代码里看起来一样，
+  // 对使用者的含义却完全不同（"这章没有状态变化" vs "提取器没工作"）。
+  parts.push(
+    [
+      '## 输出要求（三个数组都要出现，缺一不可）',
+      '',
+      '1. `characterStates` —— 角色状态**变化**（人物受伤、身份暴露、关系转变等）。',
+      '   本章没有状态变化时给 `[]`。',
+      '2. `timelineEvents` —— **叙事上真实发生的事件**（谁、何时、何地、做了什么）。',
+      '   本章没有可登记的事件时给 `[]`。',
+      '   ⚠ 正文里出现时间词（"21:30"、"第二天清晨"、"三日后"）时，',
+      '   对应的事件**必须**进这个数组 —— 时间线一致性检查完全依赖它。',
+      '3. `foreshadowing` —— 伏笔的埋设/推进/回收。本章没有时给 `[]`。',
+      '',
+      '⚠ **不要省略任何一个数组**。省略字段与给空数组在程序里看起来一样，',
+      '但前者意味着"提取器没工作"，后者意味着"这章确实没有"。',
+      '',
+      '## 输出示例（结构示意，内容不是本章的）',
+      '```json',
+      '{',
+      '  "characterStates": [',
+      '    {"characterName": "陆明远", "status": "左臂骨折，无法用剑", "quote": "（正文原句）"}',
+      '  ],',
+      '  "timelineEvents": [',
+      '    {"title": "陆明远离开医院", "description": "陆明远在21:30离开医院返回住处",',
+      '     "storyTimeDisplay": "21:30", "characters": ["陆明远"], "location": "医院",',
+      '     "quote": "（正文原句）"}',
+      '  ],',
+      '  "foreshadowing": []',
+      '}',
+      '```',
+    ].join('\n'),
+  );
   return parts.join('\n\n');
 }
 
@@ -151,6 +199,24 @@ export class StateExtractor {
         error: { code: res.error.code, message: res.error.message },
         attempts: res.attempts,
       };
+    }
+
+    // ── 先记录"模型省略了哪个数组" ──
+    //
+    // ⚠ 为什么必须单独记：schema 里三个数组都有 `.default([])`，
+    //   于是"模型没输出这个字段"与"这章确实没有这类条目"在代码里
+    //   长得一模一样（都是空数组）。但对使用者的含义完全不同 ——
+    //   前者是提取器没工作，后者是这章真的没有。
+    //   实测模型会只填 foreshadowing、把另外两个整个省略，
+    //   若只记长度，这个现象在日志里完全看不出来（只有 timelineEvents: 0）。
+    const omitted = (['characterStates', 'timelineEvents', 'foreshadowing'] as const).filter(
+      (k) => !(k in (res.data as Record<string, unknown>)),
+    );
+    if (omitted.length > 0) {
+      this.logger.warn('模型省略了输出数组（与"确实为空"不同，如实记录）', {
+        chapterNumber: req.chapterNumber,
+        omitted: omitted.join(', '),
+      });
     }
 
     // ── 逐条校验（⚠ 一条越界不该炸整批）──
@@ -212,6 +278,7 @@ export class StateExtractor {
       foreshadowing: rawForeshadowing.length,
       unresolved: unresolved.length,
       dropped: dropped.length,
+      omittedArrays: omitted.length,
     });
 
     return {

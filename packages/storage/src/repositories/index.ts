@@ -15,6 +15,7 @@ import { FactRepository } from './facts.js';
 import { RunRepository } from './runs.js';
 import { ForeshadowingRepository } from './foreshadowing.js';
 import { CorpusRepository } from './corpus.js';
+import { TimelineRepository } from './timeline.js';
 
 export interface Repositories {
   readonly projects: ProjectRepository;
@@ -28,6 +29,13 @@ export interface Repositories {
   readonly foreshadowing: ForeshadowingRepository;
   /** 语料库（§16/§45/§61）—— STEP 14 引入 */
   readonly corpus: CorpusRepository;
+  /**
+   * 时间线（P0-5）。
+   *
+   * ⚠ 表在 `0001_init.sql:227` 就建好了，但此前**全仓无代码使用它** ——
+   *   「建了表没接线」。P0-5 补上仓储层，复用已有表，不另建。
+   */
+  readonly timeline: TimelineRepository;
 }
 
 export function createRepositories(db: Database): Repositories {
@@ -41,6 +49,7 @@ export function createRepositories(db: Database): Repositories {
     runs: new RunRepository(db),
     foreshadowing: new ForeshadowingRepository(db),
     corpus: new CorpusRepository(db),
+    timeline: new TimelineRepository(db),
   };
 }
 
@@ -52,6 +61,8 @@ export { FactRepository } from './facts.js';
 export { RunRepository } from './runs.js';
 export { ForeshadowingRepository, FORESHADOW_STATUSES, FORESHADOW_TIERS } from './foreshadowing.js';
 export { CorpusRepository, canProcess, PROCESSABLE_USAGE, CORPUS_SOURCE_TYPES, CORPUS_USAGE } from './corpus.js';
+export { TimelineRepository } from './timeline.js';
+export type { CreateTimelineEventInput, TimelineQuery } from './timeline.js';
 // ⚠ 类型隔离是用户要求的硬约束，导出唯一入口避免各调用方自写过滤
 export {
   normalizeGenre,

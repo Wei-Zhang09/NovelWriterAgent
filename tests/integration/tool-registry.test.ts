@@ -63,7 +63,10 @@ describe('注册', () => {
     expect(byPrefix('character.')).toEqual([
       'character.create', 'character.list', 'character.update',
     ]);
-    expect(names).toHaveLength(26);
+    // P0-5 补的前缀：timeline（timeline_events 表早已存在，
+    // 但此前全仓无代码使用、也没有任何工具暴露 —— 与 character.* 同类缺陷）
+    expect(byPrefix('timeline.')).toEqual(['timeline.addEvent', 'timeline.check']);
+    expect(names).toHaveLength(28);
   });
 
   it('拒绝重复注册（静默覆盖会让"注册了哪个版本"不可知）', () => {
@@ -106,11 +109,14 @@ describe('注册', () => {
       'chapter.list', 'character.list', 'continuity.check', 'continuity.dimensions',
       'evidence.get', 'fact.get', 'fact.search', 'project.get', 'project.list',
       'review.categories', 'review.get',
+      // P0-5：检查时间线是只读的（"只想看看有没有问题"不该需要写权限）
+      'timeline.check',
     ]);
     // STEP 20：book.create / character.create / character.update 都是写入
+    // P0-5：登记时间线事件是写入
     expect(report.WRITE).toEqual([
       'book.create', 'chapter.create', 'character.create', 'character.update',
-      'project.create', 'project.update',
+      'project.create', 'project.update', 'timeline.addEvent',
     ]);
     // 计划与审阅都是"提议"，不是"提交"，故归 PROPOSE_WRITE
     expect(report.PROPOSE_WRITE).toEqual(['chapter.plan', 'evidence.add', 'fact.add', 'review.run']);

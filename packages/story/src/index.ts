@@ -65,6 +65,37 @@ export type { StateProposalRecord } from './state/state-proposal.js';
 export { StateSettlement } from './state/state-settlement.js';
 export type { StateSettlementOptions, SettleResult } from './state/state-settlement.js';
 
+// ── 时间线（P0-5）──
+export { TimelineService } from './timeline/timeline-service.js';
+export type { TimelineServiceOptions, BuildFromProposalInput } from './timeline/timeline-service.js';
+export { TimelineChecker, formatHours, SEVERITY_RANK } from './timeline/timeline-checker.js';
+export type { TimelineCheckerOptions } from './timeline/timeline-checker.js';
+export { buildTimelineEvent } from './timeline/timeline-builder.js';
+export type { BuildEventInput } from './timeline/timeline-builder.js';
+export {
+  toHours,
+  resolveEvent,
+  compareNarrative,
+  hasFlashbackSignal,
+  hasDeathSignal,
+  isClockOnlyDisplay,
+  parseDisplayTime,
+  parseSmallNumber,
+  NARRATIVE_MODES,
+  TIME_UNITS,
+  TIMELINE_ISSUE_CODES,
+} from './timeline/timeline-types.js';
+export type {
+  ParsedDisplayTime,
+  NarrativeMode,
+  TimelineEventRecord,
+  TimelineEventData,
+  ResolvedTimelineEvent,
+  TimelineIssue,
+  TimelineIssueCode,
+  TimelineReport,
+} from './timeline/timeline-types.js';
+
 export const STORY_PACKAGE_READY = true;
 
 // ── Backup / Import / Export（STEP 21 / §58 §59） ────────────

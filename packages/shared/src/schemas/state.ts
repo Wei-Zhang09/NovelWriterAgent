@@ -90,6 +90,28 @@ export const ProposedTimelineEventSchema = TraceableSchema.extend({
   /** 故事世界内的时间（可选，相对值） */
   storyTimeValue: z.number().nullable().optional(),
   storyTimeUnit: z.string().nullable().optional(),
+  /**
+   * ⚠ 展示用的时间文本（"第三天傍晚"、"21:30"）。
+   *
+   * 这个字段**必须存在于契约里**，否则 P0-5 的时间线检查在真实数据上失效：
+   * 实测模型填 `storyTimeValue` 的可靠性很差（与"给不出字偏移"同一类问题 ——
+   * 模型擅长引用，不擅长计算），代码需要从展示文本解析出可比较的时间。
+   * 契约里没有它，模型就不会给，解析路径永远拿不到输入。
+   */
+  storyTimeDisplay: z.string().nullable().optional(),
+  /** 涉及的角色名（用于「同一角色两地同时出现」检查） */
+  characters: z.array(z.string()).optional(),
+  /** 地点（同上） */
+  location: z.string().nullable().optional(),
+  /**
+   * 叙事模式。
+   *
+   * ⚠ 枚举值必须逐字列出（模型无法猜出 FLASHBACK 是合法值）：
+   *   FOREGROUND  顺叙（默认）
+   *   FLASHBACK   回忆/倒叙 —— 故事时间倒退是正常的
+   *   ANTICIPATION 预告/前瞻 —— 故事时间超前是正常的
+   */
+  narrativeMode: z.enum(['FOREGROUND', 'FLASHBACK', 'ANTICIPATION']).optional(),
   importance: z.number().int().min(1).max(5).optional(),
 });
 export type ProposedTimelineEvent = z.infer<typeof ProposedTimelineEventSchema>;

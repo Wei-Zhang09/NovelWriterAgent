@@ -34,7 +34,13 @@ import type { Repositories, Database } from '@nwa/storage';
 import type { ToolRegistry, NovelWorkflowServices } from '@nwa/harness';
 import type { RetrievalService } from '@nwa/harness';
 import type { ToolContext } from '@nwa/shared';
-import { ChapterWorkspace, ContinuityChecker, StateExtractor, StateSettlement } from '@nwa/story';
+import {
+  ChapterWorkspace,
+  ContinuityChecker,
+  StateExtractor,
+  StateSettlement,
+  TimelineChecker,
+} from '@nwa/story';
 import { Writer, Reviewer, Reviser, Planner } from '@nwa/writing';
 import type { ReviewIssue } from '@nwa/shared';
 
@@ -771,6 +777,31 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
         missing.push('章节摘要为空（Commit 需要摘要）');
       } else if (ch.summary_approved !== 1) {
         missing.push('章节摘要尚未人工批准（§十二：summary_approved != 1）');
+      }
+
+      // ── P0-5：时间线不可能事件（Commit 前必须能发现）──
+      //
+      // 验收用例：「ch12 21:30 离开医院、ch13 21:20 还在医院」→
+      // Commit 前必须能发现。只有 BLOCKING（角色两地同时出现、
+      // 死后仍有行动）才挡提交 —— 顺序倒退只报 WARNING/INFO，
+      // 因为倒叙/插叙是正常写法，挡住它们等于把检查器关掉。
+      const tl = new TimelineChecker({
+        repo: deps.repos.timeline,
+        logger: deps.logger.child('timeline'),
+        bookId: ch.book_id,
+      });
+      const tlReport = tl.check();
+      const tlBlocking = TimelineChecker.blockingOf(tlReport);
+      for (const issue of tlBlocking) {
+        missing.push(`时间线冲突（${issue.code}）：${issue.message}`);
+      }
+      if (tlReport.warningCount > 0 || tlBlocking.length > 0) {
+        log.warn('时间线检查发现问题', {
+          chapterId: ch.id,
+          blocking: tlBlocking.length,
+          warning: tlReport.warningCount,
+          events: tlReport.eventCount,
+        });
       }
 
       return { ok: missing.length === 0, missing };

@@ -75,6 +75,28 @@ export function eventId(input: {
   return `evt-ch${ch}-${ix}-${digest}`;
 }
 
+/**
+ * 时间线事件 ID（内容派生）。
+ *
+ * ⚠ 内容派生而不是随机：同一条事件重复登记时得到同一个 id，
+ *   配合主键冲突就能做到"不重复记账"。随机 id 会让同一事件
+ *   在重跑后变成两条，"这件事发生过几次"就说不清了。
+ *
+ * ⚠ 参与哈希的是 (book, chapter, offset, title) —— **不含**故事时间。
+ *   故事时间是会随后续修正而变的字段；把它算进 id 会让"修正时间"
+ *   变成"新建一条事件"，而原事件还留着错误的时间。
+ */
+export function timelineEventId(input: {
+  bookId: string;
+  chapter: number;
+  offset: number;
+  title: string;
+}): string {
+  const digest = contentHash([input.bookId, input.chapter, input.offset, input.title]);
+  const ch = String(input.chapter).padStart(3, '0');
+  return `te-ch${ch}-${digest}`;
+}
+
 /** 时间有序 ID：前缀 + 毫秒时间戳(base36) + 随机后缀，保证同一毫秒内不冲突 */
 function timeOrderedId(prefix: string): string {
   const ts = Date.now().toString(36);

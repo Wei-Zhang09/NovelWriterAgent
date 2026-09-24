@@ -52,7 +52,8 @@
     "verify:corpus-import": "electron apps/desktop/scripts/verify-corpus-import.mjs",
     "verify:workflow": "electron apps/desktop/scripts/verify-workflow.mjs",
     "verify:retrieval": "electron apps/desktop/scripts/verify-retrieval.mjs",
-    "verify:state": "electron apps/desktop/scripts/verify-state.mjs"
+    "verify:state": "electron apps/desktop/scripts/verify-state.mjs",
+    "verify:timeline": "electron apps/desktop/scripts/verify-timeline.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

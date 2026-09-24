@@ -31,6 +31,7 @@ import { Logger, AppError, ErrorCode, evidenceId } from '@nwa/core';
 import type { Repositories, Database } from '@nwa/storage';
 import type { ProposedFact, StateVerificationReport } from '@nwa/shared';
 import { CanonPromoter } from '../canon/canon-promoter.js';
+import { buildTimelineEvent } from '../timeline/timeline-builder.js';
 import { StateExtractor } from './state-extractor.js';
 import { StateVerifier, overallStatus } from './state-verifier.js';
 import { StateProposalRepository, type StateProposalRecord } from './state-proposal.js';
@@ -286,32 +287,36 @@ export class StateSettlement {
       const evEvidence = span
         ? this.writeEvidence('timelineEvent', ev.title, ev.quote, span, input.draftText)
         : null;
+
+      // ⚠ 走 builder 而不是自己拼 INSERT（P0-5）。
+      //   关键差别：builder 会在模型没给 storyTimeValue 时，
+      //   **从 storyTimeDisplay 解析出可比较的时间**。
+      //   此前这里把 story_time_display 写死成 null、只用模型给的 value，
+      //   于是模型一不填（实测很常见），这条事件的故事时间就是 NULL，
+      //   时间线检查拿不到可比时间 → 「ch12 21:30 离开医院、ch13 21:20
+      //   还在医院」这种矛盾**永远发现不了**。
+      const built = buildTimelineEvent({
+        proposalId: proposal.id,
+        chapterNumber: input.chapterNumber,
+        event: ev,
+        index: i,
+        ...(span ? { span } : {}),
+        ...(evEvidence ? { evidenceId: evEvidence } : {}),
+        ...(ev.characters && ev.characters.length > 0 ? { characters: ev.characters } : {}),
+        ...(ev.location ? { location: ev.location } : {}),
+        ...(ev.narrativeMode ? { narrativeMode: ev.narrativeMode } : {}),
+      });
+
+      if (!built) {
+        skipped.push(`时间线事件「${ev.title}」缺少引文位置，未写入（无法回溯）`);
+        continue;
+      }
+
       try {
-      this.db.run(
-        `INSERT INTO timeline_events
-           (id, book_id, story_time_value, story_time_unit, story_time_display,
-            narrative_chapter, narrative_offset, title, description, importance,
-            data_json, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-        `te_${proposal.id}_${i}`,
-        this.bookId,
-        ev.storyTimeValue ?? null,
-        ev.storyTimeUnit ?? null,
-        null,
-        input.chapterNumber,
-        span?.start ?? ev.startOffset,
-        ev.title,
-        ev.description,
-        ev.importance ?? 1,
-        JSON.stringify({
-          quote: ev.quote,
-          ...(span ? { quoteStart: span.start, quoteEnd: span.end } : {}),
-          ...(evEvidence ? { evidenceId: evEvidence } : {}),
-        }),
-        new Date().toISOString(),
-      );
-      timelineEventsWritten += 1;
+        this.repos.timeline.create({ ...built, bookId: this.bookId });
+        timelineEventsWritten += 1;
       } catch (e) {
+        // ⚠ 带上是哪一条 —— 裸的错误信息会让人去查错地方（实测教训）
         skipped.push(
           `时间线事件「${ev.title}」写入失败：` +
             (e instanceof Error ? e.message : String(e)),

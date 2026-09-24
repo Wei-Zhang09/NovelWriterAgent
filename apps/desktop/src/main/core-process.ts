@@ -84,7 +84,7 @@ import { FtsIndex } from '@nwa/storage';
 import { bigramTokenizer, Retriever, buildMatchExpression } from '@nwa/retrieval';
 import type { ReviewIssue } from '@nwa/shared';
 import { TransitionGate, RetrievalService } from '@nwa/harness';
-import { StateProposalRepository } from '@nwa/story';
+import { StateProposalRepository, TimelineService } from '@nwa/story';
 import type { ToolContext } from '@nwa/shared';
 import type { AgentHandler, ContextEntry, SlotName } from '@nwa/harness';
 
@@ -464,6 +464,25 @@ function corpusRepo(): CorpusRepository {
  *
  * @param explicit 调用方指定的 bookId（优先）
  */
+/**
+ * 严格版 `resolveBookId`：解析不到就**明确报错**。
+ *
+ * ⚠ 为什么需要它：`resolveBookId()` 在没有任何书时返回 `undefined`，
+ *   而 `undefined ?? ''` 会静默变成空字符串 —— 后续查询按 `book_id = ''`
+ *   过滤，返回 0 条。调用方看到的是"这本书没有时间线事件"，
+ *   而不是"还没选书"。两者要采取的行动完全不同。
+ */
+function requireBookId(explicit?: string | null): string {
+  const id = resolveBookId(explicit);
+  if (!id) {
+    throw new AppError(
+      ErrorCode.TOOL_VALIDATION_ERROR,
+      '未指定书目，且当前项目里没有可用的书 —— 请先创建或选择一本书',
+    );
+  }
+  return id;
+}
+
 function resolveBookId(explicit?: string | null): string | undefined {
   const p = requireProject();
   if (explicit) {
@@ -3249,6 +3268,65 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
   },
 
   /**
+   * 时间线（P0-5）—— 回答「故事时间上发生了什么、有没有不可能的顺序」。
+   *
+   * ⚠ 与 `state.proposals` 一样，检查结果必须能查 —— 否则
+   *   「Commit 前发现时间线冲突」这句话无法被验证。
+   */
+  'timeline.query': (params: {
+    bookId?: string;
+    character?: string;
+    location?: string;
+    chapter?: number;
+    check?: boolean;
+  }) => {
+    const p = requireProject();
+    const bookId = requireBookId(params.bookId);
+    const svc = new TimelineService({
+      repo: p.repos.timeline,
+      logger: logger.child('timeline'),
+      bookId,
+    });
+
+    let events = svc.listByBook();
+    if (params.character) events = events.filter((e) => e.characters.includes(params.character!));
+    if (params.location) events = events.filter((e) => e.location === params.location);
+    if (params.chapter !== undefined) events = events.filter((e) => e.chapter === params.chapter);
+
+    const report = params.check === false ? null : svc.check();
+
+    return {
+      bookId,
+      count: events.length,
+      // ⚠ 可比较数必须单独报：全是"不可比较"时事件看着很多，
+      //   但顺序检查实际什么都没做 —— 不报出来会误以为检查通过了。
+      comparableCount: report?.comparableCount ?? null,
+      events: events.map((e) => ({
+        id: e.id,
+        chapter: e.chapter,
+        title: e.title,
+        storyDisplay: e.storyDisplay,
+        storyHours: e.storyHours,
+        dayUnknown: e.dayUnknown,
+        characters: e.characters,
+        location: e.location,
+        narrativeMode: e.narrativeMode,
+      })),
+      issues: report
+        ? report.issues.map((i) => ({
+            code: i.code,
+            severity: i.severity,
+            message: i.message,
+            chapters: i.chapters,
+          }))
+        : [],
+      blockingCount: report?.blockingCount ?? 0,
+      warningCount: report?.warningCount ?? 0,
+      limitations: report?.limitations ?? [],
+    };
+  },
+
+  /**
    * 状态证据（§六 P0-4）—— 回答「这条状态/事件/伏笔来自正文哪一句」。
    *
    * ⚠ 这是"可回溯"的验证入口。只报"有多少条状态"不叫可回溯，
@@ -3256,7 +3334,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
    */
   'state.evidence': (params: { bookId?: string }) => {
     const p = requireProject();
-    const bookId = params.bookId ?? resolveBookId();
+    const bookId = requireBookId(params.bookId);
     const rows = p.db.all<{
       id: string;
       source_type: string;

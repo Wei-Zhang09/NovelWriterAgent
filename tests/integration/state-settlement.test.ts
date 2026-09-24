@@ -26,6 +26,7 @@ import {
   StateSettlement,
   StateExtractor,
 } from '@nwa/story';
+import { TimelineService } from '@nwa/story';
 import type { ProposedCharacterState, StateVerificationReport } from '@nwa/shared';
 import { Logger } from '@nwa/core';
 import { createTestProject, makeChapter, characterId, type TestProject } from './helpers.js';
@@ -856,5 +857,112 @@ describe('⚠ 状态必须可回溯到正文原句（evidence 表）', () => {
     expect(ids).toEqual([]);
     expect(applied.foreshadowingWritten).toBe(1);
     p.repos.evidence.create = orig as never;
+  });
+});
+
+// ─────────────────────────────────────────────────────────
+describe('⚠ P0-5 · 状态结算必须能产出可比较的时间线（不只是"写进去"）', () => {
+  it('⚠⚠ 模型不填 storyTimeValue 时，从 storyTimeDisplay 解析出可比时间', async () => {
+    const p = (t = createTestProject());
+    const ch = makeChapter(p, 12);
+    const extractor = fakeExtractor({
+      timelineEvents: [
+        {
+          quote: '他左臂在火里烧伤了，此后无法用剑。',
+          title: '陆明远离开医院',
+          description: '他离开医院。',
+          // ⚠ 故意不填 storyTimeValue —— 实测模型经常不填
+          storyTimeDisplay: '21:30',
+        },
+      ],
+    });
+    const st = new StateSettlement({
+      repos: p.repos,
+      db: p.db,
+      logger,
+      bookId: p.bookId,
+      extractor,
+      sourceRef: 'chapters/012.md',
+    });
+
+    const r = await st.settle({ chapterId: ch.id, chapterNumber: 12, draftText: DRAFT });
+    expect(r.verified).toBe(true);
+    const applied = st.apply({ proposalId: r.proposalId, chapterNumber: 12, draftText: DRAFT });
+    expect(applied.timelineEventsWritten).toBe(1);
+
+    // ⚠ 关键：故事时间必须可比较 —— 否则时间线检查拿不到依据，
+    //   「ch12 21:30 / ch13 21:20」这种矛盾永远发现不了。
+    const row = p.repos.timeline.listByChapter(p.bookId, 12)[0]!;
+    expect(row.story_time_value).toBeCloseTo(21.5, 5);
+    expect(row.story_time_unit).toBe('hour');
+    expect(row.story_time_display).toBe('21:30');
+    // 时间来源要记下来（模型给的 vs 代码解析的，可信度不同）
+    expect(JSON.parse(row.data_json!)['timeSource']).toBe('parsed-display');
+  });
+
+  it('⚠⚠ 端到端：ch12 21:30 离开医院、ch13 21:20 还在医院 → 检查器能发现', async () => {
+    const p = (t = createTestProject());
+    const q = '他左臂在火里烧伤了，此后无法用剑。';
+
+    const run = async (chapterNumber: number, title: string, display: string) => {
+      const ch = makeChapter(p, chapterNumber);
+      const st = new StateSettlement({
+        repos: p.repos,
+        db: p.db,
+        logger,
+        bookId: p.bookId,
+        extractor: fakeExtractor({
+          timelineEvents: [
+            { quote: q, title, description: title, storyTimeDisplay: display },
+          ],
+        }),
+        sourceRef: `chapters/${String(chapterNumber).padStart(3, '0')}.md`,
+      });
+      const r = await st.settle({ chapterId: ch.id, chapterNumber, draftText: DRAFT });
+      st.apply({ proposalId: r.proposalId, chapterNumber, draftText: DRAFT });
+    };
+
+    await run(12, '陆明远离开医院', '21:30');
+    await run(13, '陆明远仍在医院', '21:20');
+
+    const svc = new TimelineService({ repo: p.repos.timeline, logger, bookId: p.bookId });
+    const report = svc.check();
+
+    expect(report.eventCount).toBe(2);
+    expect(report.comparableCount).toBe(2); // ⚠ 两个都可比较，否则检查等于没做
+    const inv = report.issues.filter((i) => i.code === 'TIME_INVERSION');
+    expect(inv).toHaveLength(1);
+    expect(inv[0]!.message).toContain('离开医院');
+    expect(inv[0]!.message).toContain('仍在医院');
+  });
+
+  it('⚠ 时间线事件也挂证据（与其它状态一样可回溯）', async () => {
+    const p = (t = createTestProject());
+    const ch = makeChapter(p, 1);
+    const st = new StateSettlement({
+      repos: p.repos,
+      db: p.db,
+      logger,
+      bookId: p.bookId,
+      extractor: fakeExtractor({
+        timelineEvents: [
+          {
+            quote: '他左臂在火里烧伤了，此后无法用剑。',
+            title: '陆明远左臂烧伤',
+            description: '烧伤',
+          },
+        ],
+      }),
+      sourceRef: 'chapters/001.md',
+    });
+    const r = await st.settle({ chapterId: ch.id, chapterNumber: 1, draftText: DRAFT });
+    st.apply({ proposalId: r.proposalId, chapterNumber: 1, draftText: DRAFT });
+
+    const row = p.repos.timeline.listByChapter(p.bookId, 1)[0]!;
+    const evId = JSON.parse(row.data_json!)['evidenceId'] as string | undefined;
+    expect(evId).toBeDefined();
+    const ev = p.repos.evidence.find(evId!);
+    expect(ev).toBeDefined();
+    expect(DRAFT.slice(ev!.start_offset, ev!.end_offset)).toBe(ev!.quote);
   });
 });

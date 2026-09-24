@@ -13,6 +13,7 @@ import { createContinuityTools } from './continuity-tools.js';
 import { createReviewTools } from './review-tools.js';
 import { createFactTools } from './fact-tools.js';
 import { createCharacterTools } from './character-tools.js';
+import { createTimelineTools } from './timeline-tools.js';
 import { createBookTools } from './book-tools.js';
 import { createCommitTools } from './commit-tools.js';
 import {
@@ -264,6 +265,12 @@ export function createAllTools(
           ...(opts.commit.indexer ? { indexer: opts.commit.indexer } : {}),
         })
       : []),
+    // P0-5：时间线（timeline.addEvent / timeline.check）
+    // ⚠ 表早已存在但无任何工具暴露 —— 与 character.create 同类缺陷
+    ...createTimelineTools(repos, {
+      resolveBookId,
+      logger: opts?.logger ?? new Logger('harness:timeline'),
+    }),
     // STEP 10：一致性检查（continuity.check / continuity.dimensions）—— 只读
     ...createContinuityTools(repos, {
       resolveBookId,
