@@ -191,6 +191,41 @@ describe('⚠ 摘要只抽取不创作（ADR-0006："错一条污染几百章"�
     expect(r.error!.message).toContain('超出上限');
   });
 
+  it('⚠ 压缩重试仍超长时，候选摘要必须被带回（否则该章永久无法提交）', async () => {
+    const a = '林'.repeat(600) + '渊的故事';
+    const b = '林'.repeat(550) + '渊的故事';
+    const g = new SummaryGenerator({
+      structured: callerByCall([
+        { summary: a, keyFacts: [], endState: '仍在旧货市场' },
+        { summary: b, keyFacts: [], endState: '仍在旧货市场' },
+      ]),
+      logger,
+    });
+    const r = await g.generate({ chapterNumber: 1, draftText: DRAFT });
+
+    expect(r.ok).toBe(false);
+    // ⚠ 关键：内容本身有价值（只是长了几个百分点），必须能交给作者删减。
+    //   若这里为 undefined，作者就无路可走（重生成可能同样超长、
+    //   approve 因 summary 为 null 抛错、UI 无手写入口、commit 要求 approved=1）。
+    expect(r.rejectedCandidate).toBeDefined();
+    expect(r.rejectedCandidate!.summary.length).toBeGreaterThan(500);
+  });
+
+  it('⚠ 含占位符的摘要不带走（那是没读懂正文，交给作者"改一改"会污染记忆）', async () => {
+    const g = new SummaryGenerator({
+      structured: callerByCall([
+        { summary: '待确认：主角的经历。' + '林'.repeat(600), keyFacts: [], endState: '仍在旧货市场' },
+      ]),
+      logger,
+    });
+    const r = await g.generate({ chapterNumber: 1, draftText: DRAFT });
+
+    expect(r.ok).toBe(false);
+    // 占位符说明模型没读懂正文 —— 让作者"删两句就确认"会诱使占位符
+    // 进入长程记忆，正是 ADR-0006 要防的"错一条污染后面几百章"。
+    expect(r.rejectedCandidate).toBeUndefined();
+  });
+
   it('⚠ 含占位符/未来时不做压缩重试（那是没读懂正文，重试无意义）', async () => {
     let calls = 0;
     const g = new SummaryGenerator({

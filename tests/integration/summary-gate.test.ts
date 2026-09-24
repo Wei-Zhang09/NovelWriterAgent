@@ -119,6 +119,28 @@ describe('⚠ 未确认的摘要不得进入索引（ADR-0006 约束 C）', () =
     expect(fts.stats().memoryRows).toBe(0);
   });
 
+  it('⚠ 超长摘要不能未经删减就确认（保留草稿 ≠ 可绕过预算）', () => {
+    const { proj } = setup();
+    const tooLong = '林'.repeat(505) + '渊的故事';
+    const c = committedWithSummary(proj, 1, tooLong);
+
+    // 生成失败时草稿会被保留下来供作者编辑，但直接确认必须被拒 ——
+    // 否则超长摘要照样进检索，正是 500 字上限要防的事。
+    expect(() => proj.repos.chapters.approveSummary(c.id)).toThrow(/超出上限/);
+
+    // 删减到上限内即可通过（作者的真实脱困路径）
+    const ok = proj.repos.chapters.approveSummary(c.id, '林渊的故事。');
+    expect(ok.summary_approved).toBe(1);
+  });
+
+  it('⚠ 作者改写后仍超长 → 同样被拒（edited 也要过检查）', () => {
+    const { proj } = setup();
+    const c = committedWithSummary(proj, 1, '短摘要。');
+    expect(() =>
+      proj.repos.chapters.approveSummary(c.id, '林'.repeat(600) + '渊的故事'),
+    ).toThrow(/超出上限/);
+  });
+
   it('作者修改摘要内容后索引的是修改后的版本', () => {
     const { proj, fts, indexer } = setup();
     const c = committedWithSummary(proj, 1, '机器生成的原始摘要。');

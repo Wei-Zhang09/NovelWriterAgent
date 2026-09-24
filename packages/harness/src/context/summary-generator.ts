@@ -29,7 +29,7 @@
  * 按 ADR-0006 约束 C，只有作者确认后才进 FTS 与后续 Context
  * （由 SummaryIndexer 强制）。生成与确认是两件事，不能合并。
  */
-import { ErrorCode, Logger } from '@nwa/core';
+import { ErrorCode, Logger, SUMMARY_MAX_CHARS } from '@nwa/core';
 import { z } from 'zod';
 
 /** 结构化调用（与 gateway 解耦） */
@@ -71,7 +71,38 @@ export interface SummaryResult {
   readonly summary?: ChapterSummary;
   readonly error?: { code: string; message: string; details?: unknown };
   readonly attempts: number;
+  /**
+   * 校验失败但**内容仍然可用**的候选摘要（P1）。
+   *
+   * ## 为什么必须带回来
+   *
+   * 实测卡死路径：模型给出 505 字（上限 500），压缩重试也没压下来 →
+   * `generate` 返回 ok:false，候选摘要**被整个丢弃**。
+   * 于是作者无路可走：
+   *   ① 重新生成 → 同样的超长
+   *   ② `summary.approve` → summary 为 null，抛「还没有摘要，无法确认」
+   *   ③ UI 无手写入口
+   *   ④ `commit` → §十二 要求 approved=1，拒绝
+   * → 该章**永久无法提交**，没有任何界面操作能改变。
+   *
+   * 但这份摘要的**内容本身是有价值的**（只是长了 1%）——
+   * 让作者删两句就能用，比逼他重跑一次模型（还可能再超长）合理得多。
+   *
+   * ⚠ 只在**纯长度问题**时带回。含占位符/未来时的摘要说明模型没读懂
+   *   正文，把它交给作者"改一改就确认"会诱使占位符进入长程记忆 ——
+   *   那正是 ADR-0006 要防的"错一条污染后面几百章"。
+   */
+  readonly rejectedCandidate?: ChapterSummary;
 }
+
+/**
+ * 摘要字数上限（默认值）。
+ *
+ * ⚠ 值定义在 `@nwa/core`（见 summary.ts）—— `approveSummary` 也要用它
+ *   拦一次，而 storage 不能依赖 harness。这里只做 re-export 与默认值，
+ *   避免两处阈值漂移。
+ */
+export const DEFAULT_SUMMARY_MAX_CHARS = SUMMARY_MAX_CHARS;
 
 export interface SummaryGeneratorOptions {
   readonly structured: SummaryStructuredCaller;
@@ -105,7 +136,7 @@ export class SummaryGenerator {
   constructor(opts: SummaryGeneratorOptions) {
     this.structured = opts.structured;
     this.logger = opts.logger;
-    this.maxChars = opts.maxChars ?? 500;
+    this.maxChars = opts.maxChars ?? DEFAULT_SUMMARY_MAX_CHARS;
   }
 
   /**
@@ -189,6 +220,10 @@ export class SummaryGenerator {
         violations,
         chars: data.summary.length,
       });
+      // ⚠ 纯长度问题 → 把候选摘要带回给调用方（见 rejectedCandidate 的说明）。
+      //   只在**全部违规都是长度**时带回：含占位符/未来时说明模型没读懂
+      //   正文，交给作者"改一改就确认"会诱使它们进入长程记忆。
+      const onlyLength = violations.every((v) => v.includes('超出上限'));
       return {
         ok: false,
         error: {
@@ -196,6 +231,7 @@ export class SummaryGenerator {
           message: `摘要校验未通过：${violations.join('；')}`,
           details: { violations, chars: data.summary.length },
         },
+        ...(onlyLength ? { rejectedCandidate: data } : {}),
         attempts,
       };
     }

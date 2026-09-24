@@ -250,6 +250,18 @@ app.whenReady().then(async () => {
       }
     }
 
+    /** 直写一份超长摘要候选（模拟"压缩重试后仍超长"的落库结果） */
+    function seedOverlongCandidate(chapterId, text) {
+      const db = new DatabaseSync(join(projDir, 'project.db'));
+      try {
+        db.prepare(
+          'UPDATE chapters SET summary = ?, summary_approved = 0, summary_approved_at = NULL, updated_at = ? WHERE id = ?',
+        ).run(text, new Date().toISOString(), chapterId);
+      } finally {
+        db.close();
+      }
+    }
+
     /** 读章节状态（直接读盘） */
     function readStatus(chapterId) {
       const db = new DatabaseSync(join(projDir, 'project.db'));
@@ -388,6 +400,49 @@ app.whenReady().then(async () => {
       );
     } else {
       rec('创建第 3 章', false, '失败');
+    }
+
+    console.log('\n──── 5. 摘要超长脱困路径（P1：不再永久卡死）────\n');
+
+    // 原始故障（verify:writing 实测）：摘要 505 字超出上限 500 字 →
+    // 生成失败 → 该章永久无法提交（重生成可能同样超长、approve 因
+    // summary 为 null 抛错、UI 无手写入口、commit 要求 approved=1）。
+    const ch5 = await makeCommitReadyChapter(5);
+    if (ch5) {
+      const overlong = '沈砚把最后一块上海牌手表放回绒布上拧紧后盖铺子里只剩一盏灯'.repeat(22);
+      seedOverlongCandidate(ch5, overlong);
+      rec('已造超长候选摘要（未确认）', true, `${overlong.length} 字`);
+
+      // ① 未经删减直接确认 → 必须被拒（保留草稿 ≠ 可绕过预算）
+      const badApprove = await call('summary.approve', { chapterId: ch5 });
+      const rejected = badApprove.ok === false;
+      const badMsg = String(badApprove.error?.message ?? '');
+      rec(
+        '⚠ 超长候选未经删减 → 确认被拒（不能绕过摘要预算）',
+        rejected && badMsg.includes('超出上限'),
+        rejected ? badMsg.slice(0, 110) : '⚠ 超长摘要被直接确认 —— 预算检查失效',
+      );
+
+      // ② 删减到上限内 → 确认成功（作者的真实脱困路径）
+      const edited = overlong.slice(0, 300);
+      const goodApprove = await call('summary.approve', { chapterId: ch5, edited });
+      const okApprove = goodApprove.ok === true;
+      rec(
+        '⚠ 删减到上限内 → 确认成功并进检索（脱困路径可用）',
+        okApprove && goodApprove.data?.indexed === true,
+        okApprove ? `indexed=${goodApprove.data?.indexed}` : `${goodApprove.error?.code}：${badMsg}`,
+      );
+
+      // ③ 确认后应能提交（证明这条路真的走通了，不是只让按钮变绿）
+      const c5 = await call('commit.run', { chapterId: ch5 });
+      const ok5 = c5.ok === true && c5.data?.ok !== false;
+      rec(
+        '⚠ 脱困后该章可正常提交（原本永久卡死）',
+        ok5,
+        ok5 ? `${c5.data?.status}` : `${c5.error?.code}：${String(c5.error?.message ?? '').slice(0, 110)}`,
+      );
+    } else {
+      rec('创建第 5 章', false, '失败');
     }
 
     return finish(steps.some((s) => !s.ok) ? 1 : 0);

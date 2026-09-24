@@ -1392,6 +1392,45 @@ function renderAgent() {
   const sumDetail = el('div', 'model-status');
   sumBox.append(sumDetail);
 
+  /**
+   * 可编辑的摘要确认框（P1）。
+   *
+   * ⚠ 存在的理由：摘要生成失败（超长）时，若只报错、不留编辑入口，
+   *   作者就无路可走 —— 重新生成可能同样超长、approve 因 summary 为 null
+   *   抛错、commit 要求 approved=1 → 该章**永久无法提交**。
+   *   这里让作者直接把草稿删到上限内，确认即生效。
+   */
+  function sumEditBox(chapterId, text, maxChars) {
+    const box = el('div', 'issue-row');
+    const body = el('div', 'issue-body');
+    const ta = el('textarea', 'sum-edit');
+    ta.value = text;
+    ta.rows = 6;
+    const counter = el('div', 'issue-src');
+    const upd = () => {
+      const n = ta.value.length;
+      counter.textContent = `${n} / ${maxChars} 字${n > maxChars ? '（超出上限，需删减）' : '（可确认）'}`;
+      counter.className = n > maxChars ? 'issue-src issue-src--err' : 'issue-src';
+      okBtn.disabled = n > maxChars || n === 0;
+    };
+    ta.addEventListener('input', upd);
+    body.append(ta, counter);
+    const okBtn = el('button', 'btn btn--small', '确认（用此内容）');
+    okBtn.addEventListener('click', async () => {
+      okBtn.disabled = true;
+      const res = await call('summary.approve', { chapterId, edited: ta.value });
+      if (res.ok) await refreshPending();
+      else {
+        sumMsg.className = 'form-msg form-msg--err';
+        sumMsg.textContent = `${res.error.code}: ${res.error.message}`;
+        upd();
+      }
+    });
+    upd();
+    box.append(body, okBtn);
+    return box;
+  }
+
   async function refreshPending() {
     const r = await call('summary.pending', { bookId: state.selectedBookId });
     if (!r.ok) return;
@@ -1410,9 +1449,21 @@ function renderAgent() {
         okBtn.disabled = true;
         const res = await call('summary.approve', { chapterId: item.chapterId });
         if (res.ok) await refreshPending();
-        else okBtn.disabled = false;
+        else {
+          // ⚠ 确认被拒（如超长）时给出可编辑入口，而不是只把按钮恢复原状
+          sumMsg.className = 'form-msg form-msg--err';
+          sumMsg.textContent = `${res.error.code}: ${res.error.message}`;
+          okBtn.disabled = false;
+          body.append(sumEditBox(item.chapterId, item.summary, 500));
+        }
       });
-      row.append(body, okBtn);
+      // 作者可主动改写后再确认（生成失败的草稿也走这条路）
+      const editBtn = el('button', 'btn btn--small', '编辑');
+      editBtn.addEventListener('click', () => {
+        if (body.querySelector('.sum-edit')) return;
+        body.append(sumEditBox(item.chapterId, item.summary, 500));
+      });
+      row.append(body, okBtn, editBtn);
       sumDetail.append(row);
     }
   }
@@ -1436,6 +1487,20 @@ function renderAgent() {
     }
     const d = r.data;
     if (!d.ok) {
+      // ⚠ P1：纯长度超限时后端**保留了候选摘要**（d.salvaged）——
+      //   展示成可编辑框，让作者删两句再确认，而不是只报一个错、
+      //   让这一章永久无法提交。
+      if (d.salvaged && typeof d.candidate === 'string') {
+        sumMsg.className = 'form-msg form-msg--err';
+        sumMsg.textContent =
+          `${d.error ? d.error.message : '摘要校验未通过'}` +
+          `　→ 已保留草稿（${d.candidate.length} 字，上限 ${d.maxChars}），` +
+          `请删减到 ${d.maxChars} 字以内再确认`;
+        sumDetail.replaceChildren();
+        sumDetail.append(sumEditBox(c.id, d.candidate, d.maxChars ?? 500));
+        await refreshPending();
+        return;
+      }
       sumMsg.className = 'form-msg form-msg--err';
       sumMsg.textContent = `摘要生成失败：${d.error ? d.error.message : ''}`;
       return;

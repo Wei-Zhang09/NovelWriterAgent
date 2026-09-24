@@ -5,7 +5,7 @@
  * 因此 body_path 在 COMMITTED 之前必须为 NULL。此约束在代码层强制。
  */
 import type { Database } from '../database.js';
-import { AppError, ErrorCode } from '@nwa/core';
+import { AppError, ErrorCode, assertSummaryWithinBudget } from '@nwa/core';
 import { now, parseJsonColumn, requireRow, serializeJsonColumn, type Timestamped } from './types.js';
 
 export interface ChapterRow extends Timestamped {
@@ -188,6 +188,12 @@ export class ChapterRepository {
         `第 ${chapter.chapter_number} 章还没有摘要，无法确认`,
       );
     }
+    // ⚠ 预算检查必须在**这个收口处**做，而不是在 IPC 层：
+    //   摘要因纯长度超限而生成失败时，候选内容会被保留供作者编辑
+    //   （否则该章永久无法提交）。但保留 ≠ 可直接确认 —— 未删减就确认
+    //   等于绕过预算检查，超长摘要照样进检索，正是上限要防的事。
+    //   作者把内容删到上限内即可通过。
+    assertSummaryWithinBudget(edited ?? chapter.summary, chapter.chapter_number);
     const ts = now();
     if (edited !== undefined && edited !== chapter.summary) {
       // 作者改过内容 → 更新并记录确认时间

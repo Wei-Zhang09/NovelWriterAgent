@@ -14,7 +14,13 @@
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { Logger, AppError, ErrorCode, bookId, type ErrorCodeValue } from '@nwa/core';
+import {
+  Logger,
+  AppError,
+  ErrorCode,
+  bookId,
+  type ErrorCodeValue,
+} from '@nwa/core';
 import {
   CorpusRepository,
   Database,
@@ -58,6 +64,7 @@ import {
   SummaryIndexer,
   MemoryGatherer,
   SummaryGenerator,
+  DEFAULT_SUMMARY_MAX_CHARS,
   WorkflowEngine,
   WorkflowRepository,
   createNovelWorkflowStages,
@@ -2755,6 +2762,26 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     });
 
     if (!res.ok || !res.summary) {
+      // ⚠ P1：纯长度超限时，候选摘要**不丢弃** —— 存下来让作者删两句再用。
+      //   此前直接 return ok:false，摘要内容随之消失，而作者无路可走：
+      //   重新生成可能同样超长、approve 因 summary 为 null 抛错、UI 无手写
+      //   入口、commit 要求 approved=1 → 该章永久无法提交。
+      //   内容本身是有价值的（只是长了几个百分点），让作者编辑比逼他重跑合理。
+      //   存的是**候选**（summary_approved 仍为 0），确认仍须经 approve。
+      if (res.rejectedCandidate) {
+        p.repos.chapters.setSummaryCandidate(chapter.id, res.rejectedCandidate.summary);
+        return {
+          ok: false,
+          error: res.error ?? { code: ErrorCode.MODEL_STRUCTURED_EMPTY, message: '摘要生成失败' },
+          /**
+           * 已保留超长候选，作者可编辑后确认。
+           * ⚠ 与 error 并存：调用方既要能报错，也要知道"有可编辑的草稿"。
+           */
+          salvaged: true,
+          candidate: res.rejectedCandidate.summary,
+          maxChars: DEFAULT_SUMMARY_MAX_CHARS,
+        };
+      }
       return {
         ok: false,
         error: res.error ?? { code: ErrorCode.MODEL_STRUCTURED_EMPTY, message: '摘要生成失败' },
@@ -2777,6 +2804,8 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
   /** 确认摘要（可同时改写内容）→ 才进检索索引 */
   'summary.approve': (params: { chapterId: string; edited?: string }) => {
     const p = requireProject();
+    // ⚠ 预算检查在 repos.chapters.approveSummary 内部（真正的收口处，
+    //   换调用方也绕不过）。这里不重复实现，避免两处阈值漂移。
     const chapter = p.repos.chapters.approveSummary(
       params.chapterId,
       params.edited,
