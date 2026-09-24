@@ -157,6 +157,17 @@ body {
 }
 .btn--danger-soft:hover:not(:disabled) { border-color: var(--warn); }
 
+/* 模型自报偏离计划（P1）：只作复核提示，不是正文的一部分 */
+.perm-line--warn { color: var(--warn); margin-top: 8px; }
+.draft-deviation {
+  margin-left: 8px;
+  padding: 2px 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--warn);
+  opacity: 0.9;
+}
+
 /* 草稿预览（STEP 7）：限制高度，避免长正文把右栏撑爆 */
 .draft-preview {
   margin-top: 8px;

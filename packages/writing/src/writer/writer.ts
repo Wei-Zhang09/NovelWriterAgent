@@ -256,21 +256,78 @@ export class Writer {
         };
       }
 
-      const text = res.text.trim();
+      const rawText = res.text.trim();
       inputTokens += res.usage?.inputTokens ?? 0;
       outputTokens += res.usage?.outputTokens ?? 0;
+
+      // ── 偏离说明：提取 → 剥离 → 只留干净正文（P1）────────
+      //
+      // ⚠⚠ 这里此前只调 `extractDeviations`，**没有调 `stripDeviationNotes`**。
+      //   后果：模型写在正文末尾的【说明】段会经 assembleChapter
+      //   直接写进 draft.md —— 即模型的"自我汇报"变成了小说正文。
+      //   而 draft.md 是 commit 的输入，于是那段说明会被永久写进
+      //   正式章节（用户在成稿里读到"【说明】我调整了告别的地点"）。
+      //
+      //   同类缺陷第 6 次：函数定义了、导出了、单测过了，但**没人调用**。
+      //   单测只测函数本身，测不出"没接线" —— 所以这里同时补上
+      //   端到端断言（见 tests 的 draft 干净性用例）。
+      //
+      //   ⚠ 顺序很重要：先从**原文**提取说明，再剥离。
+      //     反过来先剥离就提取不到了（剥离把说明删掉了）。
+      const deviations = extractDeviations(rawText);
+      const text = stripDeviationNotes(rawText);
+
+      if (deviations.length > 0) {
+        this.logger.warn('模型自报偏离计划（已从正文剥离，单独存档）', {
+          sceneIndex: i,
+          sceneId: scene.sceneId,
+          deviations,
+          rawChars: rawText.length,
+          cleanChars: text.length,
+        });
+      }
 
       done.push({
         sceneId: scene.sceneId,
         purpose: scene.purpose,
         text,
         chars: text.length,
-        deviations: extractDeviations(text),
+        deviations,
       });
     }
 
     const fullText = assembleChapter(done);
     const draftPath = this.workspace.writeText('draft', fullText);
+
+    // ⚠ 防呆：剥离必须真的生效。
+    //   即使 stripDeviationNotes 将来被改坏，也要在这里立刻发现，
+    //   而不是等用户在某天成稿里读到「【说明】…」。
+    //
+    //   ⚠ 判定必须与 stripDeviationNotes 的**位置规则一致**（标记须在
+    //     后半段才视为说明）。若这里只做 `includes(m)`，正文前半段里
+    //     合法出现的「(说明)」会被误报成"剥离失效" —— 假警报会把
+    //     真问题淹掉。
+    //
+    //   注意这里**只报警不改内容** —— 静默改写正文比留下痕迹更危险。
+    const notStripped = done.filter((d) => stripDeviationNotes(d.text) !== d.text);
+    if (notStripped.length > 0) {
+      this.logger.error('正文残留偏离说明标记（剥离未生效）', {
+        chapterNumber: plan.brief.chapterNumber,
+        scenes: notStripped.map((d) => d.sceneId),
+        draftPath,
+      });
+    }
+
+    // ⚠ 偏离说明单独存档：它是给人工复核的信号，不是正文的一部分。
+    //   汇总各场景，并记录**是哪个场景**自报的（便于定位）。
+    const allDeviations = done
+      .map((d, i) => ({ sceneIndex: i, sceneId: d.sceneId, notes: d.deviations }))
+      .filter((d) => d.notes.length > 0);
+    this.workspace.writeJson('deviations', {
+      chapterNumber: plan.brief.chapterNumber,
+      total: allDeviations.reduce((n, d) => n + d.notes.length, 0),
+      scenes: allDeviations,
+    });
 
     // 同时把计划与场景划分落进工作区，便于回溯"这段为什么这样写"
     this.workspace.writeJson('plan', plan);
@@ -553,25 +610,63 @@ function tail(text: string, n: number): string {
  *
  * 模型有时会在正文末尾加一段"说明"——我们不信任它，但要**保留**它：
  * 这是给人工复核的信号，不是判定依据。正文本身会剔除该段。
+ *
+ * ⚠ 标记只在**文本后半段**才算说明（`i > length * 0.5`）：
+ *   这些标记（尤其 `(说明)`）在正文前半段可能合法出现，
+ *   一律当成说明会把正文截断。
  */
 const DEVIATION_MARKERS = ['【偏离说明】', '【说明】', '【备注】', '(说明)'];
 
-export function extractDeviations(text: string): string[] {
+/** 说明段的最长长度 —— 超过它更可能是正文而非自述 */
+const MAX_DEVIATION_CHARS = 500;
+
+/**
+ * 找出说明段的起始下标；没有则返回 -1。
+ *
+ * ⚠⚠ 这是**唯一判定入口**。`extractDeviations` 与 `stripDeviationNotes`
+ *   必须共用它 —— 此前两者各写一份判断，而其中一份多了长度上限
+ *   （500 字），于是出现真实的不一致：
+ *
+ *     模型写了 600 字的【说明】→ extract 返回 []（超长，不认）
+ *                              → strip 却把这段切掉（没有长度检查）
+ *
+ *   结果：正文被截断，而 deviations.json 里空空如也 ——
+ *   内容丢了且没有任何记录。共用一个入口后这类漂移不可能再发生。
+ */
+function findDeviationIndex(text: string): number {
   for (const m of DEVIATION_MARKERS) {
     const i = text.lastIndexOf(m);
-    if (i >= 0 && i > text.length * 0.5) {
+    if (i < 0) continue;
+    // 必须在后半段（前半段的同名文字更可能是正文）
+    if (i <= text.length * 0.5) continue;
+    // 超长则视为正文，不当作说明
+    const note = text.slice(i + m.length).trim();
+    if (note.length === 0 || note.length > MAX_DEVIATION_CHARS) continue;
+    return i;
+  }
+  return -1;
+}
+
+export function extractDeviations(text: string): string[] {
+  const i = findDeviationIndex(text);
+  if (i < 0) return [];
+  // 跳过标记本身：找到命中的那个标记长度
+  for (const m of DEVIATION_MARKERS) {
+    if (text.startsWith(m, i)) {
       const note = text.slice(i + m.length).trim();
-      if (note.length > 0 && note.length < 500) return [note];
+      return note.length > 0 ? [note] : [];
     }
   }
   return [];
 }
 
-/** 去掉模型可能附加的说明段（正文只保留故事本身） */
+/**
+ * 去掉模型可能附加的说明段（正文只保留故事本身）。
+ *
+ * ⚠ 与 `extractDeviations` 共用 `findDeviationIndex` ——
+ *   保证"抽到了说明"与"切掉了说明"永远同时成立。
+ */
 export function stripDeviationNotes(text: string): string {
-  for (const m of DEVIATION_MARKERS) {
-    const i = text.lastIndexOf(m);
-    if (i >= 0 && i > text.length * 0.5) return text.slice(0, i).trim();
-  }
-  return text;
+  const i = findDeviationIndex(text);
+  return i < 0 ? text : text.slice(0, i).trim();
 }

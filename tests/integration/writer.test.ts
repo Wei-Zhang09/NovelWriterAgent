@@ -328,6 +328,74 @@ describe('偏离说明的提取（自报，不作判定依据）', () => {
     const sp = JSON.parse(readFileSync(join(root, 'workspace', 'chapter-001', 'scene-plan.json'), 'utf8'));
     expect(sp.scenes[0].deviations).toEqual(['改了地点']);
   });
+
+  // ── ⚠⚠ 这一组是 P1 的**端到端**断言 ─────────────────────
+  //
+  // 上面几条测的是函数本身，所以**测不出"函数没被调用"** ——
+  // 实测正是如此：stripDeviationNotes 有单测、全绿，而
+  // writer.ts 里只调 extractDeviations，导致模型的【说明】
+  // 直接写进了 draft.md（进而 commit 进正式章节）。
+  //
+  // 所以这里必须**读 draft.md 文件本身**，而不是测函数。
+
+  it('⚠⚠ draft.md 里不得残留模型的说明段（此前是真 bug）', async () => {
+    const { fn } = completer([
+      '正文正文正文正文正文正文正文正文\n\n【偏离说明】我调整了告别的地点',
+      '场景二正文',
+    ]);
+    const w = writerOf(fn);
+    const r = await w.draft(planOf());
+    const draft = readFileSync(r.draft!.draftPath, 'utf8');
+
+    // 正文必须干净：既不含标记，也不含自述内容
+    expect(draft).not.toContain('【偏离说明】');
+    expect(draft).not.toContain('我调整了告别的地点');
+    // 但真实正文必须还在（别把整段都切掉）
+    expect(draft).toContain('正文正文正文正文正文正文正文正文');
+    expect(draft).toContain('场景二正文');
+  });
+
+  it('⚠ 偏离说明单独存 deviations.json（不混进正文）', async () => {
+    const { fn } = completer([
+      '正文正文正文正文正文正文正文正文\n\n【偏离说明】改了地点',
+      '乙',
+    ]);
+    const w = writerOf(fn);
+    await w.draft(planOf());
+    const dv = JSON.parse(
+      readFileSync(join(root, 'workspace', 'chapter-001', 'deviations.json'), 'utf8'),
+    );
+    expect(dv.total).toBe(1);
+    expect(dv.scenes[0].notes).toEqual(['改了地点']);
+    expect(dv.scenes[0].sceneId).toBe('s1');
+  });
+
+  it('没有偏离说明时 deviations.json 为空但文件存在', async () => {
+    const { fn } = completer(['干净的正文', '乙']);
+    const w = writerOf(fn);
+    await w.draft(planOf());
+    const dv = JSON.parse(
+      readFileSync(join(root, 'workspace', 'chapter-001', 'deviations.json'), 'utf8'),
+    );
+    expect(dv.total).toBe(0);
+    expect(dv.scenes).toEqual([]);
+  });
+
+  it('⚠ extract 与 strip 判定必须一致（超长说明不能被单方面切掉）', () => {
+    // 实测的不一致：extract 有 500 字上限，strip 没有 ——
+    // 于是 600 字的说明会被切掉却**没有任何记录**（内容静默丢失）。
+    const long = '正文'.repeat(20) + '\n【说明】' + '很长'.repeat(300);
+    const extracted = extractDeviations(long);
+    const stripped = stripDeviationNotes(long);
+    // 两者必须同时"不认"这份说明
+    expect(extracted).toEqual([]);
+    expect(stripped).toBe(long);
+
+    // 正常长度时两者必须同时"认"
+    const ok = '正文正文正文正文正文正文正文正文\n\n【说明】短说明';
+    expect(extractDeviations(ok)).toEqual(['短说明']);
+    expect(stripDeviationNotes(ok)).toBe('正文正文正文正文正文正文正文正文');
+  });
 });
 
 describe('⚠ P0-3：场景级长程记忆按**每个场景**注入', () => {

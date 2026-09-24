@@ -1102,6 +1102,11 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     }
 
     const d = res.draft!;
+    // ⚠ 偏离说明要回报给上层：模型自报"我偏离了计划"是给人工复核的
+    //   信号，但只有**显示出来**才有用。此前它只落在
+    //   workflow-services 的返回值里，UI 完全看不到 ——
+    //   等于模型说了、系统记了、没人知道。
+    const deviations = d.scenes.flatMap((s) => s.deviations ?? []);
     return {
       ok: true,
       chapterNumber: d.chapterNumber,
@@ -1110,6 +1115,9 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       usage: d.usage,
       draftPath: d.draftPath,
       preview: d.text.slice(0, 300),
+      // ⚠ 已从正文剥离（见 Writer），这里只回报数量与内容供复核
+      deviations,
+      deviationCount: deviations.length,
       // 本次生成只进工作区 —— 明确回报，避免误解为已落库
       committed: false,
     };

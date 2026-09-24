@@ -299,6 +299,42 @@ app.whenReady().then(async () => {
       }
       rec(`第 ${n} 章写作`, true, `${dd.totalChars} 字｜${dd.sceneCount} 场景`);
 
+      // ── ⚠⚠ P1：draft.md 必须干净（模型的【说明】不得混进正文）──
+      //
+      // 这是真机端到端检查：让真模型写完，然后**读磁盘上的 draft.md**，
+      // 确认没有残留说明段。
+      //
+      // ⚠ 为什么不靠 dd.deviations 的长度断言：那是**自证**（"系统说它
+      //   剥离了"），而 bug 的形态恰恰是"系统以为自己剥离了，其实没有"。
+      //   只有读文件本身才是独立证据。
+      //
+      // ⚠ 判定规则必须与 stripDeviationNotes 一致：标记在**后半段**才算
+      //   说明（前半段里的「(说明)」可能是正文）。这里用同样的 50% 规则，
+      //   否则会误报"正文不干净"。
+      const MARKERS = ['【偏离说明】', '【说明】', '【备注】', '(说明)'];
+      if (dd.draftPath && existsSync(dd.draftPath)) {
+        const draftText = readFileSync(dd.draftPath, 'utf8');
+        const residual = MARKERS.filter((m) => {
+          const i = draftText.lastIndexOf(m);
+          return i >= 0 && i > draftText.length * 0.5;
+        });
+        rec(
+          `第 ${n} 章 draft.md 无残留说明段（真读文件）`,
+          residual.length === 0,
+          residual.length === 0
+            ? `${draftText.length} 字，干净`
+            : `残留标记 ${residual.join('/')} —— 模型自述会进正式章节`,
+        );
+        // ⚠ 顺带证明剥离没把正文切没了（剥离过头也是一种坏）
+        rec(
+          `第 ${n} 章剥离后正文仍完整`,
+          draftText.length >= Math.floor((dd.totalChars ?? 0) * 0.5),
+          `${draftText.length} 字（Writer 报告 ${dd.totalChars} 字）`,
+        );
+      } else {
+        rec(`第 ${n} 章 draft.md 无残留说明段（真读文件）`, false, `读不到 ${dd.draftPath}`);
+      }
+
       // 审稿
       const review = await call('review.run', { chapterId }, 300_000);
       if (!review.ok) {

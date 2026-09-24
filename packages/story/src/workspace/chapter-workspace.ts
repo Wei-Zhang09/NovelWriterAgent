@@ -56,6 +56,15 @@ export const WORKSPACE_FILES = {
   proposedState: 'proposed_state.json',
   proposedFacts: 'proposed_facts.json',
   proposedForeshadowing: 'proposed_foreshadowing.json',
+  /**
+   * 偏离说明（P1）。
+   *
+   * ⚠ 模型的【说明】自述**必须与正文分开存**：
+   *   它是"模型自己说它偏离了计划"，是给人工复核的信号，
+   *   不是正文的一部分。混在 draft.md 里会被当成小说内容，
+   *   而且 commit 之后会永久留在正式章节里。
+   */
+  deviations: 'deviations.json',
   run: 'run.json',
 } as const;
 

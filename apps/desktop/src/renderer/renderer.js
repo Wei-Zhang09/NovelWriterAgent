@@ -934,6 +934,19 @@ function renderAgent() {
     writeDetail.replaceChildren();
     writeDetail.append(el('div', 'perm-line', `工作区：${d.draftPath.replace(/\\/g, '/').split('/').slice(-3).join('/')}`));
     writeDetail.append(el('div', 'perm-line', '状态：未提交（仅在工作区）'));
+
+    // ⚠ 模型自报的偏离说明必须显示出来（P1）。
+    //   它是"模型承认自己没按计划写"的信号 —— 不显示就等于没记。
+    //   ⚠ 同时说明**已从正文剥离**：否则用户会以为正文里也有。
+    if (d.deviationCount > 0) {
+      const box = el('div', 'perm-line perm-line--warn');
+      box.textContent = `⚠ 模型自报偏离计划 ${d.deviationCount} 处（已从正文剥离，仅作复核提示）：`;
+      writeDetail.append(box);
+      for (const t of d.deviations) {
+        writeDetail.append(el('div', 'draft-deviation', `· ${t}`));
+      }
+    }
+
     const prev = el('div', 'draft-preview');
     prev.textContent = d.preview + (d.preview.length >= 300 ? '……' : '');
     writeDetail.append(prev);
