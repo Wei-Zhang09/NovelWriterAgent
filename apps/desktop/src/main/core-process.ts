@@ -617,9 +617,16 @@ function buildWorkflowEngine(p: OpenProject): WorkflowEngine {
         })(),
         commitChapter: async (input) => {
           // 复用既有 commit 路径（含 Manifest 对账与 Repair）
+          //
+          // ⚠ 此前这里传的是 `mode: input.params['mode'] ?? 'NORMAL'` ——
+          //   而 `commit.run` 读的是 **commitMode**，不是 mode。
+          //   于是这个参数被**静默丢弃**：无论 workflow 传什么，
+          //   提交都以缺省 'clean' 执行。
+          //   （同 llm-generation-pipelines「声明了却没人读的参数」一类。）
           const r = await handlers['commit.run']!({
             chapterId: input.chapterId,
-            mode: input.params['mode'] ?? 'NORMAL',
+            commitMode: input.params['commitMode'] ?? 'clean',
+            ...(input.params['forceReason'] ? { forceReason: input.params['forceReason'] } : {}),
           } as never);
           const rec = r as { manifestPath?: string; contentHash?: string; ok?: boolean };
           return {
@@ -1746,12 +1753,18 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
   },
 
   /** 执行提交（STEP 11）—— 权限 COMMIT 级 */
-  'commit.run': async (params: { chapterId: string; commitMode?: 'clean' | 'with_debt' }) => {
+  'commit.run': async (params: {
+    chapterId: string;
+    /** FORCE 显式绕过硬性前置检查（会写审计记录） */
+    commitMode?: 'clean' | 'with_debt' | 'FORCE';
+    forceReason?: string;
+  }) => {
     const p = requireProject();
-    const input: { chapterId: string; commitMode?: 'clean' | 'with_debt' } = {
+    const input: { chapterId: string; commitMode?: 'clean' | 'with_debt' | 'FORCE'; forceReason?: string } = {
       chapterId: params.chapterId,
     };
     if (params.commitMode) input.commitMode = params.commitMode;
+    if (params.forceReason) input.forceReason = params.forceReason;
     const r = await p.tools.invoke('workspace.commit', input, toolContext('ADMIN'));
     if (!r.ok) {
       // 提交失败是可预期结果（门禁/冲突），以数据返回而不是抛错，便于 UI 展示

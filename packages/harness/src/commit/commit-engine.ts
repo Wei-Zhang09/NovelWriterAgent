@@ -52,8 +52,16 @@ export interface CommitRequest {
   readonly body: string;
   /** 章节摘要（写入 memory_items 与文件） */
   readonly summary: string;
-  /** commit_mode：clean | with_debt（ADR-0005） */
-  readonly commitMode?: 'clean' | 'with_debt';
+  /**
+   * commit_mode（ADR-0005 + P1）。
+   *
+   *   clean     正常提交
+   *   with_debt 带着已知质量债提交（ADR-0005）
+   *   FORCE     显式绕过硬性前置检查（§十二）。⚠ 使用它必须已在
+   *             commit_overrides 留审计记录 —— 校验在调用方（commit-tools）
+   *             完成，因为引擎不持有"该不该放行"的业务判断。
+   */
+  readonly commitMode?: 'clean' | 'with_debt' | 'FORCE';
   readonly qualityDebtCount?: number;
   /** 待写入的 Canon 事实 id 列表 */
   readonly factIds?: readonly string[];

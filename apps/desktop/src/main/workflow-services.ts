@@ -760,6 +760,25 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
       const ch = needChapter(deps, input.chapterId);
       const ws = workspaceFor(ch.chapter_number);
       const missing: string[] = [];
+      /**
+       * FORCE 模式下被跳过的检查项（**提示**，不阻塞）。
+       *
+       * ⚠ 与 missing 分开存放，而不是塞进 missing 再过滤：
+       *   混在一起就得靠字符串前缀区分，而"前缀约定"一旦写错
+       *   就会把阻塞项当提示放行。两个数组在类型层面就不可能混淆。
+       */
+      const forcedNotes: string[] = [];
+
+      // ⚠ FORCE：显式绕过硬性前置检查（P1 / §十二）。
+      //
+      // 只有**摘要批准**这一项可以被绕过 —— 审阅 BLOCKING 与时间线冲突
+      // 是内容正确性问题，绕过它们等于提交已知错误的正文。
+      // 摘要批准不同：它是"记忆源头是否可用"的关口，作者有权决定
+      // 这一章不要摘要（例如过渡章、试验章）。
+      //
+      // ⚠ 绕过不是"不检查"，而是"检查结果降级为提示并留审计"。
+      //   审计记录由 commit 工具写入（那里才有 chapter 与 manifest 上下文）。
+      const forced = input.params?.['commitMode'] === 'FORCE';
 
       if (ws.readText('draft') === null) missing.push('工作区没有草稿');
 
@@ -772,10 +791,34 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
       }
 
       // §十二：摘要必须存在且已批准
+      //
+      // ⚠ 此前这里**只**挡 missing，且与 commit-tools 里的检查重复。
+      //   两处判断必须语义一致（"存在且已批准"），否则会出现
+      //   "门禁说能提交、工具却拒绝"这种自相矛盾 —— 用户看到的是
+      //   两个地方给出不同答案。
       const summary = ch.summary;
-      if (summary === null || summary === undefined || String(summary).trim() === '') {
+      const hasSummary = summary !== null && summary !== undefined && String(summary).trim() !== '';
+      const approved = ch.summary_approved === 1;
+
+      if (forced) {
+        // FORCE：不阻塞，但要如实记录**跳过了什么**
+        log.warn('Commit 门禁被 FORCE 绕过（摘要批准检查降级为提示）', {
+          chapterId: ch.id,
+          summaryPresent: hasSummary,
+          summaryApproved: approved,
+        });
+        // ⚠ 注意：这里**只**跳过摘要这一项。
+        //   草稿缺失、审阅 BLOCKING、时间线冲突**仍然阻塞** ——
+        //   它们是内容正确性问题，绕过等于提交已知错误的正文。
+        //   （不要清空整个 missing 数组：那会把真实阻塞一起放行。）
+        if (!hasSummary) {
+          forcedNotes.push('摘要为空（已 FORCE 忽略）');
+        } else if (!approved) {
+          forcedNotes.push('摘要尚未人工批准（已 FORCE 忽略）');
+        }
+      } else if (!hasSummary) {
         missing.push('章节摘要为空（Commit 需要摘要）');
-      } else if (ch.summary_approved !== 1) {
+      } else if (!approved) {
         missing.push('章节摘要尚未人工批准（§十二：summary_approved != 1）');
       }
 
@@ -804,7 +847,7 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
         });
       }
 
-      return { ok: missing.length === 0, missing };
+      return { ok: missing.length === 0, missing, forcedNotes };
     },
 
     // ── 11. 提交 ──

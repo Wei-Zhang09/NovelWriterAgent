@@ -13,6 +13,7 @@
  */
 import { z } from 'zod';
 import { AppError, ErrorCode } from '@nwa/core';
+import { commitOverrideId } from '@nwa/core';
 import type { AnyToolDefinition, ToolDefinition } from '@nwa/shared';
 import type { Repositories, Database } from '@nwa/storage';
 import { CommitEngine } from '../commit/commit-engine.js';
@@ -115,7 +116,7 @@ export function createCommitTools(
    * ⚠ 权限 COMMIT —— 唯一能把章节变成正式章节的入口。
    */
   const commit: ToolDefinition<
-    { chapterId: string; commitMode?: 'clean' | 'with_debt' },
+    { chapterId: string; commitMode?: 'clean' | 'with_debt' | 'FORCE'; forceReason?: string },
     {
       ok: boolean;
       manifestId: string;
@@ -131,7 +132,17 @@ export function createCommitTools(
       '执行原子提交：把工作区正文写入正式章节并更新状态。三阶段 PREPARE→APPLY→VERIFY，可恢复。',
     inputSchema: z.object({
       chapterId: z.string().min(1),
-      commitMode: z.enum(['clean', 'with_debt']).optional(),
+      /**
+       * clean      —— 正常提交（默认）
+       * with_debt  —— 带着已知质量债提交（ADR-0005）
+       * FORCE      —— **显式绕过硬性前置检查**（P1 / §十二）。
+       *               ⚠ 与 with_debt 语义不同，不可混用：with_debt 承认
+       *               "有问题但可接受"，FORCE 是"我知道这检查不过，仍要提交"。
+       *               使用它会写一条 commit_overrides 审计记录。
+       */
+      commitMode: z.enum(['clean', 'with_debt', 'FORCE']).optional(),
+      /** 绕过的理由（仅在 commitMode='FORCE' 时有意义，记入审计） */
+      forceReason: z.string().max(500).optional(),
     }),
     outputSchema: z.object({
       ok: z.boolean(),
@@ -173,18 +184,65 @@ export function createCommitTools(
         );
       }
 
-      // ⚠ 摘要必须已生成（summary.generate）才允许提交。
+      // ⚠ 摘要必须**已人工批准**（§十二）才允许提交。
       //
-      // 摘要缺失时**拒绝**而不是 fallback 成标题 —— 见下方 commit 调用的说明。
+      // 这里此前只检查 `summary` 非空 —— 但「摘要存在」≠「摘要已批准」。
+      // 摘要生成后 summary_approved 仍为 0，必须由作者在 UI 确认；
+      // 未确认的摘要**不进 FTS / Context**（summary-indexer 明确跳过），
+      // 所以让它提交等于：这一章在库里，但它对后续章节的记忆贡献为零，
+      // 而系统显示"提交成功"。跨章记忆会静默断裂。
+      //
+      // ⚠ 允许绕过，但必须显式且留痕（见 commit_overrides 表）：
+      //   缺省 commitMode='clean' 不允许绕过；只有 'FORCE' 才跳过。
+      //   没有正规通道的硬检查，绕过方式会变成改代码或直接改库 ——
+      //   那样连"这章为什么没摘要"都查不出来。
       const summary = chapter.summary;
-      if (summary === null || summary.trim().length === 0) {
+      const hasSummary = summary !== null && summary !== undefined && summary.trim().length > 0;
+      const approved = chapter.summary_approved === 1;
+      const forced = input.commitMode === 'FORCE';
+
+      if (!hasSummary && !forced) {
         throw new AppError(
           ErrorCode.TOOL_VALIDATION_ERROR,
           `第 ${chapter.chapter_number} 章还没有摘要，拒绝提交。` +
             '摘要是后续章节的长程记忆来源（ADR-0006），缺失会导致跨章记忆断裂。' +
-            '请先点「生成摘要」并在「摘要确认」面板中确认。',
+            '请先点「生成摘要」并在「摘要确认」面板中确认。' +
+            '（确需无摘要提交：显式传 commitMode="FORCE"，会记入审计）',
           { details: { chapterId: chapter.id, missing: 'summary' } },
         );
+      }
+
+      if (hasSummary && !approved && !forced) {
+        throw new AppError(
+          ErrorCode.TOOL_VALIDATION_ERROR,
+          `第 ${chapter.chapter_number} 章的摘要尚未人工批准，拒绝提交。` +
+            '未批准的摘要不会进入检索与后续章节的上下文（§十二），' +
+            '提交会让这一章的记忆贡献静默为零。' +
+            '请先在「摘要确认」面板确认，或显式传 commitMode="FORCE"（会记入审计）。',
+          { details: { chapterId: chapter.id, missing: 'summary_approved' } },
+        );
+      }
+
+      // ⚠ 绕过必须留审计记录 —— 而且要在**真正提交之前**写。
+      //   若先提交再记，提交过程中断就会留下一次无记录的绕过。
+      if (forced && !approved) {
+        deps.repos.commitOverrides.record({
+          id: commitOverrideId(),
+          chapterId: chapter.id,
+          check: 'SUMMARY_APPROVAL',
+          // ⚠ 记原始状态，不记合成布尔值：事后要能区分
+          //   "当时摘要根本是空的" 与 "当时有摘要但没批准"。
+          summaryPresentAtOverride: hasSummary,
+          summaryApprovedAtOverride: approved,
+          reason: input.forceReason ?? null,
+          createdAt: new Date().toISOString(),
+        });
+        deps.logger.warn('Commit 强制绕过了摘要批准检查（已记审计）', {
+          chapterId: chapter.id,
+          chapterNumber: chapter.chapter_number,
+          summaryPresent: hasSummary,
+          summaryApproved: approved,
+        });
       }
 
       const engine = new CommitEngine({
@@ -208,7 +266,12 @@ export function createCommitTools(
         //
         // 那种"静默降级"比直接失败更糟：它让系统看起来在工作。
         // 因此改为**拒绝提交**，并明确告知缺哪一步。
-        summary,
+        //
+        // ⚠ FORCE 绕过时摘要可能为空：此时传空串而不是编造一个标题 ——
+        //   编造标题正是上面那段注释描述的原始 bug。空摘要会被
+        //   summary-indexer 跳过（它只索引已批准的非空摘要），
+        //   于是"没有记忆"是可见且可解释的。
+        summary: hasSummary ? summary : '',
         commitMode: input.commitMode ?? 'clean',
       });
 

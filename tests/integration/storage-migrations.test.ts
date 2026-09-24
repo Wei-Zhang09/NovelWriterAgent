@@ -59,6 +59,7 @@ describe('迁移', () => {
       '0009_skill_summary',
       '0010_workflow',
       '0011_pattern_scope_evidence',
+      '0012_commit_force_audit',
     ]);
   });
 
@@ -95,6 +96,8 @@ describe('迁移', () => {
     //   索引 35 → 47（0010 新增 12 个索引，覆盖恢复查询路径：
     //     按 status 捞未完成工作流、按 book/chapter 查工作流、
     //     按 workflow 查 stage/artifact、按 stage 查检索轨迹）
+    //   业务表 27 → 28（0012 commit_overrides：Commit 绕过审计）
+    //   索引 47 → 51（0012：commit_manifests 重建后 2 个 + overrides 2 个）
     //
     // 分组断言而不是只数总数：这样新增业务表与新增 FTS 表会分别失败，
     // 一眼能看出是哪一类变了。
@@ -107,14 +110,21 @@ describe('迁移', () => {
     const ftsVirtual = all.filter((t) => t.name === 'chapter_fts' || t.name === 'memory_fts');
     const business = all.filter((t) => !shadow.includes(t) && !ftsVirtual.includes(t));
 
-    expect(business.length).toBe(27);
+    // 业务表 27 → 28（0012 新增 commit_overrides —— Commit 绕过审计）
+    expect(business.length).toBe(28);
     expect(ftsVirtual.length).toBe(2);
     expect(shadow.length).toBe(10);
 
     const indexes = db.all<{ name: string }>(
       "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'",
     );
-    expect(indexes.length).toBe(47);
+    // 索引 47 → 49（0012 新增 commit_overrides 的 2 个）
+    //
+    // ⚠ 注意 commit_manifests 的重建对索引总数是**净零**的：
+    //   DROP TABLE 会连带删掉它的 2 个索引，重建表后必须手工再建回来。
+    //   漏掉那一步总数会变成 47，而"少了索引"在功能上不会立刻报错 ——
+    //   只是提交相关的按状态查询退化成全表扫描。
+    expect(indexes.length).toBe(49);
   });
 
   it('⚠ 全部迁移都已应用（构建产物不遗漏 SQL）', () => {
@@ -136,6 +146,7 @@ describe('迁移', () => {
       '0009_skill_summary',
       '0010_workflow',
       '0011_pattern_scope_evidence',
+      '0012_commit_force_audit',
     ]);
   });
 

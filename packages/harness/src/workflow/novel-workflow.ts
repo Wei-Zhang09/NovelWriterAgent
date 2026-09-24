@@ -178,7 +178,17 @@ export interface NovelWorkflowServices {
   readonly readyToCommit: (input: {
     chapterId: string;
     chapterNumber: number;
-  }) => Promise<{ ok: boolean; missing: readonly string[] }>;
+    /**
+     * 调用方参数（P1）。
+     *
+     * ⚠ 必须透传：commitMode='FORCE' 时摘要批准检查**降级为提示**
+     *   而不是阻塞，否则 workflow 路径下 FORCE 是死路 ——
+     *   用户显式要求绕过，却在 ready_to_commit 阶段被挡住，
+     *   而那个阶段没有任何方式表达"我知道，放行"。
+     *   真正的审计记录由 commit 工具在提交前写入。
+     */
+    params?: Readonly<Record<string, unknown>>;
+  }) => Promise<{ ok: boolean; missing: readonly string[]; forcedNotes?: readonly string[] }>;
 
   readonly commit: (input: {
     chapterId: string;
@@ -493,10 +503,15 @@ export function createNovelWorkflowStages(
     // ── 10. Commit 前置门禁 ──
     {
       id: 'ready_to_commit',
-      async run(_input: StageInput, ctx: StageContext): Promise<WorkflowStageResult> {
+      async run(input: StageInput, ctx: StageContext): Promise<WorkflowStageResult> {
         const chapterId = needChapterId(ctx);
         const chapterNumber = needChapterNumber(ctx);
-        const r = await services.readyToCommit({ chapterId, chapterNumber });
+        // ⚠ 透传 params：FORCE 模式下门禁需要知道"用户已显式要求绕过"
+        const r = await services.readyToCommit({
+          chapterId,
+          chapterNumber,
+          params: input.params,
+        });
         if (!r.ok) {
           // 这里是**门禁**：不满足就不允许 Commit（§十二 / §33）
           return {
@@ -505,7 +520,9 @@ export function createNovelWorkflowStages(
             output: { missing: r.missing },
           };
         }
-        return { ok: true, output: { missing: [] } };
+        // ⚠ FORCE 被忽略的检查项要带进 output：它是"这次提交少了什么"
+        //   的唯一记录，UI 与审计都从这里读。
+        return { ok: true, output: { missing: [], forcedNotes: r.forcedNotes ?? [] } };
       },
     },
 

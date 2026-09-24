@@ -395,7 +395,21 @@ app.whenReady().then(async () => {
       if (!sd.ok) break;
       const summaryLen = String(sd.summary ?? '').length;
       // 作者确认（真实使用中由人在「摘要确认」面板点；验证脚本自动确认）
-      await call('summary.approve', { chapterId });
+      //
+      // ⚠ 必须**核对确认真的生效**，不能发完就往下走。
+      //   现在提交前有两道门（§十二 摘要批准、§33 无 BLOCKING），
+      //   若 approve 静默失败，提交会被摘要门拦下，而报告会把它
+      //   显示成 §33 拦截 —— 归因错误比失败本身更难查。
+      const sappr = await call('summary.approve', { chapterId });
+      if (!sappr.ok || sappr.data?.ok === false) {
+        rec(
+          `第 ${n} 章摘要确认`,
+          false,
+          `确认失败：${sappr.error?.code ?? sappr.data?.error?.code}：${String(sappr.error?.message ?? sappr.data?.error?.message ?? '').slice(0, 100)}`,
+        );
+        break;
+      }
+      rec(`第 ${n} 章摘要确认`, true, `已批准（${summaryLen} 字）`);
 
       // 提交
       const commit = await call('commit.run', { chapterId }, 300_000);

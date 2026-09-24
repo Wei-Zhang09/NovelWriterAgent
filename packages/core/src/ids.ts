@@ -97,6 +97,17 @@ export function timelineEventId(input: {
   return `te-ch${ch}-${digest}`;
 }
 
+/**
+ * Commit 绕过审计记录 ID（P1）。
+ *
+ * ⚠ 用时间有序前缀而不是内容哈希：同一次绕过**不该**被去重。
+ *   内容哈希会让"同一章两次绕过"合并成一条，而审计要的正是
+ *   "绕过发生过几次"。时间有序保证同毫秒内也不冲突。
+ */
+export function commitOverrideId(): string {
+  return timeOrderedId('cov');
+}
+
 /** 时间有序 ID：前缀 + 毫秒时间戳(base36) + 随机后缀，保证同一毫秒内不冲突 */
 function timeOrderedId(prefix: string): string {
   const ts = Date.now().toString(36);
