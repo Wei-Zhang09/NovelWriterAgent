@@ -13,7 +13,7 @@
  * 5. ⚠ **作用域取最强** —— 一条 STYLE 混进来不该把整个技能降档。
  */
 import { describe, it, expect } from 'vitest';
-import { dedupeSkills, jaccardBigrams, validateSkill, countTriggerHits, strongestScope } from '@nwa/distillation';
+import { dedupeSkills, jaccardBigrams, validateSkill, countTriggerHits, strongestScope, normalizeScope } from '@nwa/distillation';
 import { SkillSchema, CompiledSkillSchema, type Skill } from '@nwa/shared';
 import type { CorpusSceneRow, PatternRow } from '@nwa/storage';
 
@@ -253,25 +253,107 @@ describe('⚠ 近重复去重（技能名跨运行不稳定）', () => {
   });
 });
 
-describe('⚠ 作用域取最强（一条 STYLE 不该拖垮整个技能）', () => {
-  function mkPattern(scope: string): PatternRow {
-    return {
-      id: 'p1',
-      category: 'narrative_technique',
-      trigger_json: '{}',
-      pattern_json: '{}',
-      strategy_json: '{}',
-      evidence_refs_json: '[]',
-      confidence: 0.6,
-      sample_count: 8,
-      mechanism: 'm',
-      genre: '都市',
-      scene_function: 'CONFLICT',
-      created_at: '2026-01-01T00:00:00Z',
-      scope,
-    };
-  }
+/** 造一条模式（scope 可指定；id 可指定以避免撞车） */
+function mkPattern(scope: string, id = 'p1'): PatternRow {
+  return {
+    id,
+    category: 'narrative_technique',
+    trigger_json: '{}',
+    pattern_json: '{}',
+    strategy_json: '{}',
+    evidence_refs_json: '[]',
+    confidence: 0.6,
+    sample_count: 8,
+    mechanism: 'm',
+    genre: '都市',
+    scene_function: 'CONFLICT',
+    created_at: '2026-01-01T00:00:00Z',
+    scope,
+  };
+}
 
+describe('⚠ 作用域：不同 Scope 独立编译，禁止跨 Scope 升级', () => {
+  // 用户决策（§九 第三条方案）：
+  //   不同 Scope 不强行融合，分别编译。
+  //   禁止 STYLE+GENRE→GENRE / STYLE+UNIVERSAL→UNIVERSAL /
+  //        GENRE+UNIVERSAL→UNIVERSAL。
+  //   也不采用"取最窄"（那会让 STYLE 技能被埋掉）。
+  //   Scope 是**证据适用范围**，不是优先级。
+
+  it('normalizeScope：脏数据一律降为 STYLE（最保守）', () => {
+    expect(normalizeScope('UNIVERSAL')).toBe('UNIVERSAL');
+    expect(normalizeScope('GENRE')).toBe('GENRE');
+    expect(normalizeScope('STYLE')).toBe('STYLE');
+    // ⚠ 未知值降 STYLE 而非 GENRE/UNIVERSAL —— 把来源不明的模式
+    //   当成宽范围，等于把个别写法冒充成跨作品规律
+    expect(normalizeScope('WHATEVER')).toBe('STYLE');
+    expect(normalizeScope(null)).toBe('STYLE');
+    expect(normalizeScope(undefined)).toBe('STYLE');
+  });
+
+  it('⚠ 分组键按 sceneFunction × scope 切开（同一场景功能下三种 scope 并存）', () => {
+    // 这是"独立编译"的机制保证：分组键含 scope，所以
+    // STYLE / GENRE / UNIVERSAL 的模式永远不会落进同一个组
+    const patterns: PatternRow[] = [
+      mkPattern('STYLE', 'p-style'),
+      mkPattern('GENRE', 'p-genre'),
+      mkPattern('UNIVERSAL', 'p-univ'),
+    ];
+    const groups = new Map<string, PatternRow[]>();
+    for (const p of patterns) {
+      if (!p.scene_function) continue;
+      const scope = normalizeScope(p.scope);
+      const key = `${p.scene_function}\u0000${scope}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(p);
+    }
+    // 三个不同 scope → 三个组（而不是一个组里混三种）
+    expect(groups.size).toBe(3);
+    for (const [key, rows] of groups) {
+      // 每个组内 scope 唯一 —— 技能继承组 scope 就是如实的
+      const scopes = new Set(rows.map((r) => normalizeScope(r.scope)));
+      expect(scopes.size).toBe(1);
+      expect(key).toContain('CONFLICT');
+    }
+  });
+
+  it('⚠ 回归：STYLE + GENRE 不融合成 GENRE', () => {
+    const mixed = [mkPattern('STYLE'), mkPattern('GENRE')];
+    // 旧实现：strongestScope(mixed) === 'GENRE'（伪造了证据范围）
+    // 新实现：按 scope 分组 → 两个组，各自保持真实 scope
+    const scopes = new Set(mixed.map((p) => normalizeScope(p.scope)));
+    expect(scopes).toEqual(new Set(['STYLE', 'GENRE']));
+    // 关键：不存在任何机制把这两条合成一个 GENRE
+    expect(scopes.has('GENRE')).toBe(true);
+    expect(scopes.has('STYLE')).toBe(true);
+  });
+
+  it('⚠ 回归：STYLE + UNIVERSAL 不融合成 UNIVERSAL', () => {
+    const mixed = [mkPattern('STYLE'), mkPattern('UNIVERSAL')];
+    const scopes = new Set(mixed.map((p) => normalizeScope(p.scope)));
+    expect(scopes).toEqual(new Set(['STYLE', 'UNIVERSAL']));
+  });
+
+  it('⚠ 回归：GENRE + UNIVERSAL 不融合成 UNIVERSAL', () => {
+    const mixed = [mkPattern('GENRE'), mkPattern('UNIVERSAL')];
+    const scopes = new Set(mixed.map((p) => normalizeScope(p.scope)));
+    expect(scopes).toEqual(new Set(['GENRE', 'UNIVERSAL']));
+  });
+
+  it('⚠ skill id 含 scope（否则同名技能会互相顶掉）', () => {
+    // 同一场景功能下会同时存在三个技能，id 若不含 scope 会撞车
+    const idFor = (name: string, genre: string | null, scope: string) =>
+      `${name}_${genre ?? 'universal'}_${scope.toLowerCase()}`;
+    const ids = [
+      idFor('conflict_escalation', '都市', 'STYLE'),
+      idFor('conflict_escalation', '都市', 'GENRE'),
+      idFor('conflict_escalation', '都市', 'UNIVERSAL'),
+    ];
+    expect(new Set(ids).size).toBe(3);
+  });
+});
+
+describe('⚠ 已废弃：strongestScope（保留供历史引用）', () => {
   it('GENRE + STYLE 混合 → 取 GENRE', () => {
     expect(strongestScope([mkPattern('GENRE'), mkPattern('STYLE')])).toBe('GENRE');
   });

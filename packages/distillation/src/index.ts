@@ -84,6 +84,7 @@ export type {
 export {
   SkillStore,
   strongestScope,
+  normalizeScope,
   dedupeSkills,
   jaccardBigrams,
   planDeprecations,

@@ -54,6 +54,17 @@ export interface SceneContext {
   readonly emotionIntensity?: number | null;
   /** 视角（可选，用于未来扩展） */
   readonly pov?: string | null;
+  /**
+   * 用户指定要模仿的来源作品（语料 documentId）。
+   *
+   * ⚠ 这是 STYLE 技能的**可见性开关**（§九 第三条方案）：
+   *   用户说"照这部作品写"时，来自该作品的 STYLE 技能可见。
+   *   没有它就只能靠全局 allowStyle 或编译期升档 —— 前者会连带引入
+   *   无关作品的风格，后者伪造证据范围。
+   */
+  readonly styleSources?: readonly string[];
+  /** 当前作品的风格类型（未指定具体作品时的退路） */
+  readonly styleGenre?: string | null;
 }
 
 export interface SkillEngineOptions {
@@ -67,6 +78,15 @@ export interface SkillEngineOptions {
   readonly maxCharsPerSkill?: number;
   /** 是否允许 STYLE 技能（§21：默认 false，Writer 不用作者特有策略） */
   readonly allowStyle?: boolean;
+  /**
+   * 用户指定要模仿的来源作品（默认空）。
+   *
+   * ⚠ 这是让 STYLE 技能**在有明确理由时可见**的正规途径 ——
+   *   替代"编译期把 scope 升档"那种伪造证据的做法。
+   */
+  readonly styleSources?: readonly string[];
+  /** 当前作品的风格类型 */
+  readonly styleGenre?: string | null;
   /** 最低置信度（默认 0，不额外过滤） */
   readonly minConfidence?: number;
   /**
@@ -131,6 +151,8 @@ export class SkillEngine {
   private readonly maxSkills: number;
   private readonly maxCharsPerSkill: number;
   private readonly allowStyle: boolean;
+  private readonly styleSources: readonly string[];
+  private readonly styleGenre: string | null;
   private readonly minConfidence: number;
   private readonly dedupeThreshold: number;
 
@@ -138,6 +160,8 @@ export class SkillEngine {
     this.maxSkills = clamp(opts.maxSkills ?? 4, 1, 8);
     this.maxCharsPerSkill = opts.maxCharsPerSkill ?? 700;
     this.allowStyle = opts.allowStyle === true;
+    this.styleSources = opts.styleSources ?? [];
+    this.styleGenre = opts.styleGenre ?? null;
     this.minConfidence = opts.minConfidence ?? 0;
     this.dedupeThreshold = opts.dedupeThreshold ?? 0.40;
   }
@@ -153,9 +177,14 @@ export class SkillEngine {
     // ⚠ 走 filterSkillsByGenre 而不是自己写 where：
     //   过滤规则一旦分散，就会出现"某条路径忘了按类型过滤"的漏洞，
     //   而那种漏洞只在跨类型场景下暴露。
+    // ⚠ SceneContext 里的 styleSources/styleGenre **优先**于引擎级默认值。
+    //   这样同一个引擎实例可以逐场景决定"这一段是否要模仿指定作品"，
+    //   而不必为每个场景重建引擎。
     const filtered = filterSkillsByGenre(rows, {
       genre: ctx.genre ?? null,
       allowStyle: this.allowStyle,
+      styleSources: ctx.styleSources ?? this.styleSources,
+      styleGenre: ctx.styleGenre ?? this.styleGenre,
     });
 
     const rejected: { id: string; name: string; reason: string }[] = filtered.excluded.map((e) => ({
@@ -304,6 +333,11 @@ export class SkillEngine {
     } else if (skill.scope === 'UNIVERSAL') {
       score += 0.2;
       reasons.push('跨类型通用');
+    } else if (skill.scope === 'STYLE') {
+      // STYLE 已通过可见性过滤（有明确使用理由），这里给较小权重：
+      // 它是"某部作品的偏好"，说服力弱于跨作品验证过的 GENRE。
+      score += 0.1;
+      reasons.push('作者风格（已指定来源/风格类型）');
     }
 
     // ── 情感强度（§25 的 Emotion 维度）──

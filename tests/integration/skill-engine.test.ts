@@ -369,6 +369,75 @@ describe('⚠ STYLE 默认不可见（§21）', () => {
     });
     expect(sel.selected.length).toBe(1);
   });
+
+  // ── §九 第三条方案：STYLE 的可见性由**来源/风格类型**决定 ──
+  //
+  // 用户决策：不要在编译期提升 Scope 来绕过可见性，那是在伪造证据范围。
+  // 正确做法是运行时按"有没有明确的使用理由"判定。
+
+  it('⚠ 指定来源作品且技能来自该作品 → STYLE 可见', () => {
+    // styleRow 的 source_document_ids_json 是 ['doc_a']
+    const sel = new SkillEngine({ styleSources: ['doc_a'] }).retrieve([styleRow], {
+      sceneFunction: 'CONFLICT',
+      genre: '都市',
+    });
+    expect(sel.selected.length).toBe(1);
+    expect(sel.selected[0]!.skill.scope).toBe('STYLE');
+  });
+
+  it('⚠ 指定了来源，但技能来自**别的**作品 → 仍不可见', () => {
+    // 这是关键：用户说"照《诛仙》写"，就不该混进《斗破》的风格
+    const sel = new SkillEngine({ styleSources: ['doc_other'] }).retrieve([styleRow], {
+      sceneFunction: 'CONFLICT',
+      genre: '都市',
+    });
+    expect(sel.selected.length).toBe(0);
+  });
+
+  it('⚠ 通过 SceneContext 传 styleSources 同样生效（逐场景可调）', () => {
+    const sel = new SkillEngine().retrieve([styleRow], {
+      sceneFunction: 'CONFLICT',
+      genre: '都市',
+      styleSources: ['doc_a'],
+    });
+    expect(sel.selected.length).toBe(1);
+  });
+
+  it('⚠ 指定风格类型且类型一致 → STYLE 可见（未指定具体作品时的退路）', () => {
+    const sel = new SkillEngine({ styleGenre: '都市' }).retrieve([styleRow], {
+      sceneFunction: 'CONFLICT',
+      genre: '都市',
+    });
+    expect(sel.selected.length).toBe(1);
+  });
+
+  it('⚠ 指定风格类型但类型不一致 → 不可见（防跨类型串风格）', () => {
+    const sel = new SkillEngine({ styleGenre: '仙侠' }).retrieve([styleRow], {
+      sceneFunction: 'CONFLICT',
+      genre: '都市',
+    });
+    expect(sel.selected.length).toBe(0);
+  });
+
+  it('⚠ 排除原因如实说明"缺什么"，便于诊断为什么没用到', () => {
+    const sel = new SkillEngine().retrieve([styleRow], {
+      sceneFunction: 'CONFLICT',
+      genre: '都市',
+    });
+    const why = sel.rejected.find((r) => r.name === 'style_skill')?.reason ?? '';
+    expect(why).toContain('STYLE');
+    expect(why).toContain('来源');
+  });
+
+  it('⚠ STYLE 已可见时仍能被打分（此前 STYLE 完全不参与打分）', () => {
+    const sel = new SkillEngine({ styleSources: ['doc_a'] }).retrieve([styleRow], {
+      sceneFunction: 'CONFLICT',
+      genre: '都市',
+    });
+    expect(sel.selected.length).toBe(1);
+    const reasons = sel.selected[0]!.reasons.join('｜');
+    expect(reasons).toContain('作者风格');
+  });
 });
 
 describe('⚠ 反模式必须完整保留（不参与截断）', () => {

@@ -95,6 +95,31 @@ export interface SkillFilter {
    *   直接套用某位作者的风格会让产出失去原创性。
    */
   readonly allowStyle?: boolean;
+  /**
+   * 用户**指定要模仿的来源作品**（语料 documentId 列表）。
+   *
+   * ## 为什么需要它 —— 这是"STYLE 技能可见性"的正确开关
+   *
+   * 早先 STYLE 只有"全局开关 + 类型一致"两个条件，于是产生了一个
+   * 被误判为"编译问题"的现象：一条 STYLE 模式混进某个技能组，
+   * 该技能就永远检索不到 —— 看起来像"编译了却用不了"。
+   *
+   * 当时的应对是**在编译期把 scope 升级**（取最宽），让技能变得可见。
+   * 但那是拿**证据范围**去迁就**可见性**：技能实际只依据一部作品，
+   * 却被标成跨作品验证过的 GENRE。这是伪造证据范围，不能这么做。
+   *
+   * 正确做法：STYLE 的可见性由**运行时**按来源判断 ——
+   * 用户明确说"照这部作品的路子写"时，来自该作品的 STYLE 技能就可见。
+   * scope 保持如实，可见性另管。
+   */
+  readonly styleSources?: readonly string[];
+  /**
+   * 当前作品的风格类型（可选）。
+   *
+   * 与 `styleSources` 是"或"的关系：没指定具体作品、但指定了风格类型时，
+   * 同类型的 STYLE 技能可见。
+   */
+  readonly styleGenre?: string | null;
 }
 
 export interface FilterableSkill {
@@ -102,6 +127,30 @@ export interface FilterableSkill {
   readonly scope?: string | null;
   readonly confidence?: number;
   readonly status?: string | null;
+  /** STYLE 技能的来源作品（可见性判据）—— 已解析的形态 */
+  readonly sourceDocumentIds?: readonly string[];
+  /**
+   * 来源作品的**原始 JSON 列**（数据库行的形态）。
+   *
+   * ⚠ 两种形态都要支持：调用方有的传解析好的 `Skill`，有的直接传
+   *   `SkillRow`（`listSkills()` 的返回）。只认一种会让另一条路径
+   *   静默地"STYLE 永远不可见" —— 而那看起来像编译问题，很难查。
+   */
+  readonly source_document_ids_json?: string | null;
+}
+
+/** 取来源作品（兼容"已解析"与"原始 JSON 列"两种形态） */
+function sourceDocsOf(s: FilterableSkill): readonly string[] {
+  if (s.sourceDocumentIds && s.sourceDocumentIds.length > 0) return s.sourceDocumentIds;
+  const raw = s.source_document_ids_json;
+  if (typeof raw !== 'string' || raw.length === 0) return [];
+  try {
+    const v: unknown = JSON.parse(raw);
+    return Array.isArray(v) ? (v.filter((x) => typeof x === 'string') as string[]) : [];
+  } catch {
+    // 脏数据不该让整个过滤崩掉，也不该被当成"有来源"
+    return [];
+  }
 }
 
 export interface SkillFilterResult<T> {
@@ -141,15 +190,42 @@ export function filterSkillsByGenre<T extends FilterableSkill>(
     }
 
     if (scope === 'STYLE') {
-      if (!allowStyle) {
+      // ── STYLE 可见性（§九 第三条方案的运行时部分）──
+      //
+      // ⚠ 这里**不是**"STYLE 默认不可见"，而是"需要明确的使用理由"。
+      //   理由有两类，任一满足即可见：
+      //     a) 用户指定了来源作品，且技能确实来自该作品
+      //     b) 用户指定了风格类型，且技能类型一致
+      //   若都没指定，退回到 allowStyle 这个全局开关（向后兼容）。
+      //
+      //   为什么要有 a)：STYLE 是"某部作品的写法"。用户说"照《诛仙》
+      //   的路子写"时，来自《诛仙》的技能就是**有明确使用理由**的；
+      //   而来自别的作品的 STYLE 技能仍然不该用。
+      //   没有这个判据时，只能靠"全局打开 allowStyle"或"编译期升档"
+      //   来让技能可见 —— 前者会连带引入无关作品的风格，后者伪造证据。
+      const sources = filter.styleSources ?? [];
+      const fromNamedSource =
+        sources.length > 0 && sourceDocsOf(s).some((d) => sources.includes(d));
+      const styleGenreMatch =
+        filter.styleGenre !== null &&
+        filter.styleGenre !== undefined &&
+        sameGenre(s.genre, filter.styleGenre);
+
+      if (!fromNamedSource && !styleGenreMatch && !allowStyle) {
         excluded.push({
           skill: s,
-          reason: 'STYLE 作用域默认不启用（§21 要求不直接使用作者特有策略）',
+          reason:
+            'STYLE 作用域需要明确的使用理由：未指定来源作品、未指定风格类型，' +
+            '且全局开关 allowStyle=false（§21 要求不直接套用作者特有策略）',
         });
         continue;
       }
-      // 即便开启，也要求类型一致（避免把某作者的玄幻风格用在都市里）
-      if (target !== null && !sameGenre(s.genre, target)) {
+
+      // 即便可见，也要求类型一致（避免把某作者的玄幻风格用在都市里）。
+      //
+      // ⚠ 例外：来源作品被明确指定时，类型一致不再是必要条件 ——
+      //   用户指定"照这部写"时，他就是要这部作品的写法。
+      if (!fromNamedSource && target !== null && !sameGenre(s.genre, target)) {
         excluded.push({
           skill: s,
           reason: `类型不匹配：技能 genre=${s.genre ?? '未标注'} vs 目标 ${filter.genre ?? '未指定'}`,

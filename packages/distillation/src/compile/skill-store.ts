@@ -29,7 +29,7 @@
  * 留下并标记，诊断信息才完整。这与 §46 的可追溯性一致。
  */
 import { Logger, jaccardBigrams } from '@nwa/core';
-import type { CorpusRepository, CorpusSceneRow, PatternRow } from '@nwa/storage';
+import type { CorpusRepository, CorpusSceneRow, PatternRow, SkillScope } from '@nwa/storage';
 import type { Skill } from '@nwa/shared';
 import {
   SkillCompiler,
@@ -265,30 +265,50 @@ export class SkillStore {
       validSceneIds.add(s.id);
     }
 
-    // 按 sceneFunction 分组（模式自带该字段）
+    // 按 **sceneFunction × scope** 二维分组。
+    //
+    // ⚠ 这是「不同 Scope 独立编译」的落地点（§九 第三条方案）。
+    //
+    //   原实现按 sceneFunction 单维分组，然后用 `strongestScope(整组)`
+    //   给组里**每一个**技能打同一个档 —— 两个问题叠在一起：
+    //     1. 跨 scope 融合：一个技能同时吃了 STYLE 和 GENRE 模式，
+    //        却只标一个档，等于伪造证据范围。
+    //     2. 更隐蔽的：`strongestScope` 吃的是**整组**，不是该技能
+    //        实际依据的模式。于是模型若把 STYLE 模式编成技能 A、
+    //        GENRE 模式编成技能 B，A 和 B 都会被标成 GENRE ——
+    //        A 明明只依据一部作品。
+    //
+    //   现在按 scope 先切开：每组内部的模式 scope 一致，
+    //   技能继承该组的 scope 就是**如实的**，不需要也不允许升级。
     const groups = new Map<string, PatternRow[]>();
     for (const p of req.patterns) {
       if (!p.scene_function) continue;
-      if (!groups.has(p.scene_function)) groups.set(p.scene_function, []);
-      groups.get(p.scene_function)!.push(p);
+      const scope = normalizeScope(p.scope);
+      const key = `${p.scene_function}\u0000${scope}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(p);
     }
 
     const records: CompiledSkillRecord[] = [];
     const failures: { sceneFunction: string; error: string }[] = [];
     let done = 0;
 
-    for (const [fn, groupPatterns] of groups) {
+    for (const [key, groupPatterns] of groups) {
+      const [fn, scope] = key.split('\u0000') as [string, SkillScope];
       const r = await req.compiler.compileGroup({
         patterns: groupPatterns,
         sceneFunction: fn,
         genre: req.genre,
+        // 组内 scope 一致（分组时就按 scope 切开了）
+        scope,
       });
       if (r.error) failures.push({ sceneFunction: fn, error: r.error });
 
       for (const compiled of r.skills) {
-        // ⚠ 作用域取来源模式的**最高档**：技能比其依据更弱没有意义，
-        //   但也不能更强 —— 若该组模式里有 STYLE，技能仍应按最强证据标。
-        const scope = strongestScope(groupPatterns);
+        // ⚠ scope 直接来自分组键（该组模式 scope 一致），**不再计算"最强"**。
+        //   技能的证据范围必须等于它依据的模式 —— 既不能升级（伪造），
+        //   也不需要降级（那会让 STYLE 技能被埋掉，而埋掉的问题
+        //   应该在 Runtime 的可见性上解决，不是在这里改证据）。
 
         // 版本递增（同 id 重编译时 +1）
         const preview = assembleSkill({
@@ -332,7 +352,7 @@ export class SkillStore {
       }
 
       done++;
-      req.onProgress?.(done, groups.size, fn);
+      req.onProgress?.(done, groups.size, `${fn}｜${scope}`);
     }
 
     // ⚠ 去重必须在**落库之前** —— 这是关键顺序。
@@ -435,7 +455,27 @@ export class SkillStore {
 }
 
 /**
- * 取一组模式里**最强**的作用域。
+ * 归一化 scope 值（脏数据一律按最保守的 STYLE 处理）。
+ *
+ * ⚠ 未知 scope 降为 STYLE 而不是 GENRE/UNIVERSAL：STYLE 是最窄的证据范围，
+ *   把未知值当宽范围会导致"来源不明的模式被当成跨作品规律"。
+ */
+export function normalizeScope(v: string | null | undefined): SkillScope {
+  if (v === 'UNIVERSAL' || v === 'GENRE' || v === 'STYLE') return v;
+  return 'STYLE';
+}
+
+/**
+ * ⚠ 已废弃：取一组模式里**最强**的作用域。
+ *
+ * ## 为什么废弃
+ *
+ * 它把"证据范围"当成"优先级"来用 —— 一条 GENRE 模式就能把整组
+ * 提升到 GENRE，哪怕某个技能只依据了 STYLE 模式。
+ * 用户已明确决策：**Scope 是证据适用范围，不是 Skill 的优先级**；
+ * 不同 Scope 必须独立编译，禁止跨 Scope 自动升级。
+ *
+ * 保留函数仅供历史测试引用，生产代码不再调用。
  *
  * ⚠ 为什么取最强而非最弱：技能是模式的上位抽象，若它把多条模式
  *   合并成一个，其中只要有一条是 GENRE（跨作品验证过），

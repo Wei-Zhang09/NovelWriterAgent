@@ -109,6 +109,15 @@ export class SkillCompiler {
     readonly patterns: readonly PatternRow[];
     readonly sceneFunction: string;
     readonly genre: string | null;
+    /**
+     * 本组模式的证据范围（调用方已按 scope 分好组，组内一致）。
+     *
+     * ⚠ 传给模型是为了让它知道**这批写法凭什么成立**：
+     *   STYLE = 只在某一部作品里成立，GENRE = 同类型多部作品验证过。
+     *   这直接影响 rules 该怎么写（STYLE 的写法要标"这是某作者的偏好"，
+     *   GENRE 的可以写成类型通用规则）。
+     */
+    readonly scope?: 'UNIVERSAL' | 'GENRE' | 'STYLE';
   }): Promise<{ readonly skills: readonly CompiledSkill[]; readonly error?: string }> {
     const { patterns, sceneFunction, genre } = req;
     if (patterns.length === 0) return { skills: [] };
@@ -136,9 +145,23 @@ export class SkillCompiler {
 
     const genreLine = genre ? `目标类型：${genre}。` : '目标类型：不限（跨类型通用）。';
 
+    // ⚠ 明确告诉模型这批模式的证据范围。
+    //   不同 scope 已经被调用方分成不同的组，这里不会混。
+    const scope = req.scope ?? 'STYLE';
+    const scopeLine =
+      scope === 'UNIVERSAL'
+        ? '证据范围：**UNIVERSAL** —— 这些写法在**跨类型**的多部作品里都成立，可以写成类型无关的通用规则。'
+        : scope === 'GENRE'
+          ? `证据范围：**GENRE** —— 这些写法在**同类型（${genre ?? '本类型'}）多部作品**里验证过，` +
+            '可以写成该类型的通用规则；不要声称为跨类型通用。'
+          : '证据范围：**STYLE** —— 这些写法目前只在**一部作品**里观察到。' +
+            '规则要写成"这部作品的做法"，并明确这是个别偏好而非类型规律。';
+
     const prompt = [
       `以下是一批关于「${hint}」场景的**已验证写法**（来自真实作品，已通过跨作品校验）。`,
       genreLine,
+      '',
+      scopeLine,
       '',
       '你的任务：把它们**合并**成少量可直接执行的写作技能。',
       '',
@@ -156,6 +179,9 @@ export class SkillCompiler {
       '   ⚠ 触发条件不要过窄：若某个场景功能在语料里很少，填它会检索不到。',
       `6. \`category\` 只能从闭集里选：${SKILL_CATEGORIES.join(' | ')}`, 
       '7. 若这批模式**不足以**支撑一个清晰技能，返回空数组 —— 不要硬凑。',
+      '8. ⚠ 这批模式的证据范围是**一致的**（同一 scope）。不要把它写成' +
+        '更强的适用范围 —— 例如只有一部作品支撑时，不要写成"所有小说都适用"。' +
+        '适用范围由系统按证据判定，你只需把手法本身写清楚。',
       '',
       '模式：',
       ...blocks,
@@ -315,7 +341,14 @@ export function assembleSkill(req: {
       : 0.5;
 
   return {
-    id: `${slug(compiled.name)}_${normalizeGenre(genre) ?? 'universal'}`,
+    // ⚠ id 必须含 scope。
+    //
+    //   按 sceneFunction × scope 分组后，同一场景功能下会**同时**存在
+    //   STYLE / GENRE / UNIVERSAL 三个技能（正是第三条方案要的结果）。
+    //   若 id 只由 name + genre 组成，三个技能会撞成同一个 id ——
+    //   后写的把先写的顶掉（version +1），最终只剩一个。
+    //   那就等于"独立编译"白做了。
+    id: `${slug(compiled.name)}_${normalizeGenre(genre) ?? 'universal'}_${scope.toLowerCase()}`,
     name: compiled.name,
     category: compiled.category,
     summary: compiled.summary,
