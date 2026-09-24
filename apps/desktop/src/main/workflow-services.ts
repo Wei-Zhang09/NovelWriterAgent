@@ -40,6 +40,11 @@ import {
 import type { Repositories, Database } from '@nwa/storage';
 import type { ToolRegistry, NovelWorkflowServices } from '@nwa/harness';
 import { hashOfFile } from '@nwa/harness';
+import {
+  renderCharacterBlock,
+  toCharacterBrief,
+  selectRelevantCharacters,
+} from '@nwa/harness';
 import type { RetrievalService } from '@nwa/harness';
 import type { ToolContext } from '@nwa/shared';
 import {
@@ -138,6 +143,36 @@ function needChapter(deps: WorkflowServicesDeps, chapterId: string) {
     throw new AppError(ErrorCode.STORAGE_QUERY_FAILED, `章节不存在：${chapterId}`);
   }
   return ch;
+}
+
+/**
+ * 构造本章的角色设定块（P2-2）。
+ *
+ * ⚠ **必须由 plan 与 write 两个 stage 共用**：如果只在其中一个注入，
+ *   就会出现"规划时知道有谁、写作时忘了"——计划与正文对不上，
+ *   而这正是"角色不进 prompt"这个缺陷的另一种表现形式。
+ *
+ * 筛选依据：用户指令 + 上一章摘要（两者都提到的人 → 相关）。
+ * 都没有时（如第 1 章）注入全部 —— 那时作者刚写好的设定最需要被看见。
+ */
+function buildCharacterContext(
+  deps: WorkflowServicesDeps,
+  bookId: string,
+  hints: readonly string[],
+): string {
+  try {
+    const all = deps.repos.characters.listByBook(bookId).map(toCharacterBrief);
+    if (all.length === 0) return '';
+    return renderCharacterBlock(selectRelevantCharacters(all, hints));
+  } catch (e) {
+    // ⚠ 角色设定是**增强**不是前置依赖：读角色失败不该让整章写不出来。
+    //   如实记录并返回空串，让写作继续（缺设定的稿仍是可用的草稿）。
+    deps.logger.warn('角色设定读取失败（本次不注入角色）', {
+      bookId,
+      error: e instanceof Error ? e.message : String(e),
+    });
+    return '';
+  }
 }
 
 export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflowServices {
@@ -338,9 +373,25 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
         .filter((c) => c.chapter_number < ch.chapter_number)
         .sort((a, b) => b.chapter_number - a.chapter_number)[0]?.summary;
 
+      // ── 角色设定注入（P2-2）──────────────────────────────
+      //
+      // ⚠ 此前 `contextText` 被传空串 —— 角色表与 character.* 工具早就
+      //   存在，但没有任何地方把角色喂给模型。作者写了「沈砚左手有旧伤」，
+      //   模型完全不知道，只能靠检索旧章节猜，猜不到就自己编。
+      const characterContext = buildCharacterContext(deps, ch.book_id, [
+        prevSummary ?? '',
+        String(input.params['userInstruction'] ?? ''),
+      ]);
+      if (characterContext.length > 0) {
+        log.info('已注入角色设定（规划）', {
+          chapterNumber: ch.chapter_number,
+          chars: characterContext.length,
+        });
+      }
+
       const res = await planner.plan({
         chapterNumber: ch.chapter_number,
-        contextText: '',
+        contextText: characterContext,
         ...(prevSummary ? { previousSummary: prevSummary } : {}),
         ...(input.params['userInstruction']
           ? { userInstruction: String(input.params['userInstruction']) }
@@ -420,6 +471,15 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
       const ws = workspaceFor(ch.chapter_number);
       const { rows: skillRows, genre } = deps.loadSkills();
 
+      // ⚠ 角色设定（P2-2）：与 plan stage 共用同一个 helper，
+      //   否则"规划时知道有谁"但"写作时忘了" —— 计划与正文对不上。
+      //
+      // ⚠ 提示文本用**本章计划**（含 brief.mainCharacters 与场景 purpose）：
+      //   计划里点名的人正是这一章要写的人，比"上一章摘要"更准。
+      const characterContext = buildCharacterContext(deps, ch.book_id, [
+        JSON.stringify(plan),
+      ]);
+
       // ── 每章字数目标（P2-1，软约束）──────────────────────
       //
       // ⚠ Writer 是**逐场景**生成的（§7.3 约束 3），所以要把章级目标
@@ -441,6 +501,9 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
         skillRows: skillRows as never,
         genre,
         wordsPerScene,
+        // ⚠ 角色设定（P2-2）：与 plan stage 用同一套筛选，
+        //   否则"规划时知道有谁"但"写作时忘了" —— 计划与正文对不上。
+        ...(characterContext.trim().length > 0 ? { characterContext } : {}),
         // ⚠ 场景级检索（P0-3）：按**每个场景**的意图取旧内容，
         //   不是整章共用一份。检索失败返回空串（Writer 会继续写）。
         ...(deps.retrieval

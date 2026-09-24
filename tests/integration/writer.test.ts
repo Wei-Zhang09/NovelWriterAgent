@@ -74,6 +74,66 @@ function completer(texts: string[]): {
 const writerOf = (c: TextCompleter, n = 1) =>
   new Writer({ complete: c, workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: n, logger }), logger });
 
+describe('⚠ 角色设定必须真的进 prompt（P2-2）', () => {
+  it('传入 characterContext → 出现在模型收到的 messages 里', async () => {
+    const { fn, calls } = completer(['场景一正文']);
+    const w = new Writer({
+      complete: fn,
+      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      logger,
+      characterContext: '## 角色设定\n- 沈砚 — 主角。修表匠，左手有旧伤',
+    });
+    await w.draft(planOf());
+
+    // ⚠ 只断言"Writer 收到了参数"是不够的 —— 参数收到了却没放进
+    //   messages 是同一类缺陷的另一种形态。这里断言**模型真的看到了**。
+    const all = calls[0]!.messages.map((m) => m.content).join('\n');
+    expect(all).toContain('沈砚');
+    expect(all).toContain('左手有旧伤');
+  });
+
+  it('⚠ 角色块排在任务之前（事实先于任务）', async () => {
+    // 位置在技能之后、任务之前：事实必须在"这一段要写什么"之前给出，
+    // 否则模型先构思情节再看到人物设定，容易出现
+    // "设定说他有旧伤，正文里却用左手拎箱子"。
+    const { fn, calls } = completer(['场景一正文']);
+    const w = new Writer({
+      complete: fn,
+      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      logger,
+      characterContext: '## 角色设定\n- 沈砚',
+    });
+    await w.draft(planOf());
+
+    const msgs = calls[0]!.messages;
+    const charIdx = msgs.findIndex((m) => m.content.includes('角色设定'));
+    const taskIdx = msgs.findIndex((m) => m.content.includes('请写出场景'));
+    expect(charIdx).toBeGreaterThan(-1);
+    expect(taskIdx).toBeGreaterThan(-1);
+    expect(charIdx).toBeLessThan(taskIdx);
+  });
+
+  it('不传 characterContext → 不产生空块', async () => {
+    const { fn, calls } = completer(['场景一正文']);
+    await writerOf(fn).draft(planOf());
+    const all = calls[0]!.messages.map((m) => m.content).join('\n');
+    expect(all).not.toContain('角色设定');
+  });
+
+  it('传空白 characterContext → 不产生空块', async () => {
+    const { fn, calls } = completer(['场景一正文']);
+    const w = new Writer({
+      complete: fn,
+      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      logger,
+      characterContext: '   \n  ',
+    });
+    await w.draft(planOf());
+    const all = calls[0]!.messages.map((m) => m.content).join('\n');
+    expect(all).not.toContain('角色设定');
+  });
+});
+
 describe('⚠ Writer 只写工作区（§9.1 核心原则）', () => {
   it('产物落在 workspace/chapter-001/draft.md', async () => {
     const { fn } = completer(['场景一正文', '场景二正文']);

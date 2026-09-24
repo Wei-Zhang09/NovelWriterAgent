@@ -81,6 +81,17 @@ export interface WriterOptions {
    * 提供者内部处理（检索失败不该让写作失败）。
    */
   readonly sceneMemory?: (scene: ScenePlan, index: number) => string;
+  /**
+   * 角色设定块（P2-2）。整章共用一份。
+   *
+   * ⚠ 与 `sceneMemory` 不同，角色设定是**整章不变量** ——
+   *   人物是谁、有什么旧伤，不会因为换了场景而改变。
+   *   按场景重复注入只是浪费上下文预算。
+   *
+   * ⚠ 内容由调用方（`renderCharacterBlock`）渲染并保证来源可追溯；
+   *   Writer 不解析角色数据，只负责放进 prompt。
+   */
+  readonly characterContext?: string;
 }
 
 /** 单场景生成结果 */
@@ -121,6 +132,7 @@ export class Writer {
   private readonly tailChars: number;
   private readonly skillEngine?: SkillEngine;
   private readonly sceneMemory?: (scene: ScenePlan, index: number) => string;
+  private readonly characterContext?: string;
   private readonly skillRows: readonly SkillRow[];
   private readonly genre: string | null;
 
@@ -134,6 +146,7 @@ export class Writer {
     this.skillRows = opts.skillRows ?? [];
     this.genre = opts.genre ?? null;
     this.sceneMemory = opts.sceneMemory;
+    this.characterContext = opts.characterContext;
   }
 
   /**
@@ -205,6 +218,16 @@ export class Writer {
       // ⚠ 技能块放在约束之后、任务之前：它是"怎么写"的建议，
       //   排在"写什么"的约束之后才不会被当成硬性要求
       if (sel.block) messages.push({ role: 'system', content: sel.block });
+
+      // ── 角色设定（P2-2）────────────────────────────────
+      //
+      // ⚠ 位置在技能之后、任务之前：角色是"写的是谁"（事实层），
+      //   技能是"怎么写"（风格层），任务是"这一段要写什么"。
+      //   事实必须在任务之前给出，否则模型先构思情节再看到人物设定，
+      //   容易出现"设定说他有旧伤，正文里却用左手拎箱子"。
+      if (this.characterContext && this.characterContext.trim().length > 0) {
+        messages.push({ role: 'system', content: this.characterContext });
+      }
 
       // ── 场景级长程记忆（P0-3）──────────────────────────
       //

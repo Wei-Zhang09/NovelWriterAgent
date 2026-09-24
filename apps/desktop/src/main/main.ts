@@ -687,6 +687,35 @@ function createWindow(): void {
               }
             }
 
+            // 17c) 角色设定面板（P2-2）
+            //
+            // ⚠ 本项目反复出现"后端能力有了、界面够不到"：角色表与
+            //   character.* 工具早就有，但界面零入口、也不进 Writer prompt。
+            //   这条断言必须**真的添加一个角色**，只断言"面板在"会漏掉
+            //   "按钮点了没反应"（character.create 不是 IPC 方法，
+            //   第一版直接 call() 就是坏的 —— 是这条断言该抓的东西）。
+            const charForm = [...document.querySelectorAll('.form')]
+              .find(f => f.querySelector('h3')?.textContent.includes('角色设定'));
+            rec('⚠ 角色设定面板已挂载（P2-2 后端能力有界面入口）', !!charForm, '');
+            if (charForm) {
+              rec('⚠ 标注角色会注入规划与写作',
+                  charForm.textContent.includes('注入'), '');
+              const cInputs = [...charForm.querySelectorAll('input')];
+              if (cInputs[0]) setInput(cInputs[0], '沈砚');
+              if (cInputs[2]) setInput(cInputs[2], '主角');
+              const addB = btnByText(charForm, '添加角色');
+              rec('有添加角色按钮', !!addB, '');
+              if (addB) {
+                addB.click();
+                await sleep(1200);
+                const cm = charForm.querySelector('.form-msg')?.textContent ?? '';
+                rec('⚠ 添加角色真的生效（不是空壳按钮）',
+                    cm.includes('沈砚'), cm.slice(0, 70));
+                rec('⚠ 角色出现在列表中（真的落库了）',
+                    charForm.textContent.includes('沈砚'), '');
+              }
+            }
+
             // 18) Run 控制（补缺口：Pause / Resume / Cancel 入口）
             const runForm = [...document.querySelectorAll('.form')]
               .find(f => f.querySelector('h3')?.textContent.includes('Agent 与状态机'));

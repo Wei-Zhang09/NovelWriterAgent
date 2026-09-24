@@ -145,6 +145,12 @@ export type {
 } from './context/memory-gatherer.js';
 export { SummaryIndexer } from './context/summary-indexer.js';
 export {
+  renderCharacterBlock,
+  toCharacterBrief,
+  selectRelevantCharacters,
+} from './context/character-block.js';
+export type { CharacterBrief } from './context/character-block.js';
+export {
   SummaryGenerator,
   ChapterSummarySchema,
   validateSummary,

@@ -205,6 +205,7 @@ function renderCenter() {
   c.append(renderNewProjectForm());
   if (state.project && state.books.length === 0) c.append(renderNewBookForm());
   if (state.selectedBookId) c.append(renderWordTargetForm());
+  if (state.selectedBookId) c.append(renderCharacterForm());
   if (state.selectedBookId) c.append(renderNewChapterForm());
 }
 
@@ -726,6 +727,112 @@ function renderWordTargetForm() {
   });
   clearBtn.addEventListener('click', () => void save(null));
 
+  return box;
+}
+
+/**
+ * 角色设定（P2-2）。
+ *
+ * ⚠ 存在的理由：角色表与 character.* 工具早就有，但**界面无任何入口** ——
+ *   作者写了「沈砚左手有旧伤」，模型完全不知道，只能靠检索旧章节猜，
+ *   猜不到就自己编。这正是"后端能力有了、界面够不到"的缺陷类。
+ *
+ * ⚠ 界面必须说明"设定会注入规划与写作" —— 否则作者不知道写在这里有什么用，
+ *   就会去正文里反复交代人物，反而让文字啰嗦。
+ */
+function renderCharacterForm() {
+  const box = el('div', 'form');
+  box.append(el('h3', null, '角色设定'));
+
+  const name = el('input');
+  name.placeholder = '角色名（必填）';
+  const aliases = el('input');
+  aliases.placeholder = '别名（逗号分隔，可选）';
+  const role = el('input');
+  role.placeholder = '定位，如 主角 / 配角（可选）';
+  const profile = el('textarea', 'sum-edit');
+  profile.rows = 3;
+  profile.placeholder = '外貌、性格、背景、旧伤等（可选，一行一条）';
+
+  const addBtn = el('button', 'btn btn--primary', '添加角色');
+  const msg = el('div', 'form-msg');
+  const list = el('div', 'model-status');
+
+  box.append(
+    name,
+    aliases,
+    role,
+    profile,
+    addBtn,
+    msg,
+    list,
+    el('div', 'perm-line', '角色设定会注入规划与写作（作者手写的是权威设定）'),
+  );
+
+  async function refresh() {
+    // ⚠ 走 tool.invoke（权限 + schema 双重校验），character.list 不是 IPC 方法
+    const r = await tool('character.list', { bookId: state.selectedBookId }, 'READ');
+    if (!r.ok) return;
+    list.replaceChildren();
+    const chars = r.data.characters ?? [];
+    if (chars.length === 0) {
+      list.append(el('div', 'issue-src', '还没有角色'));
+      return;
+    }
+    for (const c of chars) {
+      const row = el('div', 'issue-row');
+      const body = el('div', 'issue-body');
+      body.append(el('div', 'issue-msg', `${c.name}${c.role ? ` — ${c.role}` : ''}`));
+      const bits = [];
+      if (c.aliases?.length) bits.push(`又称 ${c.aliases.join('、')}`);
+      if (c.currentStatus) bits.push(`现状：${c.currentStatus}`);
+      if (c.profile) bits.push(typeof c.profile === 'string' ? c.profile : JSON.stringify(c.profile));
+      if (bits.length > 0) body.append(el('div', 'issue-src', bits.join('｜')));
+      row.append(body);
+      list.append(row);
+    }
+  }
+
+  addBtn.addEventListener('click', async () => {
+    const n = name.value.trim();
+    if (!n) {
+      msg.className = 'form-msg form-msg--err';
+      msg.textContent = '角色名不得为空';
+      return;
+    }
+    addBtn.disabled = true;
+    msg.textContent = '';
+    const aliasList = aliases.value
+      .split(/[,，、]/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    // ⚠ 走 tool.invoke：character.create 不是 IPC 方法，直接 call 会失败
+    const r = await tool('character.create', {
+      bookId: state.selectedBookId,
+      name: n,
+      ...(aliasList.length > 0 ? { aliases: aliasList } : {}),
+      ...(role.value.trim() ? { role: role.value.trim() } : {}),
+      ...(profile.value.trim() ? { profile: profile.value.trim() } : {}),
+    }, 'WRITE');
+    addBtn.disabled = false;
+    if (!r.ok) {
+      msg.className = 'form-msg form-msg--err';
+      msg.textContent = `${r.error.code}: ${r.error.message}`;
+      return;
+    }
+    msg.className = 'form-msg form-msg--ok';
+    // ⚠ 同名去重时如实说明"复用了既有记录"，不要让作者以为新建成功
+    msg.textContent = r.data.created
+      ? `已添加「${r.data.name}」`
+      : `「${r.data.name}」已存在，未重复创建`;
+    name.value = '';
+    aliases.value = '';
+    role.value = '';
+    profile.value = '';
+    await refresh();
+  });
+
+  void refresh();
   return box;
 }
 
