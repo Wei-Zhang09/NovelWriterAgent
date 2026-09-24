@@ -72,6 +72,8 @@ import {
   renderCharacterBlock,
   toCharacterBrief,
   selectRelevantCharacters,
+  selectWorldSettings,
+  toWorldBrief,
   WorkflowEngine,
   WorkflowRepository,
   createNovelWorkflowStages,
@@ -1223,6 +1225,30 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       });
     }
 
+    // ── 世界观设定（P2-3）──────────────────────────────────
+    // ⚠ 与 workflow 的 write stage 共用同一筛选（只注入 CONFIRMED）。
+    //   旧路径不接线会造成"用工作流写有设定、用逐步按钮写没设定" ——
+    //   同一个功能两种行为是最难查的那类缺陷（P2-2 已踩过同一个坑）。
+    let legacyWorldCtx = '';
+    try {
+      const allWorld = p.repos.world.listByBook(chapter.book_id).map(toWorldBrief);
+      if (allWorld.length > 0) {
+        const sel = selectWorldSettings(allWorld);
+        legacyWorldCtx = sel.block;
+        if (sel.skippedDrafts > 0) {
+          logger.info('有草稿状态的设定未注入（未确认）', {
+            bookId: chapter.book_id,
+            used: sel.usedCount,
+            skippedDrafts: sel.skippedDrafts,
+          });
+        }
+      }
+    } catch (e) {
+      logger.warn('世界观设定读取失败（本次不注入设定）', {
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+
     // ── 每章字数目标（P2-1，软约束）────────────────────────
     // ⚠ 显式传 wordsPerScene 时以调用方为准（精细控制优先）；
     //   否则按书的目标换算。未设定目标时走 Writer 默认值。
@@ -1248,6 +1274,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       // ⚠ 角色设定（P2-2）：旧路径同样要注入，否则"用工作流写有设定、
       //   用逐步按钮写没设定"—— 同一个功能两种行为是最难查的那类缺陷。
       ...(legacyCharCtx.trim().length > 0 ? { characterContext: legacyCharCtx } : {}),
+      ...(legacyWorldCtx.trim().length > 0 ? { worldContext: legacyWorldCtx } : {}),
     });
 
     const res = await writer.draft(plan as never);

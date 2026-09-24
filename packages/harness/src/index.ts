@@ -152,6 +152,13 @@ export {
 } from './context/character-block.js';
 export type { CharacterBrief } from './context/character-block.js';
 export {
+  renderWorldBlock,
+  selectWorldSettings,
+  toWorldBrief,
+  typeLabel,
+} from './context/world-block.js';
+export type { WorldBrief, WorldSelection } from './context/world-block.js';
+export {
   SummaryGenerator,
   ChapterSummarySchema,
   validateSummary,

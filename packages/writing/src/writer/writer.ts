@@ -92,6 +92,14 @@ export interface WriterOptions {
    *   Writer 不解析角色数据，只负责放进 prompt。
    */
   readonly characterContext?: string;
+  /**
+   * 世界观设定块（P2-3）。整章共用一份。
+   *
+   * ⚠ 与 `characterContext` 分开传而不是拼成一个字符串：
+   *   两者的**来源与语义不同**（世界规则 vs 人物），分开后
+   *   prompt 里能各自带标题，模型不会把人物属性当成世界规则。
+   */
+  readonly worldContext?: string;
 }
 
 /** 单场景生成结果 */
@@ -133,6 +141,7 @@ export class Writer {
   private readonly skillEngine?: SkillEngine;
   private readonly sceneMemory?: (scene: ScenePlan, index: number) => string;
   private readonly characterContext?: string;
+  private readonly worldContext?: string;
   private readonly skillRows: readonly SkillRow[];
   private readonly genre: string | null;
 
@@ -147,6 +156,7 @@ export class Writer {
     this.genre = opts.genre ?? null;
     this.sceneMemory = opts.sceneMemory;
     this.characterContext = opts.characterContext;
+    this.worldContext = opts.worldContext;
   }
 
   /**
@@ -225,6 +235,12 @@ export class Writer {
       //   技能是"怎么写"（风格层），任务是"这一段要写什么"。
       //   事实必须在任务之前给出，否则模型先构思情节再看到人物设定，
       //   容易出现"设定说他有旧伤，正文里却用左手拎箱子"。
+      // ⚠ 世界观设定（P2-3）排在角色之前：世界规则是"这个世界的物理定律"，
+      //   人物在定律之内活动。顺序反了会让模型先定人物再迁就规则。
+      if (this.worldContext && this.worldContext.trim().length > 0) {
+        messages.push({ role: 'system', content: this.worldContext });
+      }
+
       if (this.characterContext && this.characterContext.trim().length > 0) {
         messages.push({ role: 'system', content: this.characterContext });
       }

@@ -132,6 +132,60 @@ describe('⚠ 角色设定必须真的进 prompt（P2-2）', () => {
     const all = calls[0]!.messages.map((m) => m.content).join('\n');
     expect(all).not.toContain('角色设定');
   });
+  it('⚠ 世界观排在角色之前（世界规则先于人物）', async () => {
+    // 世界规则是"这个世界的物理定律"，人物在定律之内活动。
+    // 顺序反了会让模型先定人物再迁就规则。
+    const { fn, calls } = completer(['场景一正文']);
+    const w = new Writer({
+      complete: fn,
+      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      logger,
+      characterContext: '## 角色设定\n- 沈砚',
+      worldContext: '## 世界观设定\n- [世界规则] 灵力枯竭',
+    });
+    await w.draft(planOf());
+
+    const msgs = calls[0]!.messages;
+    const worldIdx = msgs.findIndex((m) => m.content.includes('世界观设定'));
+    const charIdx = msgs.findIndex((m) => m.content.includes('角色设定'));
+    expect(worldIdx).toBeGreaterThan(-1);
+    expect(charIdx).toBeGreaterThan(-1);
+    expect(worldIdx).toBeLessThan(charIdx);
+  });
+
+  it('⚠ 世界观设定必须真的进 prompt', async () => {
+    const { fn, calls } = completer(['场景一正文']);
+    const w = new Writer({
+      complete: fn,
+      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      logger,
+      worldContext: '## 世界观设定\n- [世界规则] 灵力枯竭：施法消耗寿命',
+    });
+    await w.draft(planOf());
+    const all = calls[0]!.messages.map((m) => m.content).join('\n');
+    expect(all).toContain('灵力枯竭');
+    expect(all).toContain('施法消耗寿命');
+  });
+
+  it('不传 worldContext → 不产生空块', async () => {
+    const { fn, calls } = completer(['场景一正文']);
+    await writerOf(fn).draft(planOf());
+    const all = calls[0]!.messages.map((m) => m.content).join('\n');
+    expect(all).not.toContain('世界观设定');
+  });
+
+  it('传空白 worldContext → 不产生空块', async () => {
+    const { fn, calls } = completer(['场景一正文']);
+    const w = new Writer({
+      complete: fn,
+      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      logger,
+      worldContext: '  \n ',
+    });
+    await w.draft(planOf());
+    const all = calls[0]!.messages.map((m) => m.content).join('\n');
+    expect(all).not.toContain('世界观设定');
+  });
 });
 
 describe('⚠ Writer 只写工作区（§9.1 核心原则）', () => {

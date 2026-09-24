@@ -45,6 +45,8 @@ import {
   renderCharacterBlock,
   toCharacterBrief,
   selectRelevantCharacters,
+  selectWorldSettings,
+  toWorldBrief,
 } from '@nwa/harness';
 import type { RetrievalService } from '@nwa/harness';
 import type { ToolContext } from '@nwa/shared';
@@ -169,6 +171,40 @@ function buildCharacterContext(
     // ⚠ 角色设定是**增强**不是前置依赖：读角色失败不该让整章写不出来。
     //   如实记录并返回空串，让写作继续（缺设定的稿仍是可用的草稿）。
     deps.logger.warn('角色设定读取失败（本次不注入角色）', {
+      bookId,
+      error: e instanceof Error ? e.message : String(e),
+    });
+    return '';
+  }
+}
+
+/**
+ * 构造本章的世界观设定块（P2-3）。
+ *
+ * ⚠ 与角色块分开成两个函数，因为**筛选规则不同**：
+ *   角色按"本章谁出场"筛（按章不同），
+ *   世界观是整本书的不变量（第 3 章和第 30 章同样成立），不按章筛。
+ *
+ * ⚠ 只注入 CONFIRMED 的条目 —— 草稿是"作者还在改，先别当准"。
+ *   草稿条数记入日志，作者能在界面上看到"有几条没生效"。
+ */
+function buildWorldContext(deps: WorkflowServicesDeps, bookId: string): string {
+  try {
+    const all = deps.repos.world.listByBook(bookId).map(toWorldBrief);
+    if (all.length === 0) return '';
+    const sel = selectWorldSettings(all);
+    if (sel.skippedDrafts > 0) {
+      deps.logger.info('有草稿状态的设定未注入（未确认）', {
+        bookId,
+        used: sel.usedCount,
+        skippedDrafts: sel.skippedDrafts,
+      });
+    }
+    return sel.block;
+  } catch (e) {
+    // ⚠ 设定是**增强**不是前置依赖：读设定失败不该让整章写不出来
+    //   （同 buildCharacterContext 的判断）。
+    deps.logger.warn('世界观设定读取失败（本次不注入设定）', {
       bookId,
       error: e instanceof Error ? e.message : String(e),
     });
@@ -420,16 +456,26 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
         prevSummary ?? '',
         String(input.params['userInstruction'] ?? ''),
       ]);
-      if (characterContext.length > 0) {
-        log.info('已注入角色设定（规划）', {
+      // ⚠ 世界观设定（P2-3）：只注入作者**已确认**的条目。
+      //   确认这个动作的意义就在这里 —— 不然它只是"让 Agent 别拦我"，
+      //   而不是"让 Agent 按设定写"。
+      const worldContext = buildWorldContext(deps, ch.book_id);
+      // ⚠ 世界观排在角色之前：世界规则是"这个世界的物理定律"，
+      //   人物是在定律之内活动的。顺序反了会让模型先定人物再迁就规则。
+      const contextText = [worldContext, characterContext]
+        .filter((s) => s.trim().length > 0)
+        .join('\n\n');
+      if (contextText.length > 0) {
+        log.info('已注入设定（规划）', {
           chapterNumber: ch.chapter_number,
-          chars: characterContext.length,
+          worldChars: worldContext.length,
+          charChars: characterContext.length,
         });
       }
 
       const res = await planner.plan({
         chapterNumber: ch.chapter_number,
-        contextText: characterContext,
+        contextText,
         ...(prevSummary ? { previousSummary: prevSummary } : {}),
         ...(input.params['userInstruction']
           ? { userInstruction: String(input.params['userInstruction']) }
@@ -519,6 +565,9 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
       const characterContext = buildCharacterContext(deps, ch.book_id, [
         JSON.stringify(plan),
       ]);
+      // ⚠ 世界观设定（P2-3）：与 plan stage 共用同一 helper，保证
+      //   "规划时遵守的规则"与"写作时遵守的规则"是同一套。
+      const worldContext = buildWorldContext(deps, ch.book_id);
 
       // ── 每章字数目标（P2-1，软约束）──────────────────────
       //
@@ -544,6 +593,7 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
         // ⚠ 角色设定（P2-2）：与 plan stage 用同一套筛选，
         //   否则"规划时知道有谁"但"写作时忘了" —— 计划与正文对不上。
         ...(characterContext.trim().length > 0 ? { characterContext } : {}),
+        ...(worldContext.trim().length > 0 ? { worldContext } : {}),
         // ⚠ 场景级检索（P0-3）：按**每个场景**的意图取旧内容，
         //   不是整章共用一份。检索失败返回空串（Writer 会继续写）。
         ...(deps.retrieval
