@@ -69,6 +69,17 @@ export interface WriterOptions {
   readonly skillRows?: readonly SkillRow[];
   /** 写什么类型的小说（技能检索的类型隔离依据，§21） */
   readonly genre?: string | null;
+  /**
+   * 场景级长程记忆提供者（P0-3）。
+   *
+   * ⚠ 为什么是**回调**而不是一次性文本：不同场景需要不同的记忆。
+   *   用同一个 query 给整章取一份记忆，会让第 5 个场景读到只与
+   *   第 1 个场景相关的旧内容 —— 那不是"长程记忆"，是噪声。
+   *
+   * 返回空字符串表示"本场景没有可用记忆"；抛错则由调用方在
+   * 提供者内部处理（检索失败不该让写作失败）。
+   */
+  readonly sceneMemory?: (scene: ScenePlan, index: number) => string;
 }
 
 /** 单场景生成结果 */
@@ -108,6 +119,7 @@ export class Writer {
   private readonly wordsPerScene: number;
   private readonly tailChars: number;
   private readonly skillEngine?: SkillEngine;
+  private readonly sceneMemory?: (scene: ScenePlan, index: number) => string;
   private readonly skillRows: readonly SkillRow[];
   private readonly genre: string | null;
 
@@ -120,6 +132,7 @@ export class Writer {
     this.skillEngine = opts.skillEngine;
     this.skillRows = opts.skillRows ?? [];
     this.genre = opts.genre ?? null;
+    this.sceneMemory = opts.sceneMemory;
   }
 
   /**
@@ -147,6 +160,10 @@ export class Writer {
 
     // ⚠ 技能检索的统计：把"用了哪些技能"落进工作区，
     //   否则事后无法回答"这段为什么这样写"（§46 可追溯）
+    // ⚠ 记忆使用记录：与技能一样，事后要能回答"这段为什么这样写"
+    const memoryUsed: { sceneIndex: number; sceneId: string; chars: number }[] = [];
+    const memoryFailed: { sceneIndex: number; reason: string }[] = [];
+
     const skillUsage: {
       sceneIndex: number;
       sceneId: string;
@@ -185,6 +202,33 @@ export class Writer {
       // ⚠ 技能块放在约束之后、任务之前：它是"怎么写"的建议，
       //   排在"写什么"的约束之后才不会被当成硬性要求
       if (sel.block) messages.push({ role: 'system', content: sel.block });
+
+      // ── 场景级长程记忆（P0-3）──────────────────────────
+      //
+      // ⚠ 按**本场景**取，不是整章共用一份：不同场景需要不同的旧内容，
+      //   整章共用会让第 5 个场景读到只与第 1 个场景相关的东西。
+      //
+      // ⚠ 提供者抛错不能中断写作 —— 长程记忆是增强不是前置依赖。
+      //   失败时如实记录并**继续**（缺记忆写出来的章仍是可用的草稿）。
+      if (this.sceneMemory) {
+        try {
+          const mem = this.sceneMemory(scene, i);
+          if (mem.trim().length > 0) {
+            messages.push({
+              role: 'system',
+              content: `以下是与本场景相关的旧内容（可参考其写法与既有事实，不要直接照抄）：\n\n${mem}`,
+            });
+            memoryUsed.push({ sceneIndex: i, sceneId: scene.sceneId, chars: mem.length });
+          }
+        } catch (e) {
+          this.logger.warn('场景级记忆获取失败（继续写作，不中断）', {
+            sceneIndex: i,
+            error: e instanceof Error ? e.message : String(e),
+          });
+          memoryFailed.push({ sceneIndex: i, reason: e instanceof Error ? e.message : String(e) });
+        }
+      }
+
       messages.push({ role: 'user', content: buildSceneTask(scene, previousTail, this.wordsPerScene) });
 
       let res: { text: string; usage?: { inputTokens: number; outputTokens: number } };
@@ -234,6 +278,13 @@ export class Writer {
       availableSkills: this.skillRows.length,
       scenes: skillUsage,
       totalBlockChars: skillUsage.reduce((n, x) => n + x.blockChars, 0),
+    });
+    // ⚠ 记忆使用落盘："这个场景参考了哪些旧内容"必须可回答（§五）
+    this.workspace.writeJson('memoryUsage', {
+      chapterNumber: plan.brief.chapterNumber,
+      scenes: memoryUsed,
+      failed: memoryFailed,
+      totalChars: memoryUsed.reduce((n, x) => n + x.chars, 0),
     });
     this.workspace.writeJson('scenePlan', {
       chapterNumber: plan.brief.chapterNumber,

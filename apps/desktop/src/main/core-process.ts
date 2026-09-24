@@ -83,7 +83,7 @@ import type { CorpusSceneRow, SkillRow } from '@nwa/storage';
 import { FtsIndex } from '@nwa/storage';
 import { bigramTokenizer, Retriever, buildMatchExpression } from '@nwa/retrieval';
 import type { ReviewIssue } from '@nwa/shared';
-import { TransitionGate } from '@nwa/harness';
+import { TransitionGate, RetrievalService } from '@nwa/harness';
 import type { ToolContext } from '@nwa/shared';
 import type { AgentHandler, ContextEntry, SlotName } from '@nwa/harness';
 
@@ -564,6 +564,37 @@ function buildWorkflowEngine(p: OpenProject): WorkflowEngine {
             return { rows: [], genre: null };
           }
         },
+        // ── 分层检索服务（P0-3）──────────────────────────
+        //
+        // ⚠ 构造失败时传 null，让各 stage 如实报告"检索层不可用" ——
+        //   不是"没有相关记忆"。两者混淆会让模型以为史上没发生过
+        //   相关的事，从而自行编造。
+        retrieval: (() => {
+          try {
+            return new RetrievalService({
+              db: p.db,
+              logger: logger.child('retrieval'),
+              // ⚠ 与索引侧同一分词口径（ADR-0004 的 bigram 补丁）
+              buildMatch: (q) => buildMatchExpression(bigramTokenizer.query(q)),
+              // 检索痕迹落库 —— 使「为什么这一章引用了那个旧章节」可回答
+              recordTraces: (rows) => {
+                try {
+                  return new WorkflowRepository(p.db, logger.child('workflow')).addRetrievalTraces(rows);
+                } catch (e) {
+                  logger.warn('检索痕迹落库失败（不阻断）', {
+                    error: e instanceof Error ? e.message : String(e),
+                  });
+                  return 0;
+                }
+              },
+            });
+          } catch (e) {
+            logger.warn('检索服务构造失败：上下文将缺少长程记忆', {
+              error: e instanceof Error ? e.message : String(e),
+            });
+            return null;
+          }
+        })(),
         commitChapter: async (input) => {
           // 复用既有 commit 路径（含 Manifest 对账与 Repair）
           const r = await handlers['commit.run']!({
@@ -3178,6 +3209,81 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
         resumeCursor: w.resumeCursor,
         updatedAt: w.updatedAt,
       })),
+    };
+  },
+
+  /**
+   * 检索痕迹（P0-3）—— 回答「为什么这一章引用了那个旧章节」。
+   *
+   * ⚠ 三种查法都要支持：
+   *   workflowId —— "这一步检索了什么"（按 stage 分）
+   *   hitId      —— "这个旧章节被谁引用过"（反向追溯）
+   *   stage      —— "所有 Writer 阶段的检索"
+   */
+  'retrieval.traces': (params: {
+    workflowId?: string;
+    stage?: string;
+    hitId?: string;
+    limit?: number;
+  }) => {
+    const p = requireProject();
+    const repo = new WorkflowRepository(p.db);
+    const rows = repo.listRetrievalTraces({
+      ...(params.workflowId ? { workflowId: params.workflowId } : {}),
+      ...(params.stage ? { stage: params.stage } : {}),
+      ...(params.hitId ? { hitId: params.hitId } : {}),
+      ...(params.limit !== undefined ? { limit: params.limit } : {}),
+    });
+    return {
+      count: rows.length,
+      traces: rows.map((r) => ({
+        id: r.id,
+        workflowId: r.workflowId,
+        stage: r.stage,
+        query: r.query,
+        retriever: r.retriever,
+        hitId: r.hitId,
+        score: r.score,
+        sourceRef: r.sourceRef,
+        reason: r.reason,
+        createdAt: r.createdAt,
+      })),
+    };
+  },
+
+  /**
+   * 结构化真相快照（P0-3）—— 连续性检查的依据来源。
+   *
+   * ⚠ 只读，不改任何状态。让 UI 能展示"这次检查对照了哪些真值"。
+   */
+  'retrieval.truth': (params: { bookId?: string | null; chapterNumber: number }) => {
+    const p = requireProject();
+    const bookId = resolveBookId(params.bookId);
+    if (!bookId) {
+      throw new AppError(ErrorCode.TOOL_VALIDATION_ERROR, '没有可用的书（请先创建或打开一本书）');
+    }
+    const svc = new RetrievalService({
+      db: p.db,
+      logger: logger.child('retrieval'),
+      buildMatch: (q) => buildMatchExpression(bigramTokenizer.query(q)),
+    });
+    const truth = svc.readStructuredTruth({
+      bookId,
+      chapterNumber: params.chapterNumber,
+    });
+    return {
+      canonFacts: truth.canonFacts.length,
+      characterStates: truth.characterStates.length,
+      timeline: truth.timeline.length,
+      foreshadowing: truth.foreshadowing.length,
+      warnings: truth.warnings,
+      // 明细也带出来，便于 UI 展示与人工核对
+      detail: {
+        canonFacts: truth.canonFacts.slice(0, 50),
+        characterStates: truth.characterStates.slice(0, 50),
+        timeline: truth.timeline.slice(0, 50),
+        foreshadowing: truth.foreshadowing.slice(0, 50),
+      },
     };
   },
 };

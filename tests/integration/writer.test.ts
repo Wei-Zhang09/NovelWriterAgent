@@ -329,3 +329,119 @@ describe('偏离说明的提取（自报，不作判定依据）', () => {
     expect(sp.scenes[0].deviations).toEqual(['改了地点']);
   });
 });
+
+describe('⚠ P0-3：场景级长程记忆按**每个场景**注入', () => {
+  it('sceneMemory 按场景分别调用（不是整章共用一份）', async () => {
+    const { fn } = completer(['场景一正文', '场景二正文']);
+    const seen: string[] = [];
+    const w = new Writer({
+      complete: fn,
+      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      logger,
+      sceneMemory: (scene) => {
+        seen.push(scene.sceneId);
+        return `旧内容-${scene.sceneId}`;
+      },
+    });
+    await w.draft(planOf());
+
+    // ⚠ 两个场景各调一次，且拿到的是**各自**的场景对象 ——
+    //   整章共用一份会让第 5 个场景读到只与第 1 个场景相关的旧内容
+    expect(seen).toEqual(['s1', 's2']);
+  });
+
+  it('记忆进 prompt，且明确要求不要照抄', async () => {
+    const { fn, calls } = completer(['a', 'b']);
+    const w = new Writer({
+      complete: fn,
+      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      logger,
+      sceneMemory: () => '第 12 章：陆明远在雨夜与沈氏对峙',
+    });
+    await w.draft(planOf());
+
+    const first = calls[0]!.messages.map((m) => m.content).join('\n');
+    expect(first).toContain('陆明远在雨夜与沈氏对峙');
+    expect(first).toContain('不要直接照抄');
+  });
+
+  it('⚠ 记忆为空时不注入空块（不留无用消息）', async () => {
+    const { fn, calls } = completer(['a', 'b']);
+    const w = new Writer({
+      complete: fn,
+      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      logger,
+      sceneMemory: () => '',
+    });
+    await w.draft(planOf());
+    const first = calls[0]!.messages.map((m) => m.content).join('\n');
+    expect(first).not.toContain('以下是与本场景相关的旧内容');
+  });
+
+  it('⚠ 记忆提供者抛错不中断写作（记忆是增强不是前置依赖）', async () => {
+    const { fn } = completer(['场景一正文', '场景二正文']);
+    const w = new Writer({
+      complete: fn,
+      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      logger,
+      sceneMemory: () => {
+        throw new Error('检索层炸了');
+      },
+    });
+    const r = await w.draft(planOf());
+
+    // 正文仍然写出来了 —— 缺记忆的草稿仍是可用草稿
+    expect(r.ok).toBe(true);
+    expect(r.draft!.scenes).toHaveLength(2);
+  });
+
+  it('⚠ 记忆使用记录落盘（事后可回答"这段参考了什么"）', async () => {
+    const { fn } = completer(['场景一正文', '场景二正文']);
+    const w = new Writer({
+      complete: fn,
+      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      logger,
+      sceneMemory: (scene) => `旧内容-${scene.sceneId}`,
+    });
+    await w.draft(planOf());
+
+    const raw = readFileSync(join(root, 'workspace', 'chapter-001', 'memory-usage.json'), 'utf8');
+    const rec = JSON.parse(raw) as {
+      scenes: { sceneIndex: number; sceneId: string; chars: number }[];
+      totalChars: number;
+      failed: unknown[];
+    };
+    expect(rec.scenes).toHaveLength(2);
+    expect(rec.scenes[0]!.sceneId).toBe('s1');
+    expect(rec.totalChars).toBeGreaterThan(0);
+    expect(rec.failed).toHaveLength(0);
+  });
+
+  it('⚠ 记忆获取失败的场景被如实记进 failed（不静默）', async () => {
+    const { fn } = completer(['a', 'b']);
+    const w = new Writer({
+      complete: fn,
+      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      logger,
+      sceneMemory: () => {
+        throw new Error('检索层炸了');
+      },
+    });
+    await w.draft(planOf());
+
+    const rec = JSON.parse(
+      readFileSync(join(root, 'workspace', 'chapter-001', 'memory-usage.json'), 'utf8'),
+    ) as { failed: { sceneIndex: number; reason: string }[] };
+    expect(rec.failed).toHaveLength(2);
+    expect(rec.failed[0]!.reason).toContain('检索层炸了');
+  });
+
+  it('不传 sceneMemory 时行为与之前完全一致（向后兼容）', async () => {
+    const { fn, calls } = completer(['a', 'b']);
+    const w = writerOf(fn);
+    const r = await w.draft(planOf());
+    expect(r.ok).toBe(true);
+    const first = calls[0]!.messages.map((m) => m.content).join('\n');
+    expect(first).not.toContain('以下是与本场景相关的旧内容');
+  });
+});

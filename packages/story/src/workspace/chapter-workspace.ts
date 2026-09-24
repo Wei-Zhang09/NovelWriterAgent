@@ -41,6 +41,14 @@ export const WORKSPACE_FILES = {
    *   而 §24 要求技能可 A/B 测试，没有使用记录就无法比较。
    */
   skillUsage: 'skill-usage.json',
+  /**
+   * 长程记忆使用记录（P0-3）。
+   *
+   * ⚠ 与 skillUsage 同理但**不同维度**：技能记录"用了哪条写法建议"，
+   *   记忆记录"参考了哪些旧内容"。两者缺一，事后都无法回答
+   *   "这段为什么这样写" —— 一个答"写法从哪来"，一个答"事实从哪来"。
+   */
+  memoryUsage: 'memory-usage.json',
   draft: 'draft.md',
   review: 'review.json',
   revision: 'revision.md',

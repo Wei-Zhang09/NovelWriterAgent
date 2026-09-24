@@ -102,6 +102,15 @@ export {
 } from './workflow/workflow-engine.js';
 export { WorkflowRepository, type CreateWorkflowInput } from './workflow/workflow-repository.js';
 export {
+  RetrievalService,
+  type RetrievalTier,
+  type TierHit,
+  type TierResult,
+  type StructuredTruth,
+  type GatherTierInput,
+  type RetrievalServiceDeps,
+} from './retrieval/retrieval-service.js';
+export {
   createNovelWorkflowStages,
   type NovelWorkflowServices,
 } from './workflow/novel-workflow.js';

@@ -32,6 +32,7 @@
 import { AppError, ErrorCode, Logger } from '@nwa/core';
 import type { Repositories, Database } from '@nwa/storage';
 import type { ToolRegistry, NovelWorkflowServices } from '@nwa/harness';
+import type { RetrievalService } from '@nwa/harness';
 import type { ToolContext } from '@nwa/shared';
 import { ChapterWorkspace, ContinuityChecker } from '@nwa/story';
 import { Writer, Reviewer, Reviser, Planner } from '@nwa/writing';
@@ -59,6 +60,14 @@ export interface WorkflowServicesDeps {
   readonly runtime: WorkflowModel | null;
   /** 技能（可能为空：技能是增强不是前置） */
   readonly loadSkills: () => { rows: readonly unknown[]; genre: string | null };
+  /**
+   * 分层检索服务（P0-3）。
+   *
+   * ⚠ `null` 表示检索层不可用（FTS 未建索引等）—— 此时各 stage
+   *   **如实报告 retrieved:false**，不假装"没有相关记忆"。
+   *   由 main 进程构造并注入（它才知道项目 db 与分词器）。
+   */
+  readonly retrieval: RetrievalService | null;
   /** 原子提交（§ADR-0002） */
   readonly commitChapter: (input: {
     chapterId: string;
@@ -156,36 +165,88 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
         sourceRef: string | null;
         reason: string | null;
       }[] = [];
+      const tiers: {
+        tier: string;
+        stage: string;
+        retrieved: boolean;
+        hitCount: number;
+        error: string | null;
+      }[] = [];
 
-      let hitCount = 0;
-      try {
-        const terms = query.replace(/[^\p{L}\p{N}\s]/gu, ' ').trim();
-        if (terms.length > 0) {
-          const rows = deps.db.all<{ chapter_id: string; score: number }>(
-            `SELECT c.id AS chapter_id, bm25(chapter_fts) AS score
-               FROM chapter_fts
-               JOIN chapters c ON c.rowid = chapter_fts.rowid
-              WHERE chapter_fts MATCH ? AND c.book_id = ?
-              ORDER BY score LIMIT 8`,
-            terms,
-            ch.book_id,
-          );
-          hitCount = rows.length;
-          for (const r of rows) {
+      // ── 分层检索（P0-3）────────────────────────────────
+      //
+      // ⚠ 提示词 §五：不同 stage 用**不同粒度**，不能一个 gather 打天下。
+      //   这里为每个 stage 预取它需要的那一层，结果按 stage 分别落
+      //   retrieval_traces（`stage` 字段就是证据），使
+      //   「为什么 Planner 引用了第 12 章」与「为什么 Writer 引用了它」
+      //   是两个可分别回答的问题。
+      //
+      // ⚠ 检索层不可用（null）时**如实报告**，不静默当成"没有记忆"。
+      if (deps.retrieval) {
+        const svc = deps.retrieval;
+        const base = {
+          bookId: ch.book_id,
+          chapterNumber: ch.chapter_number,
+          query,
+          // ⚠ 用真实的 workflowId：痕迹的 workflow_id 为 NULL 时
+          //   按 workflowId 查不到（"写了但挂错归属"）。
+          workflowId: input.workflowId,
+        };
+        const perStage: readonly {
+          readonly stage: string;
+          readonly run: () => { hits: readonly unknown[]; retrieved: boolean; error?: string };
+        }[] = [
+          // Planner：章节级（"前面发生过什么"）
+          { stage: 'planner', run: () => svc.gatherChapterLevel({ ...base, stage: 'planner', limit: 8 }) },
+          // Writer：场景级（"这个场景该怎么写"）
+          { stage: 'writer', run: () => svc.gatherSceneLevel({ ...base, stage: 'writer', limit: 5 }) },
+          // Reviewer：证据级（"这条指控有没有依据"）
+          { stage: 'reviewer', run: () => svc.gatherEvidenceLevel({ ...base, stage: 'reviewer', limit: 10 }) },
+          // Continuity：结构化真相优先
+          {
+            stage: 'continuity',
+            run: () => svc.gatherForContinuity({ ...base, stage: 'continuity', limit: 20 }),
+          },
+        ];
+        for (const t of perStage) {
+          const r = t.run();
+          tiers.push({
+            tier: t.stage,
+            stage: t.stage,
+            retrieved: r.retrieved,
+            hitCount: r.hits.length,
+            error: r.error ?? null,
+          });
+          for (const h of r.hits as readonly {
+            sourceRef: string;
+            retriever: string;
+            hitId: string;
+            score: number | null;
+            reason: string;
+          }[]) {
             trace.push({
               query,
-              retriever: 'chapter_fts',
-              hitId: r.chapter_id,
-              score: r.score,
-              sourceRef: `chapter:${r.chapter_id}`,
-              reason: 'BM25 章节级检索命中',
+              retriever: h.retriever,
+              hitId: h.hitId,
+              score: h.score,
+              sourceRef: h.sourceRef,
+              reason: `[${t.stage}] ${h.reason}`,
             });
           }
         }
-      } catch (e) {
-        // ⚠ 检索失败不阻断写作（FTS 可能未建索引），但必须如实记录
-        log.warn('章节级检索失败（不阻断写作）', {
-          error: e instanceof Error ? e.message : String(e),
+      } else {
+        // ⚠ 不是"没有相关记忆"，而是"检索层不可用" —— 必须区分
+        for (const st of ['planner', 'writer', 'reviewer', 'continuity']) {
+          tiers.push({
+            tier: st,
+            stage: st,
+            retrieved: false,
+            hitCount: 0,
+            error: '检索服务未注入（FTS 可能未建索引）',
+          });
+        }
+        log.warn('检索服务未注入：上下文将缺少长程记忆（不阻断写作）', {
+          chapterNumber: ch.chapter_number,
         });
       }
 
@@ -194,9 +255,10 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
           chapterId: ch.id,
           chapterNumber: ch.chapter_number,
           query,
-          retrievalHits: hitCount,
+          retrievalHits: trace.length,
         },
         retrievalTrace: trace,
+        retrievalTiers: tiers,
       };
     },
 
@@ -297,6 +359,32 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
         logger: deps.logger.child('writer'),
         skillRows: skillRows as never,
         genre,
+        // ⚠ 场景级检索（P0-3）：按**每个场景**的意图取旧内容，
+        //   不是整章共用一份。检索失败返回空串（Writer 会继续写）。
+        ...(deps.retrieval
+          ? {
+              sceneMemory: (scene: { purpose?: string; sceneId?: string }) => {
+                const q = [scene.purpose, scene.sceneId].filter(Boolean).join(' ');
+                if (!q.trim()) return '';
+                const r = deps.retrieval!.gatherSceneLevel({
+                  bookId: ch.book_id,
+                  chapterNumber: ch.chapter_number,
+                  query: q,
+                  stage: 'writer',
+                  limit: 3,
+                });
+                // ⚠ 检索不可用时返回空串并在日志里留痕 —— 不假装"没有记忆"
+                if (!r.retrieved) {
+                  deps.logger.warn('场景级检索不可用（本场景无长程记忆）', {
+                    sceneId: scene.sceneId,
+                    error: r.error ?? null,
+                  });
+                  return '';
+                }
+                return r.hits.map((h) => `- ${h.content}`).join('\n');
+              },
+            }
+          : {}),
       });
 
       const res = await writer.draft(plan as never);
@@ -365,10 +453,31 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
         logger: deps.logger.child('reviewer'),
       });
 
+      // ⚠ 证据级检索（P0-3）：Reviewer 要判"这条指控有没有依据"，
+      //   必须给它**可引用的证据条目**，而不是小说片段。
+      //   空 contextText 会让它只能凭感觉判，无法回溯。
+      let evidenceText = '';
+      if (deps.retrieval) {
+        const ev = deps.retrieval.gatherEvidenceLevel({
+          bookId: ch.book_id,
+          chapterNumber: ch.chapter_number,
+          query: `第 ${ch.chapter_number} 章审查依据`,
+          stage: 'reviewer',
+          limit: 10,
+        });
+        if (ev.retrieved && ev.hits.length > 0) {
+          evidenceText =
+            '可引用的证据条目（判断问题时请优先引用它们）：\n' +
+            ev.hits.map((h) => `- [${h.sourceRef}] ${h.content}`).join('\n');
+        } else if (!ev.retrieved) {
+          log.warn('证据级检索不可用（审查缺少可引用证据）', { error: ev.error ?? null });
+        }
+      }
+
       const review = await reviewer.review({
         chapterNumber: ch.chapter_number,
         draftText: draft,
-        contextText: '',
+        contextText: evidenceText,
         deterministicIssues: deterministic,
       });
 
@@ -459,13 +568,44 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
       // ⚠ P1：结果必须落盘（durable），否则进程重启后要重跑昂贵的检查
       ws.writeJson('continuity', report);
 
+      // ── 检查依据（P0-3）────────────────────────────────
+      //
+      // ⚠ 结构化真值**优先**：连续性结论是断言，必须有确定性依据。
+      //   全文检索是概率性的（查不到不代表没有），只作补充。
+      //
+      // ⚠ 返回 `[]` 会让人以为"什么都没对照" —— 必须如实填实际读到的来源。
+      const checkedAgainst: string[] = [];
+      const structuredWarnings: string[] = [];
+      if (deps.retrieval) {
+        const r = deps.retrieval.gatherForContinuity({
+          bookId: ch.book_id,
+          chapterNumber: ch.chapter_number,
+          query: `第 ${ch.chapter_number} 章连续性检查`,
+          stage: 'continuity',
+          limit: 50,
+        });
+        // 按来源层级去重统计（回答"依据的是哪几层"）
+        const byRetriever = new Map<string, number>();
+        for (const h of r.hits) {
+          byRetriever.set(h.retriever, (byRetriever.get(h.retriever) ?? 0) + 1);
+        }
+        for (const [k, n] of byRetriever) checkedAgainst.push(`${k}(${n})`);
+        if (r.error) structuredWarnings.push(r.error);
+      } else {
+        structuredWarnings.push('检索服务未注入：连续性检查缺少结构化真值依据');
+      }
+
+      // 确定性检查本身也是"依据"（它读的是 Canon/角色状态）
+      checkedAgainst.push(`deterministic_checker(issues=${report.issues.length})`);
+
       return {
         reportPath: ws.pathOf('continuity'),
         contentHash: '',
         // ⚠ ContinuityChecker 的 severity 只有 BLOCKING / WARNING（无 HIGH）——
         //   实测确认。写 HIGH 会让这个判断永远为假，静默漏掉阻塞问题。
         blockingCount: report.issues.filter((i) => i.severity === 'BLOCKING').length,
-        checkedAgainst: [],
+        checkedAgainst,
+        structuredWarnings,
       };
     },
 

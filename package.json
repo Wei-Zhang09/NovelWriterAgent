@@ -50,7 +50,8 @@
     "verify:skill-writer": "electron apps/desktop/scripts/verify-skill-writer.mjs",
     "verify:backup": "electron apps/desktop/scripts/verify-backup.mjs",
     "verify:corpus-import": "electron apps/desktop/scripts/verify-corpus-import.mjs",
-    "verify:workflow": "electron apps/desktop/scripts/verify-workflow.mjs"
+    "verify:workflow": "electron apps/desktop/scripts/verify-workflow.mjs",
+    "verify:retrieval": "electron apps/desktop/scripts/verify-retrieval.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

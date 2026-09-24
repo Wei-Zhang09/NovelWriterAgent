@@ -371,6 +371,134 @@ export class WorkflowRepository {
     );
   }
 
+  /**
+   * 记录一条检索痕迹（P0-3）。
+   *
+   * ⚠ 为什么要落库：提示词要求最终能回答「为什么这一章会引用那个旧章节」。
+   *   检索结果用完即弃的话，事后只能靠猜 —— 而"引用错了旧章节"恰恰是
+   *   长篇最容易出、也最难复现的问题。
+   *
+   * ⚠ workflow_id 可空：单步调试（不经 workflow）也要能记录。
+   */
+  addRetrievalTraces(
+    rows: readonly {
+      readonly id: string;
+      readonly workflowId: string | null;
+      readonly runId?: string | null;
+      readonly stage: string;
+      readonly query: string;
+      readonly retriever: string;
+      readonly hitId: string;
+      readonly score?: number | null;
+      readonly sourceRef?: string | null;
+      readonly reason?: string | null;
+    }[],
+  ): number {
+    if (rows.length === 0) return 0;
+    const now = new Date().toISOString();
+    let n = 0;
+    for (const r of rows) {
+      try {
+        this.db.run(
+          `INSERT INTO retrieval_traces
+             (id, workflow_id, run_id, stage, query, retriever, hit_id, score, source_ref, reason, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+          r.id,
+          r.workflowId,
+          r.runId ?? null,
+          r.stage,
+          r.query,
+          r.retriever,
+          r.hitId,
+          r.score ?? null,
+          r.sourceRef ?? null,
+          r.reason ?? null,
+          now,
+        );
+        n += 1;
+      } catch (e) {
+        // ⚠ 痕迹写入失败**不能**让写作失败 —— 它是观测，不是流程的一部分。
+        //   （同一个坑在 P0-1 已经踩过一次：事件写入把 stage 永久卡死。）
+        this.logger.warn('检索痕迹写入失败（不阻断）', {
+          stage: r.stage,
+          hitId: r.hitId,
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+    return n;
+  }
+
+  /**
+   * 查检索痕迹 —— 回答"这一章的某条引用是怎么来的"。
+   *
+   * 两种查法都支持：按 workflow+stage（"这一步检索了什么"），
+   * 按 hitId（"这个旧章节被谁引用过"）。
+   */
+  listRetrievalTraces(q: {
+    readonly workflowId?: string;
+    readonly stage?: string;
+    readonly hitId?: string;
+    readonly limit?: number;
+  }): {
+    id: string;
+    workflowId: string | null;
+    stage: string;
+    query: string;
+    retriever: string;
+    hitId: string;
+    score: number | null;
+    sourceRef: string | null;
+    reason: string | null;
+    createdAt: string;
+  }[] {
+    const where: string[] = [];
+    const args: unknown[] = [];
+    if (q.workflowId) {
+      where.push('workflow_id = ?');
+      args.push(q.workflowId);
+    }
+    if (q.stage) {
+      where.push('stage = ?');
+      args.push(q.stage);
+    }
+    if (q.hitId) {
+      where.push('hit_id = ?');
+      args.push(q.hitId);
+    }
+    const sql =
+      `SELECT * FROM retrieval_traces` +
+      (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
+      ` ORDER BY created_at ASC LIMIT ?`;
+    args.push(q.limit ?? 200);
+
+    const rows = this.db.all<{
+      id: string;
+      workflow_id: string | null;
+      stage: string;
+      query: string;
+      retriever: string;
+      hit_id: string;
+      score: number | null;
+      source_ref: string | null;
+      reason: string | null;
+      created_at: string;
+    }>(sql, ...args);
+
+    return rows.map((r) => ({
+      id: r.id,
+      workflowId: r.workflow_id,
+      stage: r.stage,
+      query: r.query,
+      retriever: r.retriever,
+      hitId: r.hit_id,
+      score: r.score,
+      sourceRef: r.source_ref,
+      reason: r.reason,
+      createdAt: r.created_at,
+    }));
+  }
+
   listArtifacts(workflowId: string): {
     stageId: string;
     artifactType: string;

@@ -58,6 +58,12 @@ export interface NovelWorkflowServices {
     chapterId: string;
     chapterNumber: number;
     params: Record<string, unknown>;
+    /**
+     * ⚠ 必须传：检索痕迹要落 `workflow_id`，否则痕迹的 workflow_id 是 NULL，
+     *   按 workflowId 查就查不到 —— 实测现象是"痕迹表里有数据但查出来 0 条"，
+     *   看起来像没写，其实写了只是挂错了归属。
+     */
+    workflowId: string;
   }) => Promise<{
     /** 上下文包摘要（供 UI 与追溯） */
     contextSummary: Record<string, unknown>;
@@ -69,6 +75,20 @@ export interface NovelWorkflowServices {
       score: number | null;
       sourceRef: string | null;
       reason: string | null;
+    }[];
+    /**
+     * 各检索层的执行状态（P0-3）。
+     *
+     * ⚠ `retrieved: false` 表示**检索层不可用**，不是"没有相关记忆" ——
+     *   两者混淆会让模型以为"史上没发生过相关的事"从而自行编造。
+     *   所以必须如实带出来，让 UI/日志能区分。
+     */
+    retrievalTiers: readonly {
+      tier: string;
+      stage: string;
+      retrieved: boolean;
+      hitCount: number;
+      error: string | null;
     }[];
   }>;
 
@@ -127,7 +147,15 @@ export interface NovelWorkflowServices {
     reportPath: string;
     contentHash: string;
     blockingCount: number;
+    /**
+     * ⚠ 检查依据的**来源清单**（P0-3）—— 每条标明来自哪一层
+     *   （canon_facts / character_states / timeline_events / foreshadowing /
+     *   chapter_fts）。空数组会让人以为"什么都没对照"，
+     *   所以必须如实填。
+     */
     checkedAgainst: readonly string[];
+    /** 结构化真值读取失败的项（如实降级，不静默） */
+    structuredWarnings: readonly string[];
   }>;
 
   /** 状态结算（P0-4）：正文 → 状态提议 → 验证 */
@@ -226,17 +254,33 @@ export function createNovelWorkflowStages(
       async run(input: StageInput, ctx: StageContext): Promise<WorkflowStageResult> {
         const chapterId = needChapterId(ctx);
         const chapterNumber = needChapterNumber(ctx);
-        const r = await services.buildContext({ chapterId, chapterNumber, params: input.params });
+        const r = await services.buildContext({
+          chapterId,
+          chapterNumber,
+          params: input.params,
+          workflowId: ctx.workflowId,
+        });
         ctx.emit('CONTEXT_BUILT', {
           stage: 'build_context',
           hits: r.retrievalTrace.length,
         });
         log.info('上下文已装配', { chapterNumber, hits: r.retrievalTrace.length });
+        // ⚠ 检索层不可用必须**如实暴露**（不是"没有相关记忆"）——
+        //   两者混淆会让模型以为"史上没发生过相关的事"从而自行编造。
+        const degraded = r.retrievalTiers.filter((t) => !t.retrieved);
+        if (degraded.length > 0) {
+          log.warn('部分检索层不可用（上下文将缺少对应来源）', {
+            chapterNumber,
+            degraded: degraded.map((t) => `${t.stage}:${t.error ?? '未知原因'}`),
+          });
+        }
         return {
           ok: true,
           output: {
             contextSummary: r.contextSummary,
             retrievalTrace: r.retrievalTrace,
+            retrievalTiers: r.retrievalTiers,
+            retrievalDegraded: degraded.length,
           },
         };
       },
@@ -390,12 +434,21 @@ export function createNovelWorkflowStages(
           path: r.reportPath,
           contentHash: r.contentHash,
         });
+        // ⚠ checkedAgainst 为空会让人以为"什么都没对照" —— 结构化真值读取
+        //   失败必须显式暴露（如实降级，不静默）。
+        if (r.structuredWarnings.length > 0) {
+          log.warn('结构化真值部分读取失败（连续性检查依据不完整）', {
+            chapterNumber,
+            warnings: r.structuredWarnings,
+          });
+        }
         return {
           ok: true,
           output: {
             reportPath: r.reportPath,
             blockingCount: r.blockingCount,
             checkedAgainst: r.checkedAgainst,
+            structuredWarnings: r.structuredWarnings,
           },
           artifacts: [{ type: 'continuity', path: r.reportPath, contentHash: r.contentHash }],
         };

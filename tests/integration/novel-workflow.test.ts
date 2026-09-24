@@ -77,7 +77,14 @@ function fakeServices(log: CallLog, opts?: {
     },
     async buildContext() {
       rec('build_context');
-      return { contextSummary: { tokens: 100 }, retrievalTrace: [] };
+      return {
+        contextSummary: { tokens: 100 },
+        retrievalTrace: [],
+        // ⚠ P0-3：检索层状态必须显式给（缺字段会让 stage 拿不到而报错）
+        retrievalTiers: [
+          { tier: 'planner', stage: 'planner', retrieved: true, hitCount: 2, error: null },
+        ],
+      };
     },
     async plan() {
       rec('plan');
@@ -128,6 +135,7 @@ function fakeServices(log: CallLog, opts?: {
         contentHash: 'h-cont',
         blockingCount: 0,
         checkedAgainst: ['character:1'],
+        structuredWarnings: [],
       };
     },
     async settleState() {
