@@ -19,9 +19,18 @@
  * 只从数据库重建状态。如果恢复依据真的在内存里，这些测试必然失败。
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { WorkflowEngine, WorkflowRepository, stageOrdinals, createNovelWorkflowStages } from '@nwa/harness';
+import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  WorkflowEngine,
+  WorkflowRepository,
+  stageOrdinals,
+  createNovelWorkflowStages,
+  hashOfFile,
+} from '@nwa/harness';
 import type { NovelWorkflowServices } from '@nwa/harness';
 import { STAGE_ORDER, type StageId } from '@nwa/harness';
+import { Logger } from '@nwa/core';
 import { createTestProject, makeChapter, type TestProject } from './helpers.js';
 
 let t: TestProject | null = null;
@@ -56,6 +65,15 @@ function fakeServices(log: CallLog, opts?: {
   /** 让 write stage 停住，等测试放行（用于确定性地测试暂停/取消） */
   gate?: { wait: () => Promise<void>; release: () => void };
   /**
+   * 在指定 stage 停住，等测试放行。
+   *
+   * ⚠ 与 `gate` 的区别：`gate` 固定挂在 write 上。要测"continuity 已 DONE
+   *   之后进程被杀"，就必须在**它之后**的 stage 挂门闸 —— 否则假服务是
+   *   同步的，整个工作流会在一个微任务批次里跑完，`pause()` 到时已经
+   *   DONE，直接抛错（这正是本测试第一版的失败原因）。
+   */
+  gateAt?: { stage: StageId; wait: () => Promise<void>; release: () => void };
+  /**
    * 真实存在的章节 id。
    *
    * ⚠ 必须是真章节：`workflows.chapter_id` 有外键指向 `chapters(id)`，
@@ -64,8 +82,42 @@ function fakeServices(log: CallLog, opts?: {
    *   不能靠约定一个字符串糊过去。
    */
   chapterId: string;
+  /**
+   * 把产物**真写进文件**，返回真实路径。
+   *
+   * ⚠ 缺省时假服务只返回 'plan.json' 这类占位路径 —— 那是相对名，
+   *   文件并不存在。要测"哈希真实"与"路径存在"就必须真写盘，
+   *   否则测的只是字符串本身。
+   */
+  writeArtifact?: (name: string, content: string) => string;
+  /**
+   * 让假服务返回 `contentHash: ''`（文件仍真写）。
+   *
+   * ⚠ 这是测**引擎兜底**的唯一方式：真实 service 修好之前返回的就是空串。
+   *   若假服务自己算好哈希，引擎那行 `hashOfFile(a.path) ?? a.contentHash`
+   *   根本不会被执行 —— 测试会绿，却什么都没证明。
+   */
+  blankHash?: boolean;
 }): NovelWorkflowServices {
   const rec = (s: string) => log.calls.push(s);
+
+  /**
+   * 造一个产物：给了 writeArtifact 就真落盘并返回真路径 + 真哈希，
+   * 否则退回占位值（老用例依赖这些占位值，不能改它们的语义）。
+   */
+  const artifact = (
+    name: string,
+    fallbackPath: string,
+    fallbackHash: string,
+    content: string,
+  ): { path: string; hash: string } => {
+    if (!opts?.writeArtifact) return { path: fallbackPath, hash: fallbackHash };
+    const p = opts.writeArtifact(name, content);
+    // ⚠ blankHash 模拟**真实的 service 行为**：文件写了，但返回
+    //   `contentHash: ''`（这正是修之前的实际代码）。引擎必须自己
+    //   补算哈希 —— 否则这条测试只是"假服务算得对"，测不到引擎。
+    return { path: p, hash: opts.blankHash ? '' : (hashOfFile(p) ?? '') };
+  };
 
   return {
     async ensureChapter(input) {
@@ -88,7 +140,8 @@ function fakeServices(log: CallLog, opts?: {
     },
     async plan() {
       rec('plan');
-      return { planPath: 'plan.json', sceneCount: 3, contentHash: 'h-plan' };
+      const a = artifact('plan.json', 'plan.json', 'h-plan', '{"scenes":3}');
+      return { planPath: a.path, sceneCount: 3, contentHash: a.hash };
     },
     async planVerify() {
       rec('plan_verify');
@@ -107,9 +160,10 @@ function fakeServices(log: CallLog, opts?: {
       if (opts?.gate) {
         await opts.gate.wait();
       }
+      const a = artifact('draft.md', 'draft.md', 'h-draft', '正文正文');
       return {
-        draftPath: 'draft.md',
-        contentHash: 'h-draft',
+        draftPath: a.path,
+        contentHash: a.hash,
         wordCount: 2000,
         sceneCount: 3,
         deviations: [],
@@ -117,22 +171,25 @@ function fakeServices(log: CallLog, opts?: {
     },
     async review() {
       rec('review');
-      return { reportPath: 'review.json', contentHash: 'h-review', blockingCount: 0, issueCount: 2 };
+      const a = artifact('review.json', 'review.json', 'h-review', '{"issues":2}');
+      return { reportPath: a.path, contentHash: a.hash, blockingCount: 0, issueCount: 2 };
     },
     async revision() {
       rec('revision');
+      const a = artifact('revision.md', 'revision.md', 'h-rev', '改后正文');
       return {
-        revisionPath: 'revision.md',
-        contentHash: 'h-rev',
+        revisionPath: a.path,
+        contentHash: a.hash,
         applied: 2,
         needsRegeneration: false,
       };
     },
     async continuity() {
       rec('continuity');
+      const a = artifact('continuity.json', 'continuity.json', 'h-cont', '{"issues":0}');
       return {
-        reportPath: 'continuity.json',
-        contentHash: 'h-cont',
+        reportPath: a.path,
+        contentHash: a.hash,
         blockingCount: 0,
         checkedAgainst: ['character:1'],
         structuredWarnings: [],
@@ -140,6 +197,7 @@ function fakeServices(log: CallLog, opts?: {
     },
     async settleState() {
       rec('state_settlement');
+      if (opts?.gateAt?.stage === 'state_settlement') await opts.gateAt.wait();
       return {
         proposalId: 'sp-1',
         verified: true,
@@ -158,7 +216,8 @@ function fakeServices(log: CallLog, opts?: {
       if (opts?.failAt === 'commit') {
         throw new Error('模拟提交失败');
       }
-      return { manifestPath: 'manifest.json', contentHash: 'h-manifest', committed: true };
+      const a = artifact('manifest.json', 'manifest.json', 'h-manifest', '{"applied":3}');
+      return { manifestPath: a.path, contentHash: a.hash, committed: true };
     },
     async verifyCommit() {
       rec('verify');
@@ -523,5 +582,204 @@ describe('WorkflowRepository', () => {
     const n = repo.resetRunningStages(wf.id);
     expect(n).toBe(1);
     expect(repo.getStage(wf.id, 'write')!.status).toBe('PENDING');
+  });
+});
+
+/**
+ * P1 — Continuity Result 必须 Durable
+ *
+ * ## 要证明的两件事
+ *
+ * 1. **产物哈希必须是真实的**。`workflow_artifacts.content_hash` 是
+ *    NOT NULL，而所有 stage 此前都返回 `''` —— 空串满足约束却等于
+ *    没有哈希。无法回答"这份产物还是当初那份吗"。
+ *
+ * 2. **产物的路径必须指向真实存在的文件**。实测发现 plan / review
+ *    两个 stage 记录的路径在工作区里**并不存在**：plan.json 要到
+ *    write 阶段才由 Writer 写出，review.json 只由 Reviser 写 ——
+ *    都晚于记录时刻。于是"产物路径"在记录当时是假的。
+ *
+ * ## ⚠ 为什么这组测试必须直读数据库
+ *
+ * 走 repo 的查询接口等于用同一套代码既写又读，写错了也会"读对"。
+ * 这里直读 `workflow_artifacts` 表，确保断言的是**真正落盘的东西**。
+ */
+describe('P1 — Continuity / 产物 durability', () => {
+  /** 直读 workflow_artifacts 表（不经 repo，避免自证） */
+  function readArtifactRows(t2: TestProject, workflowId: string) {
+    return t2.db.all<{
+      stage_id: string;
+      artifact_type: string;
+      path: string;
+      content_hash: string;
+    }>(
+      'SELECT stage_id, artifact_type, path, content_hash FROM workflow_artifacts WHERE workflow_id = ?',
+      workflowId,
+    );
+  }
+
+  it('⚠ 产物哈希是真实 sha256，不是空串（此前全部为空）', async () => {
+    t = createTestProject();
+    const log = newLog();
+    const { engine, wfId, chapterId } = setup(t);
+
+    // 用一个会**真写文件**的假服务，否则测不出哈希
+    const dir = join(t.dir, 'workspace', 'chapter-001');
+    mkdirSync(dir, { recursive: true });
+    const stages = createNovelWorkflowStages(
+      fakeServices(log, {
+        chapterId,
+        // ⚠ 关键：让假服务像**修之前的真实代码**那样返回空哈希。
+        //   引擎必须自己补算 —— 否则这条测试测不到引擎的兜底逻辑。
+        blankHash: true,
+        writeArtifact: (name, content) => {
+          const p = join(dir, name);
+          writeFileSync(p, content, 'utf8');
+          return p;
+        },
+      }),
+    );
+    engine.registerAll(stages);
+    await engine.advance(wfId);
+
+    const rows = readArtifactRows(t, wfId);
+    expect(rows.length).toBeGreaterThan(0);
+
+    // ⚠ 核心断言：没有任何一条是空哈希
+    const empty = rows.filter((r) => r.content_hash === '');
+    expect(empty.map((r) => `${r.stage_id}/${r.artifact_type}`)).toEqual([]);
+
+    // 而且必须是合法 sha256（64 位十六进制）
+    for (const r of rows) {
+      expect(r.content_hash).toMatch(/^[0-9a-f]{64}$/);
+    }
+  });
+
+  it('⚠ 产物路径不存在且哈希为空时，引擎必须报警（不静默记空串）', async () => {
+    t = createTestProject();
+    const log = newLog();
+    const { engine, wfId, chapterId } = setup(t);
+
+    // 故意让假服务返回一个**不存在**的路径 + 空哈希 ——
+    // 这正是修之前 plan/review 两个 stage 的真实行为：
+    // 它们记录的路径在当时并不存在（plan.json 要等 write 阶段才写出）。
+    const warnLog = new Logger('test:wf-warn', { level: 'warn' });
+    const warns: string[] = [];
+    const origWarn = warnLog.warn.bind(warnLog);
+    warnLog.warn = ((msg: string, data?: unknown) => {
+      warns.push(msg);
+      return origWarn(msg, data as never);
+    }) as typeof warnLog.warn;
+
+    const engine2 = new WorkflowEngine({ repo: new WorkflowRepository(t.db), logger: warnLog });
+    engine2.registerAll(
+      createNovelWorkflowStages(
+        fakeServices(log, {
+          chapterId,
+          blankHash: true,
+          writeArtifact: () => join(t!.dir, 'does-not-exist', 'plan.json'),
+        }),
+      ),
+    );
+    await engine2.advance(wfId);
+
+    // ⚠ 核心断言：空哈希**必须可见**。静默记一个空串正是本 bug 的成因 ——
+    //   库里全是 ''，没有任何信号提示"这些产物其实没落盘"。
+    expect(warns.some((m) => m.includes('产物哈希为空'))).toBe(true);
+
+    // 且仍然如实记录（不伪造一个哈希蒙混过去）
+    const rows = readArtifactRows(t, wfId);
+    expect(rows.every((r) => r.content_hash === '')).toBe(true);
+    void engine;
+  });
+
+  it('⚠ 重启后 continuity 已是 DONE —— 不重跑（durability 的核心主张）', async () => {
+    t = createTestProject();
+    const log = newLog();
+    const { repo, engine, wfId, chapterId } = setup(t);
+
+    const dir = join(t.dir, 'workspace', 'chapter-001');
+    mkdirSync(dir, { recursive: true });
+    const gate = makeGate();
+    const mkStages = () =>
+      createNovelWorkflowStages(
+        fakeServices(log, {
+          chapterId,
+          gateAt: { stage: 'state_settlement', ...gate },
+          writeArtifact: (name, content) => {
+            const p = join(dir, name);
+            writeFileSync(p, content, 'utf8');
+            return p;
+          },
+        }),
+      );
+    engine.registerAll(mkStages());
+
+    // 跑到 continuity 完成、进入 state_settlement 后停住 ——
+    // 模拟"进程在 continuity 之后被杀"
+    const p = engine.advance(wfId);
+    await waitFor(() => log.count('state_settlement') === 1);
+    engine.pause(wfId);
+    gate.release();
+    await p;
+
+    expect(repo.doneStages(wfId).has('continuity')).toBe(true);
+    const callsBefore = log.calls.length;
+
+    // ⚠ 丢掉旧引擎（内存状态全没），新建一个 —— 这才是进程重启
+    const engine2 = new WorkflowEngine({ repo: new WorkflowRepository(t.db) });
+    engine2.registerAll(mkStages());
+    const resumed = await engine2.resume(wfId);
+
+    expect(resumed.skippedDone).toContain('continuity');
+    // ⚠ 核心断言：continuity **一次都不能被再调用**
+    const newCalls = log.calls.slice(callsBefore);
+    expect(newCalls).not.toContain('continuity');
+    expect(log.count('continuity')).toBe(1);
+  });
+
+  it('⚠ 重启后 continuity 的产物记录仍在（可从库恢复，无需重算）', async () => {
+    t = createTestProject();
+    const log = newLog();
+    const { engine, wfId, chapterId } = setup(t);
+
+    const dir = join(t.dir, 'workspace', 'chapter-001');
+    mkdirSync(dir, { recursive: true });
+    const gate = makeGate();
+    const mkStages = () =>
+      createNovelWorkflowStages(
+        fakeServices(log, {
+          chapterId,
+          gateAt: { stage: 'state_settlement', ...gate },
+          writeArtifact: (name, content) => {
+            const p = join(dir, name);
+            writeFileSync(p, content, 'utf8');
+            return p;
+          },
+        }),
+      );
+    engine.registerAll(mkStages());
+
+    const p = engine.advance(wfId);
+    await waitFor(() => log.count('state_settlement') === 1);
+    engine.pause(wfId);
+    gate.release();
+    await p;
+
+    // 重启（新引擎 + 新 repo 实例，内存全丢）
+    const repo2 = new WorkflowRepository(t.db);
+    const engine2 = new WorkflowEngine({ repo: repo2 });
+    engine2.registerAll(mkStages());
+    await engine2.resume(wfId);
+
+    // ⚠ 从**新 repo** 读产物 —— 证明记录来自数据库而不是内存
+    const rows = readArtifactRows(t, wfId);
+    const cont = rows.find((r) => r.artifact_type === 'continuity');
+    expect(cont).toBeDefined();
+    expect(cont!.content_hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(existsSync(cont!.path)).toBe(true);
+
+    // 而且能算出与库里记录一致的哈希 —— 产物未被篡改
+    expect(hashOfFile(cont!.path)).toBe(cont!.content_hash);
   });
 });

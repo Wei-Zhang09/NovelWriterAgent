@@ -42,6 +42,7 @@
 import { AppError, ErrorCode, Logger, type Nullable } from '@nwa/core';
 import type { EventBus } from '../events/event-bus.js';
 import { WorkflowRepository } from './workflow-repository.js';
+import { hashOfFile } from '../commit/atomic-file-set.js';
 import {
   STAGE_ORDER,
   STAGE_STATUS,
@@ -208,6 +209,29 @@ export class WorkflowEngine {
             this.repo.setChapter(workflowId, cid, cn);
           },
           recordArtifact: (a) => {
+            // ⚠ P1：产物哈希必须真实，不能是空串。
+            //
+            //   此前所有 stage 都返回 `contentHash: ''`，而
+            //   `workflow_artifacts.content_hash` 是 NOT NULL ——
+            //   空串满足了约束却等于**没有哈希**：无法回答
+            //   "这份产物还是当初那份吗"，也无法在恢复时判断产物
+            //   是否被外部改动过。硬约束被一个空值绕过了。
+            //
+            //   ⚠ 在**这个唯一入口**补算，而不是让每个 stage 自己算：
+            //     5 个 stage 各算一次就有 5 次写错的机会（实测
+            //     确实全部写成了空串）。引擎是产物的必经之路。
+            const actualHash = hashOfFile(a.path) ?? a.contentHash;
+            if (actualHash === '') {
+              // ⚠ 空哈希必须可见 —— 静默记一个空串正是本 bug 的成因。
+              //   抛错会连累整个 stage（产物本身已写成功），所以只报警；
+              //   但报警里带路径，能直接定位是哪份产物没落盘。
+              this.logger.warn('产物哈希为空且文件不存在（产物可能未真正落盘）', {
+                workflowId,
+                stageId,
+                type: a.type,
+                path: a.path,
+              });
+            }
             this.repo.addArtifact({
               id: `${workflowId}:${stageId}:${a.type}:${Date.now()}`,
               workflowId,
@@ -215,7 +239,7 @@ export class WorkflowEngine {
               artifactType: a.type,
               chapterId: current.chapterId,
               path: a.path,
-              contentHash: a.contentHash,
+              contentHash: actualHash,
             });
           },
           emit: (type, payload) => this.emit(workflowId, type, payload),

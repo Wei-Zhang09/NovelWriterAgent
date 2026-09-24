@@ -27,7 +27,7 @@
  * 脚本会如实区分"环境问题"与"功能缺陷"。
  */
 import { app, utilityProcess, safeStorage } from 'electron';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, rmSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
@@ -341,6 +341,46 @@ app.whenReady().then(async () => {
       '⚠ 已 DONE 的 stage 未被重复执行（attempts 未增加）',
       reRun.length === 0,
       reRun.length === 0 ? '无重复执行' : `重复执行：${reRun.map((s) => `${s.stageId}×${s.attempts}`).join(',')}`,
+    );
+
+    // ── 4b. 产物 durability（P1）──
+    //
+    // ⚠ 这里检查的是**真跑出来的工作流**，不是构造的假数据：
+    //   产物的 content_hash 必须非空且是合法 sha256，记录的路径必须
+    //   真实存在。此前所有 stage 都返回空串，plan/review 的路径还指向
+    //   当时并不存在的文件。
+    const arts = view2?.artifacts ?? [];
+    rec(
+      '⚠ 产物记录存在（workflow.get 返回 artifacts）',
+      arts.length > 0,
+      `${arts.length} 条：${arts.map((a) => a.artifactType).join(',') || '（无）'}`,
+    );
+
+    const emptyHash = arts.filter((a) => !a.contentHash);
+    rec(
+      '⚠ 产物哈希非空（此前全部为空串，NOT NULL 被空值绕过）',
+      arts.length > 0 && emptyHash.length === 0,
+      emptyHash.length === 0
+        ? `${arts.length} 条全部有哈希`
+        : `空哈希：${emptyHash.map((a) => `${a.stageId}/${a.artifactType}`).join(',')}`,
+    );
+
+    const badHash = arts.filter((a) => a.contentHash && !/^[0-9a-f]{64}$/.test(a.contentHash));
+    rec(
+      '⚠ 产物哈希是合法 sha256（64 位十六进制）',
+      badHash.length === 0,
+      badHash.length === 0 ? '格式正确' : `异常：${badHash.map((a) => a.contentHash.slice(0, 20)).join(',')}`,
+    );
+
+    // ⚠ 路径必须真实存在 —— 这是"产物 durable"的实质：
+    //   库里有记录但文件不在，等于没有产物。
+    const missingFile = arts.filter((a) => !existsSync(a.path));
+    rec(
+      '⚠ 产物路径指向真实存在的文件（此前 plan/review 指向不存在的文件）',
+      missingFile.length === 0,
+      missingFile.length === 0
+        ? `${arts.length} 条路径全部存在`
+        : `不存在：${missingFile.map((a) => `${a.stageId}:${a.path.split(/[\\/]/).pop()}`).join(',')}`,
     );
 
     // ── 5. 取消不可恢复 ──

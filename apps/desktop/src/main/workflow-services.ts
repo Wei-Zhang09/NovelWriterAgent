@@ -32,6 +32,7 @@
 import { AppError, ErrorCode, Logger } from '@nwa/core';
 import type { Repositories, Database } from '@nwa/storage';
 import type { ToolRegistry, NovelWorkflowServices } from '@nwa/harness';
+import { hashOfFile } from '@nwa/harness';
 import type { RetrievalService } from '@nwa/harness';
 import type { ToolContext } from '@nwa/shared';
 import {
@@ -43,6 +44,27 @@ import {
 } from '@nwa/story';
 import { Writer, Reviewer, Reviser, Planner } from '@nwa/writing';
 import type { ReviewIssue } from '@nwa/shared';
+
+/**
+ * 产物内容哈希（P1）。
+ *
+ * ⚠ 此前每个 stage 都返回 `contentHash: ''` —— 空字符串。
+ *   `workflow_artifacts.content_hash` 是 NOT NULL，空串虽然能写进去，
+ *   但它等于**没有哈希**：无法回答"这份产物还是当初那份吗"，
+ *   也无法在恢复时判断产物是否被外部改动过。
+ *   硬约束被一个空值绕过了。
+ *
+ * ⚠ 返回 null 而不是抛错：哈希取不到不该让整个 stage 失败
+ *   （产物本身已经写成功了）。但 null 会被 recordArtifact 明确拒绝，
+ *   所以"没哈希"是**可见的**，不会退化成又一个空串。
+ */
+function hashOfArtifact(path: string): string | null {
+  try {
+    return hashOfFile(path);
+  } catch {
+    return null;
+  }
+}
 
 /** 模型网关需要的能力（只声明用到的，便于测试注入假实现） */
 export interface WorkflowModel {
@@ -340,10 +362,16 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
       }
 
       const ws = workspaceFor(ch.chapter_number);
+      // ⚠ 必须**真的写文件**，否则下面返回的 planPath 指向一个不存在的
+      //   文件 —— 而 workflow_artifacts 会把它当"产物路径"存下来。
+      //   实测：plan 阶段标记 DONE 时，工作区目录是空的，plan.json
+      //   要到 write 阶段才由 Writer 写出。于是"产物路径"在当时是假的，
+      //   恢复时按这个路径找不到任何东西。
+      ws.writeJson('plan', res.plan);
       return {
         planPath: ws.pathOf('plan'),
         sceneCount: res.plan.scenes.length,
-        contentHash: '',
+        contentHash: hashOfArtifact(ws.pathOf('plan')) ?? '',
       };
     },
 
@@ -429,7 +457,7 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
       const d = res.draft!;
       return {
         draftPath: d.draftPath,
-        contentHash: '',
+        contentHash: hashOfArtifact(d.draftPath) ?? '',
         wordCount: d.totalChars,
         sceneCount: d.scenes.length,
         // ⚠ deviation 由 Writer 结果带出，上层决定单独存档（§十一）
@@ -525,9 +553,16 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
         );
       }
 
+      // ⚠ 同上：审查报告也要真落盘。此前 review.json 只由 Reviser 写，
+      //   而 review 阶段在 Reviser 之前 —— 记录下来的路径同样是假的。
+      ws.writeJson('review', {
+        chapterNumber: ch.chapter_number,
+        overallStatus: review.status,
+        issues: review.issues,
+      });
       return {
         reportPath: ws.pathOf('review'),
-        contentHash: '',
+        contentHash: hashOfArtifact(ws.pathOf('review')) ?? '',
         blockingCount: review.issues.filter((i) => i.severity === 'BLOCKING').length,
         issueCount: review.issues.length,
       };
@@ -571,7 +606,7 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
 
       return {
         revisionPath: ws.pathOf('revision'),
-        contentHash: '',
+        contentHash: hashOfArtifact(ws.pathOf('revision')) ?? '',
         applied: res.appliedEdits ?? 0,
         needsRegeneration: (res.rejectedEdits ?? 0) > (res.appliedEdits ?? 0),
       };
@@ -632,7 +667,7 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
 
       return {
         reportPath: ws.pathOf('continuity'),
-        contentHash: '',
+        contentHash: hashOfArtifact(ws.pathOf('continuity')) ?? '',
         // ⚠ ContinuityChecker 的 severity 只有 BLOCKING / WARNING（无 HIGH）——
         //   实测确认。写 HIGH 会让这个判断永远为假，静默漏掉阻塞问题。
         blockingCount: report.issues.filter((i) => i.severity === 'BLOCKING').length,
