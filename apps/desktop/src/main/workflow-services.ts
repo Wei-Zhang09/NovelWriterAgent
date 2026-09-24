@@ -29,7 +29,14 @@
  * 那条路径有**权限校验 + schema 校验**。直接调 `repos.chapters.savePlan()`
  * 会绕过这两层，等于给 Workflow 开了一个后门。这里保持与旧 IPC 一致。
  */
-import { AppError, ErrorCode, Logger } from '@nwa/core';
+import {
+  AppError,
+  ErrorCode,
+  Logger,
+  DEFAULT_TARGET_WORDS_PER_CHAPTER,
+  perSceneWords,
+  checkWordCountDeviation,
+} from '@nwa/core';
 import type { Repositories, Database } from '@nwa/storage';
 import type { ToolRegistry, NovelWorkflowServices } from '@nwa/harness';
 import { hashOfFile } from '@nwa/harness';
@@ -413,12 +420,27 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
       const ws = workspaceFor(ch.chapter_number);
       const { rows: skillRows, genre } = deps.loadSkills();
 
+      // ── 每章字数目标（P2-1，软约束）──────────────────────
+      //
+      // ⚠ Writer 是**逐场景**生成的（§7.3 约束 3），所以要把章级目标
+      //   换算成场景级。未设定目标时回落到默认值 —— 不因为"没设过"
+      //   就让模型没有篇幅概念。
+      const book = deps.repos.books.get(ch.book_id);
+      const chapterTarget =
+        book.target_words_per_chapter ?? DEFAULT_TARGET_WORDS_PER_CHAPTER;
+      const planScenes = (plan as { scenes?: unknown[] }).scenes ?? [];
+      const wordsPerScene = perSceneWords(
+        chapterTarget,
+        Math.max(1, planScenes.length),
+      );
+
       const writer = new Writer({
         complete: (req) => model.completeText('writer', req) as never,
         workspace: ws,
         logger: deps.logger.child('writer'),
         skillRows: skillRows as never,
         genre,
+        wordsPerScene,
         // ⚠ 场景级检索（P0-3）：按**每个场景**的意图取旧内容，
         //   不是整章共用一份。检索失败返回空串（Writer 会继续写）。
         ...(deps.retrieval
@@ -499,6 +521,35 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
         evidence: [i.sourceRef],
         suggestions: [],
       }));
+
+      // ── 字数偏离提示（P2-1，软约束）──────────────────────
+      //
+      // ⚠ 刻意用 NOTE 级（最低），**永不用 BLOCKING** ——
+      //   用户明确要求「允许浮动，偏离超阈值时提示我（不阻断）」。
+      //   这也是技术上的正确选择：硬卡字数会激励模型为凑数注水，
+      //   正是 ADR-0007 与 naturalness/detectors.ts 一直在防的事。
+      //   一章 1800 字紧凑完整，好过 3000 字全是"他深吸一口气"。
+      //
+      // ⚠ 只对**已设定目标**的书提示：未设定时用默认值算出来的偏离
+      //   是"系统猜的"，拿去提醒作者会像无故指责。
+      const book = deps.repos.books.get(ch.book_id);
+      if (book.target_words_per_chapter !== null) {
+        const dev = checkWordCountDeviation(
+          draft.length,
+          book.target_words_per_chapter,
+          book.word_count_tolerance_pct,
+        );
+        if (!dev.withinTolerance) {
+          deterministic.push({
+            id: `wc_dev_${ch.id}`,
+            severity: 'NOTE',
+            category: 'PACING' as const,
+            claim: `本章字数偏离目标：${dev.message}`,
+            evidence: [`target:${dev.target}`, `actual:${dev.actual}`],
+            suggestions: [],
+          });
+        }
+      }
 
       const model = deps.runtime;
       const reviewer = new Reviewer({

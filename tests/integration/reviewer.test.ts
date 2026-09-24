@@ -326,6 +326,24 @@ describe('纯函数：状态推导与统计', () => {
     expect(canProceedToCommit([issue({ severity: 'BLOCKING' })])).toBe(false);
   });
 
+  it('⚠ 字数偏离（NOTE）永不阻断提交（P2-1 软约束的机制保证）', () => {
+    // 用户决策：「允许浮动，偏离超阈值时提示我（不阻断）」。
+    // 这条测试把"不阻断"钉在机制层：字数提示用 NOTE，
+    // 而 NOTE 既不改变状态也不否决提交。
+    const wc = issue({
+      id: 'wc_dev_ch1',
+      severity: 'NOTE',
+      category: 'PACING',
+      claim: '本章字数偏离目标：1200 字，比目标 2500 字少 300 字',
+    });
+    expect(deriveStatus([wc])).toBe('PASSED');
+    expect(canProceedToCommit([wc])).toBe(true);
+    // 与真实的确定性检查混在一起时也不得升格
+    const cont = issue({ severity: 'MAJOR', category: 'CONTINUITY' });
+    expect(deriveStatus([cont, wc])).toBe('NEEDS_REVISION');
+    expect(canProceedToCommit([cont, wc])).toBe(true);
+  });
+
   it('sortIssues 稳定（同级按类别与 id）', () => {
     const a = issue({ id: 'z', severity: 'MINOR', category: 'PLOT' });
     const b = issue({ id: 'a', severity: 'MINOR', category: 'PLOT' });

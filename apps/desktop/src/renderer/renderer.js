@@ -204,6 +204,7 @@ function renderCenter() {
 
   c.append(renderNewProjectForm());
   if (state.project && state.books.length === 0) c.append(renderNewBookForm());
+  if (state.selectedBookId) c.append(renderWordTargetForm());
   if (state.selectedBookId) c.append(renderNewChapterForm());
 }
 
@@ -649,6 +650,83 @@ function buildBookCreateRow(msg) {
 
   row.append(title, btn);
   return row;
+}
+
+/**
+ * 每章字数目标（P2-1）。
+ *
+ * ⚠ 界面上必须说明"这是软约束" —— 否则作者会以为字数不达标就提交不了，
+ *   于是为了凑数往正文里灌水，正是这套设计要避免的结果。
+ */
+function renderWordTargetForm() {
+  const box = el('div', 'form');
+  box.append(el('h3', null, '篇幅目标'));
+
+  const book = state.books.find((b) => b.id === state.selectedBookId);
+  const target = el('input');
+  target.type = 'number';
+  target.min = '1';
+  target.placeholder = '如 2500';
+  target.value = book?.targetWordsPerChapter ? String(book.targetWordsPerChapter) : '';
+
+  const tol = el('input');
+  tol.type = 'number';
+  tol.min = '0';
+  tol.max = '200';
+  tol.value = String(book?.wordCountTolerancePct ?? 40);
+
+  const row = el('div', 'btn-row');
+  const saveBtn = el('button', 'btn btn--primary', '保存');
+  const clearBtn = el('button', 'btn', '清除设定');
+  row.append(saveBtn, clearBtn);
+
+  const msg = el('div', 'form-msg');
+  box.append(
+    el('div', 'form-label', '每章目标字数'),
+    target,
+    el('div', 'form-label', '允许偏离（%）'),
+    tol,
+    row,
+    msg,
+    el('div', 'perm-line', '字数只做提示，不阻断提交 —— 硬卡字数会让模型为凑数注水'),
+  );
+
+  async function save(words) {
+    saveBtn.disabled = true;
+    clearBtn.disabled = true;
+    msg.textContent = '';
+    const r = await call('book.setWordTarget', {
+      bookId: state.selectedBookId,
+      targetWords: words,
+      tolerancePct: Number(tol.value) || 0,
+    });
+    saveBtn.disabled = false;
+    clearBtn.disabled = false;
+    if (!r.ok) {
+      msg.className = 'form-msg form-msg--err';
+      msg.textContent = `${r.error.code}: ${r.error.message}`;
+      return;
+    }
+    msg.className = 'form-msg form-msg--ok';
+    msg.textContent =
+      r.data.targetWords === null
+        ? '已清除设定（将使用默认篇幅）'
+        : `已保存：每章约 ${r.data.targetWords} 字，允许偏离 ±${r.data.tolerancePct}%`;
+    await loadProjects();
+  }
+
+  saveBtn.addEventListener('click', () => {
+    const n = Number(target.value);
+    if (!Number.isInteger(n) || n <= 0) {
+      msg.className = 'form-msg form-msg--err';
+      msg.textContent = '目标字数必须是正整数';
+      return;
+    }
+    void save(n);
+  });
+  clearBtn.addEventListener('click', () => void save(null));
+
+  return box;
 }
 
 function renderNewChapterForm() {

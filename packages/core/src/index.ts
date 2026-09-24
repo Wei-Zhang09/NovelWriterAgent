@@ -12,3 +12,4 @@ export * from './text-similarity.js';
 export * from './rule-conflict.js';
 export * from './scope-evidence.js';
 export * from './summary.js';
+export * from './word-target.js';

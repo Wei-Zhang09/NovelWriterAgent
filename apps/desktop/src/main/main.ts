@@ -646,6 +646,47 @@ function createWindow(): void {
               rec('有待确认刷新按钮', !!rBtn2, '');
             }
 
+            // 17b) 篇幅目标面板（P2-1）
+            //
+            // ⚠ 这条断言存在的理由：本项目反复出现"后端能力有了、界面够不到"
+            //   的缺陷（角色/世界观至今如此）。新面板必须被真的挂载才算完成。
+            //
+            // ⚠ 面板在中栏（书目总览），而前面第 6 步点了章节 → 中栏已被
+            //   章节详情占据。所以这里必须**先点回书目** —— 这同时也验证了
+            //   作者确实能走到这个面板（不是"代码里有、界面到不了"）。
+            const bookNav = [...document.querySelectorAll('.nav-item')]
+              .find(n => n.querySelector('.nav-label')?.textContent === '测试小说');
+            rec('左栏能点回书目（篇幅目标面板的可达路径）', !!bookNav, '');
+            if (bookNav) {
+              bookNav.click();
+              await sleep(900);
+            }
+            const wcForm = [...document.querySelectorAll('.form')]
+              .find(f => f.querySelector('h3')?.textContent.includes('篇幅目标'));
+            rec('⚠ 篇幅目标面板已挂载（P2-1 后端能力有界面入口）', !!wcForm, '');
+            if (wcForm) {
+              const saveB = btnByText(wcForm, '保存');
+              const clearB = btnByText(wcForm, '清除设定');
+              rec('篇幅目标面板有保存/清除按钮', !!saveB && !!clearB, '');
+              // ⚠ 必须说明"不阻断" —— 否则作者会为凑字数往正文灌水
+              rec('⚠ 标注字数只提示不阻断（防凑数注水）',
+                  wcForm.textContent.includes('不阻断'), '');
+              const tolInput = [...wcForm.querySelectorAll('input')]
+                .find(i => i.max === '200');
+              rec('可设定偏离容忍度', !!tolInput, '');
+              // ⚠ 真的点一次保存：只断言"面板在"会漏掉"按钮点了没反应"
+              if (saveB) {
+                const targetInput = [...wcForm.querySelectorAll('input')]
+                  .find(i => i.type === 'number' && i.max !== '200');
+                if (targetInput) setInput(targetInput, '2500');
+                saveB.click();
+                await sleep(1200);
+                const m = wcForm.querySelector('.form-msg')?.textContent ?? '';
+                rec('⚠ 保存目标字数真的生效（不是空壳按钮）',
+                    m.includes('2500'), m.slice(0, 70));
+              }
+            }
+
             // 18) Run 控制（补缺口：Pause / Resume / Cancel 入口）
             const runForm = [...document.querySelectorAll('.form')]
               .find(f => f.querySelector('h3')?.textContent.includes('Agent 与状态机'));

@@ -19,6 +19,7 @@ import {
   AppError,
   ErrorCode,
   bookId,
+  perSceneWords,
   type ErrorCodeValue,
 } from '@nwa/core';
 import {
@@ -849,6 +850,10 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     return {
       books: p.repos.books.listByProject(params.projectId).map((b) => ({
         id: b.id, projectId: b.project_id, title: b.title, currentChapter: b.current_chapter,
+        // ⚠ 字数目标必须一起返回：UI 的「篇幅目标」面板靠它回显当前设定，
+        //   不返回的话面板永远显示空值，作者会以为设定没保存成功。
+        targetWordsPerChapter: b.target_words_per_chapter,
+        wordCountTolerancePct: b.word_count_tolerance_pct,
       })),
     };
   },
@@ -872,6 +877,35 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     });
     logger.info('书目已创建', { bookId: row.id, title: row.title });
     return { id: row.id, projectId: row.project_id, title: row.title, currentChapter: row.current_chapter };
+  },
+
+  /**
+   * 设定每章字数目标（P2-1，软约束）。
+   *
+   * ⚠ 只影响 Writer 的篇幅提示与审稿的 NOTE 级偏离提醒，**永不阻断提交**。
+   *   用户决策：「允许浮动，偏离超阈值时提示我（不阻断）」。
+   */
+  'book.setWordTarget': (params: {
+    bookId: string;
+    targetWords: number | null;
+    tolerancePct?: number;
+  }) => {
+    const p = requireProject();
+    const row = p.repos.books.setWordTarget(
+      params.bookId,
+      params.targetWords,
+      params.tolerancePct,
+    );
+    logger.info('每章字数目标已更新', {
+      bookId: row.id,
+      targetWords: row.target_words_per_chapter,
+      tolerancePct: row.word_count_tolerance_pct,
+    });
+    return {
+      bookId: row.id,
+      targetWords: row.target_words_per_chapter,
+      tolerancePct: row.word_count_tolerance_pct,
+    };
   },
 
   // ── 通过 Tool Registry 调用（统一走权限与校验门禁） ────────
@@ -1096,11 +1130,25 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       });
     }
 
+    // ── 每章字数目标（P2-1，软约束）────────────────────────
+    // ⚠ 显式传 wordsPerScene 时以调用方为准（精细控制优先）；
+    //   否则按书的目标换算。未设定目标时走 Writer 默认值。
+    const bookRow = p.repos.books.get(chapter.book_id);
+    const explicitScene = params.wordsPerScene;
+    const sceneWords =
+      explicitScene ??
+      (bookRow.target_words_per_chapter !== null
+        ? perSceneWords(
+            bookRow.target_words_per_chapter,
+            Math.max(1, (plan as { scenes?: unknown[] }).scenes?.length ?? 1),
+          )
+        : undefined);
+
     const writer = new Writer({
       complete: (req) => p.runtime!.completeText('writer', req),
       workspace,
       logger: logger.child('writer'),
-      ...(params.wordsPerScene ? { wordsPerScene: params.wordsPerScene } : {}),
+      ...(sceneWords !== undefined ? { wordsPerScene: sceneWords } : {}),
       ...(skillEngine ? { skillEngine } : {}),
       skillRows,
       genre: skillGenre,

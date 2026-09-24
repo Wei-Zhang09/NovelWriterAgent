@@ -60,6 +60,7 @@ describe('迁移', () => {
       '0010_workflow',
       '0011_pattern_scope_evidence',
       '0012_commit_force_audit',
+      '0013_book_word_target',
     ]);
   });
 
@@ -147,6 +148,7 @@ describe('迁移', () => {
       '0010_workflow',
       '0011_pattern_scope_evidence',
       '0012_commit_force_audit',
+      '0013_book_word_target',
     ]);
   });
 
