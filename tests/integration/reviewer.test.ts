@@ -248,6 +248,23 @@ describe('合并确定性检查结果（与 Continuity Checker 的分工）', ()
     expect(r.canCommit).toBe(false); // 但审稿未完成仍不允许提交
   });
 
+  it('⚠ 模型失败时 error 必须带原因（IPC 层靠它显示"为什么"）', async () => {
+    // ⚠ 回归：core-process 的 review.run 会把 r.error 透给 UI。
+    //   如果这里没有 error，UI 只能显示 `undefined：`（实测出现过），
+    //   排查时无法区分"模型超时"与"schema 不符"与"没配模型"——
+    //   而三者的处置完全不同。
+    const c = callerReturning({ score: 88 });
+    const r = await new Reviewer({ structured: c.fn, logger }).review(baseReq);
+
+    expect(r.ok).toBe(false);
+    expect(r.error).toBeDefined();
+    expect(typeof r.error!.code).toBe('string');
+    expect(r.error!.code.length).toBeGreaterThan(0);
+    expect(typeof r.error!.message).toBe('string');
+    // message 必须说明发生了什么，不能是空串 —— 空串等于没有原因
+    expect(r.error!.message.length).toBeGreaterThan(0);
+  });
+
   it('合并后按严重度排序（阻塞在前）', async () => {
     const c = callerReturning({
       overallStatus: 'PASSED',

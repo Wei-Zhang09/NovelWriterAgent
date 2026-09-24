@@ -338,7 +338,14 @@ app.whenReady().then(async () => {
       // 审稿
       const review = await call('review.run', { chapterId }, 300_000);
       if (!review.ok) {
+        // ⚠ 这里必须 `continue` 或记录后跳过下面那条 —— 此前两条 rec
+        //   都会执行，于是 IPC 失败时会额外打出一条
+        //   「第 N 章审稿 — undefined：」（rd 是空对象，rd.error 不存在）。
+        //   实测就是这么冒出来的：真正的原因在第 1 条，第 2 条是噪音，
+        //   而它看起来更像"审稿没返回任何信息"。
         rec(`第 ${n} 章审稿`, false, `IPC：${review.error?.code}：${String(review.error?.message ?? '').slice(0, 200)}`);
+        perChapter.push({ n, chapterId, chars, ctxTokens, ctxBudget, memCount, summaryLen: 0, committed: false });
+        continue;
       }
       const rd = review.data ?? {};
       rec(
@@ -346,7 +353,11 @@ app.whenReady().then(async () => {
         rd.ok === true,
         rd.ok
           ? `${rd.status}：${rd.issueCount} 问题（阻塞 ${rd.blockingCount}）｜可提交=${rd.canCommit}`
-          : `${rd.error?.code}：${String(rd.error?.message ?? '').slice(0, 100)}`,
+          : // ⚠ 失败原因优先取 rd.error（core-process 现已透出）。
+            //   只有模型那半失败时才有值；此时 issueCount 是确定性检查的结果，
+            //   一并显示，避免让人以为"什么都没查"。
+            `${rd.error?.code ?? 'MODEL_REVIEW_FAILED'}：${String(rd.error?.message ?? '模型审阅失败，仅确定性检查').slice(0, 120)}`
+              + `｜确定性检查 ${rd.deterministicChecked ?? 0} 项，问题 ${rd.issueCount ?? 0}`,
       );
 
       // 改稿（仅当**存在阻塞问题**时才做）

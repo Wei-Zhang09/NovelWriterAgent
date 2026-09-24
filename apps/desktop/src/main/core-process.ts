@@ -1279,6 +1279,20 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       })),
       deterministicChecked: cReport.checked,
       modelNote,
+      // ⚠ 模型审阅失败时**必须**把原因透出。
+      //
+      //   此前这里丢掉了 `review.error`，于是 ok=false 却没有任何理由 ——
+      //   UI 显示成 `undefined：`（实测：verify:writing 的
+      //   「第 2 章审稿 — undefined：」），排查时完全不知道是模型超时、
+      //   schema 不符，还是没配模型。
+      //
+      //   `modelOk=false` 只说明"模型那半没成功"，回答不了"为什么"。
+      //   而这两种情况的处置完全不同：超时→重试；schema 不符→改提示词；
+      //   未配模型→去配置。
+      ...(review.error
+        ? { error: { code: review.error.code, message: review.error.message } }
+        : {}),
+      attempts: review.attempts,
       saved: saved.ok ? saved.data : null,
       ...(saved.ok ? {} : { saveError: saved.error }),
     };
