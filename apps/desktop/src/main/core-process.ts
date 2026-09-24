@@ -53,7 +53,18 @@ import {
   rebuildFts,
   verifyExport,
 } from '@nwa/story';
-import { CommitEngine, SummaryIndexer, MemoryGatherer, SummaryGenerator } from '@nwa/harness';
+import {
+  CommitEngine,
+  SummaryIndexer,
+  MemoryGatherer,
+  SummaryGenerator,
+  WorkflowEngine,
+  WorkflowRepository,
+  createNovelWorkflowStages,
+  stageOrdinals,
+  summarizeStages,
+} from '@nwa/harness';
+import { createWorkflowServices, type WorkflowModel } from './workflow-services.js';
 import {
   PatternMiner,
   PatternStore,
@@ -508,6 +519,70 @@ function toolContext(callerPermission: ToolContext['callerPermission'] = 'ADMIN'
  * 约定：每个方法返回 `{ ok: true, data }` 或 `{ ok: false, error }`，
  * 异常不得穿透到 MessagePort（§55 Rule 8：禁止吞异常，必须转成结构化错误）。
  */
+/**
+ * ── Novel Workflow（P0-1 / P0-2）──
+ *
+ * ## 为什么 workflow 实例按工作流缓存
+ *
+ * `WorkflowEngine` 持有内存里的 AbortController 与暂停标志（运行时缓存）。
+ * 但**权威状态在数据库**（`workflows.status`）—— 所以即使这里缓存丢失
+ * （进程重启），`workflow.resume` 仍能从库里恢复。
+ *
+ * 缓存的作用只是"同一进程内 pause 能打断正在跑的 stage"。
+ */
+const workflowEngines = new Map<string, WorkflowEngine>();
+
+function buildWorkflowEngine(p: OpenProject): WorkflowEngine {
+  const repo = new WorkflowRepository(p.db, logger.child('workflow-repo'));
+  const engine = new WorkflowEngine({
+    repo,
+    events: p.events,
+    logger: logger.child('workflow'),
+  });
+  const model: WorkflowModel | null = p.runtime
+    ? {
+        plannerStructured: (req) => p.runtime!.plannerStructured(req as never),
+        structured: (slot, req) => p.runtime!.structured(slot as never, req as never),
+        completeText: (slot, req) => p.runtime!.completeText(slot as never, req as never),
+      }
+    : null;
+
+  engine.registerAll(
+    createNovelWorkflowStages(
+      createWorkflowServices({
+        dir: p.dir,
+        db: p.db,
+        repos: p.repos,
+        tools: p.tools,
+        logger,
+        runtime: model,
+        loadSkills: () => {
+          try {
+            const rows = corpusRepo().listSkills();
+            return { rows, genre: null };
+          } catch {
+            return { rows: [], genre: null };
+          }
+        },
+        commitChapter: async (input) => {
+          // 复用既有 commit 路径（含 Manifest 对账与 Repair）
+          const r = await handlers['commit.run']!({
+            chapterId: input.chapterId,
+            mode: input.params['mode'] ?? 'NORMAL',
+          } as never);
+          const rec = r as { manifestPath?: string; contentHash?: string; ok?: boolean };
+          return {
+            manifestPath: rec.manifestPath ?? '',
+            contentHash: rec.contentHash ?? '',
+            committed: rec.ok !== false,
+          };
+        },
+      }),
+    ),
+  );
+  return engine;
+}
+
 const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = {
   /** 健康检查 */
   'core.health': () => ({
@@ -2925,6 +3000,185 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
         error: { code: e.code, message: e.message, retryable: e.retryable, details: e.details },
       };
     }
+  },
+
+  // ────────────────────────────────────────────────
+  // Novel Workflow（P0-1 / P0-2）
+  //
+  // ⚠ 这些是 UI 的**唯一**写作入口。原先是 UI 逐个调用
+  //   chapter.plan → writer.draft → review.run → ... ，
+  //   编排在调用方手里 —— 提示词 §三 明确禁止。
+  //   旧 IPC 保留（调试/验证脚本用），但正常流程走 workflow。
+  // ────────────────────────────────────────────────
+
+  /**
+   * 启动一个 Novel Workflow（"写下一章"）。
+   *
+   * 用户只需给 bookId（chapterId 可省 —— 会自动建下一章）。
+   * 后续 12 个 stage 由 WorkflowEngine 按 STAGE_ORDER 驱动，
+   * 调用方无法跳过任何一步。
+   */
+  'workflow.start': async (params: {
+    bookId: string;
+    chapterId?: string | null;
+    chapterNumber?: number | null;
+    userInstruction?: string;
+  }) => {
+    const p = requireProject();
+
+    // ⚠ 显式校验，而不是让 undefined 一路走到 SQLite。
+    //   实测：bookId 为 undefined 时报的是
+    //   "Provided value cannot be bound to SQLite parameter 3" ——
+    //   完全看不出是哪个参数、哪一步错，排查成本很高。
+    if (!params.bookId || String(params.bookId).trim() === '') {
+      throw new AppError(
+        ErrorCode.TOOL_VALIDATION_ERROR,
+        'workflow.start 需要 bookId（要写哪本书）',
+      );
+    }
+
+    // 项目行（workflow 与 runs 都需要它）
+    const projectId = p.repos.projects.list()[0]?.id;
+    if (!projectId) {
+      throw new AppError(
+        ErrorCode.STORAGE_QUERY_FAILED,
+        '当前项目库里没有项目行 —— 请先在界面里新建项目',
+      );
+    }
+
+    const repo = new WorkflowRepository(p.db, logger.child('workflow-repo'));
+    const wfId = `wf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    // ⚠ 同时建一条 `runs` 行。
+    //
+    //   原因：`run_events.run_id` 有外键指向 `runs(id)`。工作流的事件
+    //   （§二十 要求 STAGE_STARTED/STAGE_COMPLETED 等）都要挂在一个
+    //   run 上，否则 INSERT 会 FOREIGN KEY constraint failed。
+    //
+    //   用同一个 id 让"工作流"与"run"一一对应 —— UI 订阅事件流时
+    //   用 workflowId 即可，不需要记两个 id。
+    p.repos.runs.create({
+      id: wfId,
+      projectId,
+      workflowType: 'novel',
+      input: { bookId: params.bookId },
+    });
+
+    const wf = repo.create({
+      id: wfId,
+      projectId,
+      bookId: params.bookId,
+      chapterId: params.chapterId ?? null,
+      chapterNumber: params.chapterNumber ?? null,
+      stageInputs: {
+        ...(params.userInstruction ? { userInstruction: params.userInstruction } : {}),
+        bookId: params.bookId,
+      },
+    });
+    repo.initStages(wf.id, stageOrdinals());
+
+    const engine = buildWorkflowEngine(p);
+    workflowEngines.set(wf.id, engine);
+
+    // ⚠ 不 await 跑完再返回 —— 一章要几分钟，UI 需要立刻拿到 workflowId
+    //   去订阅进度。错误通过 workflow 记录暴露，不靠抛异常。
+    void engine
+      .advance(wf.id, { bookId: params.bookId, ...(params.userInstruction ? { userInstruction: params.userInstruction } : {}) })
+      .catch((e) => logger.error('Workflow 执行异常', e, { workflowId: wf.id }));
+
+    return { workflowId: wf.id, status: 'CREATED' };
+  },
+
+  /** 查询工作流状态与逐 stage 进度（UI 用） */
+  'workflow.get': (params: { workflowId: string }) => {
+    const p = requireProject();
+    const repo = new WorkflowRepository(p.db);
+    const wf = repo.get(params.workflowId);
+    if (!wf) {
+      throw new AppError(ErrorCode.STORAGE_QUERY_FAILED, `工作流不存在：${params.workflowId}`);
+    }
+    const stages = repo.listStages(params.workflowId);
+    return {
+      workflowId: wf.id,
+      status: wf.status,
+      currentStage: wf.currentStage,
+      resumeCursor: wf.resumeCursor,
+      chapterId: wf.chapterId,
+      chapterNumber: wf.chapterNumber,
+      error: wf.error,
+      progress: summarizeStages(stages),
+      stages: stages.map((s) => ({
+        stageId: s.stageId,
+        ordinal: s.ordinal,
+        status: s.status,
+        attempts: s.attempts,
+        startedAt: s.startedAt,
+        endedAt: s.endedAt,
+        error: s.error?.message ?? null,
+        output: s.output,
+        artifactRefs: s.artifactRefs,
+      })),
+      artifacts: repo.listArtifacts(params.workflowId),
+    };
+  },
+
+  /** 暂停（可恢复）—— 与取消语义不同 */
+  'workflow.pause': (params: { workflowId: string }) => {
+    const p = requireProject();
+    const engine = workflowEngines.get(params.workflowId);
+    if (!engine) {
+      // 进程重启后内存里没有引擎 —— 但状态在库里，直接改库即可
+      const repo = new WorkflowRepository(p.db);
+      repo.updateStatus(params.workflowId, 'PAUSED');
+      return { ok: true, status: 'PAUSED', note: '引擎已不在内存中，仅更新持久化状态' };
+    }
+    engine.pause(params.workflowId);
+    return { ok: true, status: 'PAUSED' };
+  },
+
+  /** 恢复（进程重启后也能用 —— 只依赖数据库） */
+  'workflow.resume': async (params: { workflowId: string }) => {
+    const p = requireProject();
+    const engine = buildWorkflowEngine(p);
+    workflowEngines.set(params.workflowId, engine);
+    void engine
+      .resume(params.workflowId, {})
+      .catch((e) => logger.error('Workflow 恢复异常', e, { workflowId: params.workflowId }));
+    return { ok: true, status: 'RESUMING' };
+  },
+
+  /** 取消（不可恢复） */
+  'workflow.cancel': (params: { workflowId: string }) => {
+    const p = requireProject();
+    const engine = workflowEngines.get(params.workflowId);
+    if (engine) {
+      engine.cancel(params.workflowId);
+    } else {
+      new WorkflowRepository(p.db).updateStatus(params.workflowId, 'CANCELLED');
+    }
+    return { ok: true, status: 'CANCELLED' };
+  },
+
+  /**
+   * 列出可恢复的工作流（进程启动后的恢复入口）。
+   *
+   * ⚠ 只报告不自动执行 —— 自动跑会在用户没预期时消耗模型额度。
+   */
+  'workflow.recoverable': () => {
+    const p = requireProject();
+    const repo = new WorkflowRepository(p.db);
+    const list = repo.listUnfinished();
+    return {
+      count: list.length,
+      workflows: list.map((w) => ({
+        workflowId: w.id,
+        status: w.status,
+        chapterNumber: w.chapterNumber,
+        currentStage: w.currentStage,
+        resumeCursor: w.resumeCursor,
+        updatedAt: w.updatedAt,
+      })),
+    };
   },
 };
 

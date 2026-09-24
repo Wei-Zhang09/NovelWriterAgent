@@ -57,6 +57,7 @@ describe('迁移', () => {
       '0007_genre_isolation',
       '0008_scene_persistence',
       '0009_skill_summary',
+      '0010_workflow',
     ]);
   });
 
@@ -86,6 +87,13 @@ describe('迁移', () => {
     //   索引 28 → 32（0007 新增 4 个：idx_skills_genre_scope、
     //     idx_corpus_scenes_genre、idx_patterns_genre_scope、
     //     idx_corpus_documents_genre —— 类型隔离的检索路径）
+    //   索引 32 → 35（0008 oversized 列 + 0009 skill summary）
+    //   业务表 22 → 27（0010 新增 5 张：workflows、workflow_stages、
+    //     workflow_artifacts、retrieval_traces、state_proposals
+    //     —— Novel Workflow 的持久化，P0-1/P0-2）
+    //   索引 35 → 47（0010 新增 12 个索引，覆盖恢复查询路径：
+    //     按 status 捞未完成工作流、按 book/chapter 查工作流、
+    //     按 workflow 查 stage/artifact、按 stage 查检索轨迹）
     //
     // 分组断言而不是只数总数：这样新增业务表与新增 FTS 表会分别失败，
     // 一眼能看出是哪一类变了。
@@ -98,14 +106,14 @@ describe('迁移', () => {
     const ftsVirtual = all.filter((t) => t.name === 'chapter_fts' || t.name === 'memory_fts');
     const business = all.filter((t) => !shadow.includes(t) && !ftsVirtual.includes(t));
 
-    expect(business.length).toBe(22);
+    expect(business.length).toBe(27);
     expect(ftsVirtual.length).toBe(2);
     expect(shadow.length).toBe(10);
 
     const indexes = db.all<{ name: string }>(
       "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'",
     );
-    expect(indexes.length).toBe(35);
+    expect(indexes.length).toBe(47);
   });
 
   it('⚠ 全部迁移都已应用（构建产物不遗漏 SQL）', () => {
@@ -125,6 +133,7 @@ describe('迁移', () => {
       '0007_genre_isolation',
       '0008_scene_persistence',
       '0009_skill_summary',
+      '0010_workflow',
     ]);
   });
 

@@ -180,7 +180,14 @@ export class AgentRuntime {
 
       state.artifacts = [...(result.artifacts ?? [])];
       state.output = result.output;
-      state.status = controller.signal.aborted ? 'CANCELLED' : 'SUCCEEDED';
+      // ⚠ P0-2：abort 不等于取消。abort 可能来自 pause() —— 此时状态应为
+      //   PAUSED（可恢复），而不是 CANCELLED（不可恢复）。
+      //   原实现只看 `signal.aborted`，于是 pause 被写成 CANCELLED。
+      state.status = controller.signal.aborted
+        ? this.paused.has(runId)
+          ? 'PAUSED'
+          : 'CANCELLED'
+        : 'SUCCEEDED';
       state.endedAt = new Date().toISOString();
 
       this.runs.finish(
@@ -200,10 +207,29 @@ export class AgentRuntime {
       // §55 Rule 8：异常必须落 run_events，绝不吞
       const appErr = AppError.from(err);
       state.error = appErr.toJSON();
-      state.status = controller.signal.aborted ? 'CANCELLED' : 'FAILED';
+      // ⚠ P0-2 的核心修复：这里是原 bug 的现场。
+      //   原代码 `controller.signal.aborted ? 'CANCELLED' : 'FAILED'` ——
+      //   pause() 调了 abort()，于是"暂停"在这里被改写成"取消"，
+      //   用户再想 resume 已经没有可恢复的状态了。
+      //   现在先问"这次中止是谁请求的"：暂停请求 → PAUSED，否则才 CANCELLED。
+      const wasPaused = this.paused.has(runId);
+      state.status = controller.signal.aborted ? (wasPaused ? 'PAUSED' : 'CANCELLED') : 'FAILED';
       state.endedAt = new Date().toISOString();
 
-      if (state.status === 'CANCELLED') {
+      if (wasPaused) {
+        this.events.emit({
+          runId,
+          type: 'RUN_PAUSED',
+          payload: { lastCompletedStage: state.lastCompletedStage },
+        });
+        // ⚠ runs.status 是自由 TEXT（无 CHECK 约束），因此可以如实记 PAUSED。
+        //   原实现只能记 CANCELLED，那正是"暂停变取消"在数据库层的体现。
+        this.runs.finish(runId, 'PAUSED', null, null);
+        this.logger.info('Run 已暂停（可恢复）', {
+          runId,
+          lastCompletedStage: state.lastCompletedStage,
+        });
+      } else if (state.status === 'CANCELLED') {
         this.events.emit({ runId, type: 'RUN_CANCELLED', payload: { reason: appErr.message } });
         this.runs.finish(runId, 'CANCELLED', null, appErr.toJSON());
       } else {
@@ -218,7 +244,16 @@ export class AgentRuntime {
       return this.toResult(state);
     } finally {
       this.active.delete(runId);
-      this.paused.delete(runId);
+      // ⚠ P0-2：**不能**无条件清 paused。
+      //   原实现里 paused.delete(runId) 在 finally 执行，
+      //   意味着"暂停标志"随 run 结束一起消失 —— 即使状态写对了 PAUSED，
+      //   调用方也再查不到它是被暂停的（恢复依据丢失）。
+      //   现在只在**正常结束/取消/失败**时清理；暂停时保留标志，
+      //   由 resume() 或 cancel() 负责清理。
+      const st = state.status;
+      if (st !== 'PAUSED') {
+        this.paused.delete(runId);
+      }
     }
   }
 

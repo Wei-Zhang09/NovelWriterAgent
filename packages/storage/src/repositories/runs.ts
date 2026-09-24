@@ -81,7 +81,20 @@ export class RunRepository {
     this.db.run('UPDATE runs SET current_step = ? WHERE id = ?', step, id);
   }
 
-  finish(id: string, status: 'SUCCEEDED' | 'FAILED' | 'CANCELLED', output?: unknown, error?: unknown): RunRow {
+  /**
+   * 结束 / 暂停一个 run。
+   *
+   * ⚠ `PAUSED` 与 `CANCELLED` 必须分开（P0-2）：前者可 resume，后者不可。
+   *   原实现只有 CANCELLED，于是"暂停"在数据库层就写成了"取消"，
+   *   恢复依据随之丢失。`runs.status` 是自由 TEXT（无 CHECK 约束），
+   *   加这个值不需要迁移。
+   */
+  finish(
+    id: string,
+    status: 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'PAUSED',
+    output?: unknown,
+    error?: unknown,
+  ): RunRow {
     this.db.run(
       'UPDATE runs SET status = ?, output_json = ?, error_json = ?, ended_at = ? WHERE id = ?',
       status,

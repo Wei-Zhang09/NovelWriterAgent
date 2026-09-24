@@ -58,6 +58,20 @@ export const RunEventType = z.enum([
   'COMMIT_STARTED', 'COMMIT_COMPLETED', 'COMMIT_REPAIRED',
   'CHECKPOINT_CREATED', 'RUN_PAUSED', 'RUN_RESUMED', 'RUN_FAILED', 'RUN_CANCELLED',
   'SKILL_INJECTED', 'QUALITY_DEBT_RECORDED',
+  // ── Workflow stage 级事件（v1.0 闭环提示词 §二十）──
+  //
+  // ⚠ 为什么需要这三个：原事件表只有"阶段产物"事件（PLAN_CREATED 等），
+  //   没有"阶段开始/结束"事件。UI 要显示「✓ Context / ● Plan / ○ Write」
+  //   这种逐阶段进度，就必须知道某个 stage **何时开始**（而不只是
+  //   它产出了什么）—— 否则只能等产物出现才知道在跑哪一步，
+  //   长 stage（Write 可能几分钟）期间界面是完全静止的。
+  'STAGE_STARTED', 'STAGE_COMPLETED', 'STAGE_SKIPPED',
+  // 工作流终态事件（与 RUN_* 区分：RUN_* 是 agent run，这两个是 workflow）
+  'RUN_COMPLETED',
+  // 状态结算的验证结果（§六：VERIFIED 才能进 Canon，故必须有事件可审计）
+  'STATE_VERIFIED', 'STATE_REJECTED',
+  // Timeline（P0-5）
+  'TIMELINE_UPDATED', 'TIMELINE_CONFLICT',
 ]);
 export type RunEventType = z.infer<typeof RunEventType>;
 
@@ -71,6 +85,9 @@ export const STATE_EVENT_TYPES: readonly RunEventType[] = [
   'CONTINUITY_COMPLETED', 'STATE_PROPOSED',
   'COMMIT_STARTED', 'COMMIT_COMPLETED', 'COMMIT_REPAIRED',
   'RUN_STARTED', 'RUN_PAUSED', 'RUN_RESUMED', 'RUN_FAILED', 'RUN_CANCELLED',
+  // ⚠ 状态结算与时间线改变的是**正史**，必须长期保留（ADR-0006 约束 B）。
+  //   STAGE_STARTED/STAGE_COMPLETED 属 OBSERVABILITY（过程噪声，可过期）。
+  'STATE_VERIFIED', 'STATE_REJECTED', 'TIMELINE_UPDATED', 'TIMELINE_CONFLICT',
 ];
 
 export function categorizeEvent(type: RunEventType): EventCategory {

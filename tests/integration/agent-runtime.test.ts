@@ -322,11 +322,48 @@ describe('cancel 与 pause 语义不同', () => {
     const active = rt.listActive();
     await rt.pause(active[0]!.runId);
     const res = await p;
-    expect(res.status).toBe('CANCELLED'); // abort 导致的终态
+
+    // ⚠ P0-2 语义修正：暂停的终态必须是 PAUSED，**不是** CANCELLED。
+    //
+    //   原断言写的是 `toBe('CANCELLED')` 并注释"abort 导致的终态" ——
+    //   那是在**描述 bug**，不是在规定行为。pause 与 cancel 是两个不同的
+    //   操作：前者可 resume，后者不可。把 pause 落成 CANCELLED 会让
+    //   "暂停"变成"取消"，用户再想继续已经没有可恢复的状态。
+    //
+    //   施工提示词 §Step 4 明确要求这种情况"修改测试以匹配正确的新行为
+    //   + 新增回归测试"，而不是为了绿灯保留旧错误语义。
+    expect(res.status).toBe('PAUSED');
+    expect(res.status).not.toBe('CANCELLED');
 
     const paused = rt.eventsFor(res.runId).find((e) => e.type === 'RUN_PAUSED');
     expect(paused).toBeDefined();
     expect((paused!.payload as { lastCompletedStage: string }).lastCompletedStage).toBe('PLANNING');
+  });
+
+  it('⚠ 回归：pause 之后仍可 resume（暂停不等于取消）', async () => {
+    t = createTestProject();
+    const slow: AgentHandler = {
+      agentType: 'writer',
+      execute: async (ctx) => {
+        ctx.checkpoint('PLANNING', { p: 1 }, {});
+        await new Promise((r) => setTimeout(r, 200));
+        return {};
+      },
+    };
+    const rt = makeRuntime(t, [slow]);
+    const p = rt.run({ ...baseInput(t!), agentType: 'writer' });
+    await new Promise((r) => setTimeout(r, 60));
+    const runId = rt.listActive()[0]!.runId;
+    await rt.pause(runId);
+    const res = await p;
+    expect(res.status).toBe('PAUSED');
+
+    // ⚠ 这条是核心：暂停后**必须**能找到恢复点。
+    //   原实现里 paused 标志在 finally 被清掉、状态被写成 CANCELLED，
+    //   于是这里会失败 —— 恢复依据丢失。
+    const resumed = await rt.resume(runId);
+    expect(resumed.runId).toBe(runId);
+    expect(resumed.resumeFrom).toBe('PLANNING');
   });
 
   it('对不存在的 Run 执行 pause/cancel 报明确错误', async () => {

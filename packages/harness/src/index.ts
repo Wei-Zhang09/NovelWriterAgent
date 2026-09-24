@@ -91,6 +91,37 @@ export { ContextEngine } from './context/engine.js';
 export type { ContextEngineOptions } from './context/engine.js';
 export { defaultTokenCounter, conservativeTokenCounter } from './context/token-counter.js';
 export { MemoryGatherer } from './context/memory-gatherer.js';
+
+// ── Novel Workflow（v1.0 闭环提示词 §三 P0-1 / §四 P0-2）──
+export {
+  WorkflowEngine,
+  stageOrdinals,
+  summarizeStages,
+  type AdvanceResult,
+  type WorkflowEngineOptions,
+} from './workflow/workflow-engine.js';
+export { WorkflowRepository, type CreateWorkflowInput } from './workflow/workflow-repository.js';
+export {
+  createNovelWorkflowStages,
+  type NovelWorkflowServices,
+} from './workflow/novel-workflow.js';
+export {
+  STAGE_ORDER,
+  STAGE_STATUS,
+  TERMINAL_STATUSES,
+  isResumable,
+  isWorkflowTerminal,
+  type StageContext,
+  type StageId,
+  type StageInput,
+  type WorkflowStageResult,
+  type StageStatus,
+  type WorkflowArtifactRef,
+  type WorkflowRecord,
+  type WorkflowStage,
+  type WorkflowStageRecord,
+  type WorkflowStatus,
+} from './workflow/workflow-types.js';
 export type {
   MemoryCandidate,
   GatherMemoryOptions,
