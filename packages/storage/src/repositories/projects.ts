@@ -24,6 +24,11 @@ export interface BookRow extends Timestamped {
   readonly target_words_per_chapter: number | null;
   /** 偏离容忍度百分比（默认 40） */
   readonly word_count_tolerance_pct: number;
+  /** 设定确认门禁是否启用（P2-3，默认 1） */
+  readonly settings_gate_enabled: number;
+  /** 确认设定时记录的内容指纹；`null` = 从未确认 / 确认后又被改动 */
+  readonly settings_confirmed_hash: string | null;
+  readonly settings_confirmed_at: string | null;
 }
 
 export interface CreateProjectInput {
@@ -177,6 +182,51 @@ export class BookRepository {
         WHERE id = ?`,
       targetWords,
       tolerancePct ?? null,
+      now(),
+      bookId,
+    );
+    return this.get(bookId);
+  }
+
+  // ── 设定确认门禁（P2-3）──────────────────────────────────
+
+  /**
+   * 记录"设定已确认"，并写入**当时的内容指纹**。
+   *
+   * ⚠ 存指纹而不是布尔量：之后任何入口改了设定，指纹自然对不上，
+   *   不需要每个写入口记得清标记（见 `@nwa/core` settings-gate 注释）。
+   */
+  confirmSettings(bookId: string, hash: string): BookRow {
+    this.db.run(
+      'UPDATE books SET settings_confirmed_hash = ?, settings_confirmed_at = ?, updated_at = ? WHERE id = ?',
+      hash,
+      now(),
+      now(),
+      bookId,
+    );
+    return this.get(bookId);
+  }
+
+  /**
+   * 解除确认（撤回承诺）。
+   *
+   * ⚠ 清成 NULL 而不是写空串：NULL 表示"从未确认"，
+   *   空串会变成一个能被 `=== hash` 意外命中的值（哈希不可能是空串）。
+   */
+  revokeSettingsConfirmation(bookId: string): BookRow {
+    this.db.run(
+      'UPDATE books SET settings_confirmed_hash = NULL, settings_confirmed_at = NULL, updated_at = ? WHERE id = ?',
+      now(),
+      bookId,
+    );
+    return this.get(bookId);
+  }
+
+  /** 开关设定门禁（老项目 / 批量脚本需要能关掉） */
+  setSettingsGate(bookId: string, enabled: boolean): BookRow {
+    this.db.run(
+      'UPDATE books SET settings_gate_enabled = ?, updated_at = ? WHERE id = ?',
+      enabled ? 1 : 0,
       now(),
       bookId,
     );

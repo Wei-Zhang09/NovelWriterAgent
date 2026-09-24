@@ -32,6 +32,13 @@ export const ErrorCode = {
   CONTINUITY_BLOCKED: 'CONTINUITY_BLOCKED',
   EVIDENCE_NOT_FOUND: 'EVIDENCE_NOT_FOUND',
   EVIDENCE_QUOTE_MISMATCH: 'EVIDENCE_QUOTE_MISMATCH',
+  /**
+   * 设定未确认 / 确认后又被改动（P2-3）。
+   *
+   * recoverable=true：作者确认设定后即可继续，不需要改代码或重试。
+   * 这不是系统故障，是"前置条件未满足"——与 COMMIT_LOCKED 同类语义。
+   */
+  SETTINGS_NOT_CONFIRMED: 'SETTINGS_NOT_CONFIRMED',
 
   // ---- 提交与恢复（ADR-0002 v2） ----
   COMMIT_FAILED: 'COMMIT_FAILED',
@@ -97,6 +104,7 @@ const ERROR_SEMANTICS: Record<ErrorCodeValue, { recoverable: boolean; retryable:
   CONTINUITY_BLOCKED: { recoverable: true, retryable: false },
   EVIDENCE_NOT_FOUND: { recoverable: true, retryable: false },
   EVIDENCE_QUOTE_MISMATCH: { recoverable: true, retryable: false },
+  SETTINGS_NOT_CONFIRMED: { recoverable: true, retryable: false },
 
   COMMIT_FAILED: { recoverable: true, retryable: true },
   COMMIT_CONFLICT: { recoverable: false, retryable: false },

@@ -14,6 +14,8 @@ export type { DatabaseOptions, Migration } from './database.js';
 export { MIGRATIONS } from './migrations/index.js';
 
 export { createRepositories } from './repositories/index.js';
+export { confirmBookSettings } from './repositories/world.js';
+export type { WorldEntityRow, CreateWorldEntityInput } from './repositories/world.js';
 export { TimelineRepository, toComparableHours } from './repositories/timeline.js';
 export type { CreateTimelineEventInput, TimelineQuery, TimelineEventRow } from './repositories/timeline.js';
 export type { Repositories } from './repositories/index.js';

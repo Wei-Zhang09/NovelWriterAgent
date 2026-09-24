@@ -40,6 +40,7 @@ import {
 import type { Repositories, Database } from '@nwa/storage';
 import type { ToolRegistry, NovelWorkflowServices } from '@nwa/harness';
 import { hashOfFile } from '@nwa/harness';
+import { evaluateSettingsGate, hashSettings } from '@nwa/core';
 import {
   renderCharacterBlock,
   toCharacterBrief,
@@ -172,6 +173,41 @@ function buildCharacterContext(
       error: e instanceof Error ? e.message : String(e),
     });
     return '';
+  }
+}
+
+/**
+ * 断言设定门禁已通过（P2-3）。
+ *
+ * ⚠ 这是**硬门禁**（用户决策：「作者先写设定 → Agent 按设定写」）。
+ *   判定逻辑本身在 `@nwa/core` 的 `evaluateSettingsGate`（纯函数、可穷举单测），
+ *   这里只负责：读当前状态 → 判定 → 不通过时抛错。
+ *
+ * ⚠ 在 **plan 与 write 两处**都调用：
+ *   只拦 write 的话，作者可以在设定未确认时先规划 —— 而计划一旦落库，
+ *   Writer 就会按它写。门禁必须在"开始动脑"那一步就生效。
+ */
+function assertSettingsGate(deps: WorkflowServicesDeps, bookId: string): void {
+  let book;
+  try {
+    book = deps.repos.books.get(bookId);
+  } catch {
+    // 书读不到是存储问题，不是门禁问题 —— 交给后续步骤报真正的错
+    return;
+  }
+  const entries = deps.repos.world.snapshot(bookId);
+  const verdict = evaluateSettingsGate({
+    gateEnabled: book.settings_gate_enabled === 1,
+    confirmedHash: book.settings_confirmed_hash,
+    currentHash: hashSettings(entries),
+    entryCount: entries.length,
+  });
+  if (!verdict.allowed) {
+    throw new AppError(
+      ErrorCode.SETTINGS_NOT_CONFIRMED,
+      verdict.message,
+      { details: { bookId, reason: verdict.reason, entryCount: entries.length } },
+    );
   }
 }
 
@@ -361,6 +397,8 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
     // ── 3. 规划 ──
     async plan(input) {
       const ch = needChapter(deps, input.chapterId);
+      // ⚠ 设定门禁（P2-3）：在"开始动脑"这一步就拦，而不是等写完再拦
+      assertSettingsGate(deps, ch.book_id);
       const model = needModel(deps, '生成章节计划');
       const planner = new Planner({
         structured: (req) => model.plannerStructured(req) as never,
@@ -463,6 +501,8 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
     // ── 5. 写正文 ──
     async write(input) {
       const ch = needChapter(deps, input.chapterId);
+      // ⚠ 设定门禁（P2-3）：与 plan 一样要拦 —— 计划可能是门禁前就落库的
+      assertSettingsGate(deps, ch.book_id);
       const model = needModel(deps, '生成正文');
       const plan = deps.repos.chapters.readPlan<unknown>(ch.id);
       if (!plan) {

@@ -13,6 +13,7 @@ import { createContinuityTools } from './continuity-tools.js';
 import { createReviewTools } from './review-tools.js';
 import { createFactTools } from './fact-tools.js';
 import { createCharacterTools } from './character-tools.js';
+import { createWorldTools } from './world-tools.js';
 import { createTimelineTools } from './timeline-tools.js';
 import { createBookTools } from './book-tools.js';
 import { createCommitTools } from './commit-tools.js';
@@ -251,6 +252,10 @@ export function createAllTools(
     ...createFactTools(repos, { resolveBookId }),
     // STEP 20：角色（§52 Test A 的 add character）
     ...createCharacterTools(repos),
+    // P2-3：世界观设定（world.create / world.list / world.update / world.remove）
+    // ⚠ 表在 0001_init.sql:214 就建好了但全仓零引用 —— 与 character.create、
+    //   timeline.addEvent 同类缺陷（建了表没接线）
+    ...createWorldTools(repos),
     // STEP 20：书目（⚠ 此前只有 IPC 没有工具，导致建书这一步断链）
     ...createBookTools(repos),
     // STEP 11：原子提交（workspace.*）【MVP 门槛】—— 权限 COMMIT 级

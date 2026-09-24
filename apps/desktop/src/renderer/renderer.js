@@ -206,6 +206,7 @@ function renderCenter() {
   if (state.project && state.books.length === 0) c.append(renderNewBookForm());
   if (state.selectedBookId) c.append(renderWordTargetForm());
   if (state.selectedBookId) c.append(renderCharacterForm());
+  if (state.selectedBookId) c.append(renderSettingsForm());
   if (state.selectedBookId) c.append(renderNewChapterForm());
 }
 
@@ -829,6 +830,130 @@ function renderCharacterForm() {
     aliases.value = '';
     role.value = '';
     profile.value = '';
+    await refresh();
+  });
+
+  void refresh();
+  return box;
+}
+
+/**
+ * 世界观设定 + 确认门禁（P2-3）。
+ *
+ * ⚠ 存在的理由：`world_entities` 表在 0001_init.sql:214 就建好了，
+ *   但**全仓零引用** —— 没有仓储、没有工具、没有界面（P2-3 核查：0 次）。
+ *   与 timeline（P0-5）、characters（P2-2）同一类"建了表没接线"。
+ *
+ * ⚠ 界面必须把门禁状态**说清楚**：作者看到"设定未确认 → 写不了"
+ *   却不知道去哪确认，比不做门禁更糟。所以面板顶部常驻一行状态。
+ */
+function renderSettingsForm() {
+  const box = el('div', 'form');
+  box.append(el('h3', null, '世界观设定'));
+
+  const status = el('div', 'perm-line');
+  const name = el('input');
+  name.placeholder = '设定名称（必填），如 灵力枯竭';
+  const typeSel = el('select');
+  for (const t of [
+    ['WORLD_RULE', '世界规则'],
+    ['LOCATION', '地理'],
+    ['FACTION', '势力'],
+    ['ITEM', '器物'],
+    ['CONCEPT', '概念'],
+    ['CUSTOM', '其他'],
+  ]) {
+    const o = el('option');
+    o.value = t[0];
+    o.textContent = t[1];
+    typeSel.append(o);
+  }
+  const desc = el('textarea', 'sum-edit');
+  desc.rows = 3;
+  desc.placeholder = '设定内容（会注入规划与写作）';
+
+  const addBtn = el('button', 'btn btn--primary', '添加设定');
+  const confirmBtn = el('button', 'btn', '确认全部设定');
+  const msg = el('div', 'form-msg');
+  const list = el('div', 'model-status');
+
+  box.append(
+    status,
+    name,
+    typeSel,
+    desc,
+    addBtn,
+    confirmBtn,
+    msg,
+    list,
+    el('div', 'perm-line', '确认后 Agent 才按设定写作；确认后再改设定需重新确认'),
+  );
+
+  async function refresh() {
+    const r = await call('settings.status', { bookId: state.selectedBookId });
+    if (!r.ok) return;
+    const d = r.data;
+    status.textContent = d.message;
+    status.className = d.allowed ? 'perm-line perm-line--ok' : 'perm-line perm-line--warn';
+    confirmBtn.disabled = d.entryCount === 0;
+    list.replaceChildren();
+    if (d.entities.length === 0) {
+      list.append(el('div', 'issue-src', '还没有设定（未登记设定时可以直接开写）'));
+      return;
+    }
+    for (const e of d.entities) {
+      const row = el('div', 'issue-row');
+      const body = el('div', 'issue-body');
+      const tag = e.status === 'CONFIRMED' ? '已确认' : '草稿';
+      body.append(el('div', 'issue-msg', `[${tag}] ${e.name}`));
+      if (e.description) body.append(el('div', 'issue-src', e.description));
+      row.append(body);
+      list.append(row);
+    }
+  }
+
+  addBtn.addEventListener('click', async () => {
+    const n = name.value.trim();
+    if (!n) {
+      msg.className = 'form-msg form-msg--err';
+      msg.textContent = '设定名称不得为空';
+      return;
+    }
+    addBtn.disabled = true;
+    const r = await tool(
+      'world.create',
+      {
+        bookId: state.selectedBookId,
+        type: typeSel.value,
+        name: n,
+        ...(desc.value.trim() ? { description: desc.value.trim() } : {}),
+      },
+      'WRITE',
+    );
+    addBtn.disabled = false;
+    if (!r.ok) {
+      msg.className = 'form-msg form-msg--err';
+      msg.textContent = `${r.error.code}: ${r.error.message}`;
+      return;
+    }
+    msg.className = 'form-msg form-msg--ok';
+    msg.textContent = `已添加「${n}」（草稿，需确认后才生效）`;
+    name.value = '';
+    desc.value = '';
+    await refresh();
+  });
+
+  confirmBtn.addEventListener('click', async () => {
+    confirmBtn.disabled = true;
+    const r = await call('settings.confirm', { bookId: state.selectedBookId });
+    confirmBtn.disabled = false;
+    if (!r.ok) {
+      msg.className = 'form-msg form-msg--err';
+      msg.textContent = `${r.error.code}: ${r.error.message}`;
+      return;
+    }
+    msg.className = 'form-msg form-msg--ok';
+    msg.textContent = `已确认 ${r.data.count} 条设定，Agent 将按设定写作`;
     await refresh();
   });
 

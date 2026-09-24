@@ -716,6 +716,45 @@ function createWindow(): void {
               }
             }
 
+            // 17d) 世界观设定 + 确认门禁（P2-3）
+            //
+            // ⚠ 这条断言必须**真的添加设定并真的点确认**，然后验证
+            //   门禁状态从"未确认"翻到"已确认"。只断言"面板在"会漏掉
+            //   world.create 不是 IPC 方法这类问题（P2-2 踩过同一个坑）。
+            const setForm = [...document.querySelectorAll('.form')]
+              .find(f => f.querySelector('h3')?.textContent.includes('世界观设定'));
+            rec('⚠ 世界观设定面板已挂载（P2-3 world_entities 零引用已接线）',
+                !!setForm, '');
+            if (setForm) {
+              const sInputs = [...setForm.querySelectorAll('input')];
+              if (sInputs[0]) setInput(sInputs[0], '灵力枯竭');
+              const sArea = setForm.querySelector('textarea');
+              if (sArea) setInput(sArea, '施法会消耗寿命，不可逆');
+              const sAdd = btnByText(setForm, '添加设定');
+              rec('有添加设定按钮', !!sAdd, '');
+              if (sAdd) {
+                sAdd.click();
+                await sleep(1500);
+                const sm = setForm.querySelector('.form-msg')?.textContent ?? '';
+                rec('⚠ 添加设定真的生效', sm.includes('灵力枯竭'), sm.slice(0, 70));
+                // 未确认时门禁必须拦
+                const before = setForm.querySelector('.perm-line')?.textContent ?? '';
+                rec('⚠ 未确认时门禁显示为拦截状态',
+                    before.includes('尚未确认'), before.slice(0, 70));
+                const cBtn = btnByText(setForm, '确认全部设定');
+                rec('有确认设定按钮', !!cBtn, '');
+                if (cBtn) {
+                  cBtn.click();
+                  await sleep(1500);
+                  const cm2 = setForm.querySelector('.form-msg')?.textContent ?? '';
+                  rec('⚠ 确认设定真的生效', cm2.includes('已确认'), cm2.slice(0, 70));
+                  const after = setForm.querySelector('.perm-line')?.textContent ?? '';
+                  rec('⚠ 确认后门禁放行（作者可以开写了）',
+                      after.includes('已确认'), after.slice(0, 70));
+                }
+              }
+            }
+
             // 18) Run 控制（补缺口：Pause / Resume / Cancel 入口）
             const runForm = [...document.querySelectorAll('.form')]
               .find(f => f.querySelector('h3')?.textContent.includes('Agent 与状态机'));

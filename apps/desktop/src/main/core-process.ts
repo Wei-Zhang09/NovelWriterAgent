@@ -20,6 +20,8 @@ import {
   ErrorCode,
   bookId,
   perSceneWords,
+  evaluateSettingsGate,
+  hashSettings,
   type ErrorCodeValue,
 } from '@nwa/core';
 import {
@@ -27,6 +29,7 @@ import {
   Database,
   MIGRATIONS,
   canProcess,
+  confirmBookSettings,
   createRepositories,
   filterSkillsByGenre,
   normalizeGenre,
@@ -909,6 +912,74 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       targetWords: row.target_words_per_chapter,
       tolerancePct: row.word_count_tolerance_pct,
     };
+  },
+
+  // ── 设定确认门禁（P2-3）────────────────────────────────────
+
+  /**
+   * 确认设定：把全部设定标记为 CONFIRMED，并记录**当时的内容指纹**。
+   *
+   * ⚠ 指纹用 `hashAfterConfirm` 的语义（全部按 CONFIRMED 计算）——
+   *   否则"刚确认完指纹就对不上"，门禁会永远拦着自己。
+   */
+  'settings.confirm': (params: { bookId: string }) => {
+    const p = requireProject();
+    // ⚠ 走仓储层唯一实现（与测试同一条路径），不在 IPC 里重写三步序列
+    const { count, hash } = confirmBookSettings(p.repos, params.bookId);
+    logger.info('设定已确认', { bookId: params.bookId, count, hash });
+    return { bookId: params.bookId, confirmed: true, count, hash };
+  },
+
+  /** 撤回确认（设定改回未确认状态，Agent 再次停写） */
+  'settings.revoke': (params: { bookId: string }) => {
+    const p = requireProject();
+    const row = p.repos.books.revokeSettingsConfirmation(params.bookId);
+    logger.info('设定确认已撤回', { bookId: params.bookId });
+    return { bookId: row.id, confirmed: false };
+  },
+
+  /**
+   * 查询设定门禁状态（供 UI 显示"现在能不能写"）。
+   *
+   * ⚠ 返回**判定结果**而不只是原始字段：UI 不该自己重算门禁逻辑 ——
+   *   两处实现迟早分叉，而分叉的后果是"界面说能写、后端拒绝"。
+   */
+  'settings.status': (params: { bookId: string }) => {
+    const p = requireProject();
+    const book = p.repos.books.get(params.bookId);
+    const entities = p.repos.world.listByBook(params.bookId);
+    const entries = p.repos.world.snapshot(params.bookId);
+    const verdict = evaluateSettingsGate({
+      gateEnabled: book.settings_gate_enabled === 1,
+      confirmedHash: book.settings_confirmed_hash,
+      currentHash: hashSettings(entries),
+      entryCount: entries.length,
+    });
+    return {
+      bookId: book.id,
+      gateEnabled: book.settings_gate_enabled === 1,
+      confirmedAt: book.settings_confirmed_at,
+      entryCount: entries.length,
+      confirmedCount: entities.filter((e) => e.status === 'CONFIRMED').length,
+      allowed: verdict.allowed,
+      reason: verdict.reason,
+      message: verdict.message,
+      entities: entities.map((e) => ({
+        id: e.id,
+        type: e.type,
+        name: e.name,
+        description: e.description,
+        status: e.status,
+      })),
+    };
+  },
+
+  /** 开关设定门禁（老项目 / 想直接开写的作者） */
+  'settings.setGate': (params: { bookId: string; enabled: boolean }) => {
+    const p = requireProject();
+    const row = p.repos.books.setSettingsGate(params.bookId, params.enabled);
+    logger.info('设定门禁已切换', { bookId: params.bookId, enabled: params.enabled });
+    return { bookId: row.id, gateEnabled: row.settings_gate_enabled === 1 };
   },
 
   // ── 通过 Tool Registry 调用（统一走权限与校验门禁） ────────

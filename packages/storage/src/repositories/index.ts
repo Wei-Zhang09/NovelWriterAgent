@@ -17,6 +17,7 @@ import { ForeshadowingRepository } from './foreshadowing.js';
 import { CorpusRepository } from './corpus.js';
 import { TimelineRepository } from './timeline.js';
 import { CommitOverrideRepository } from './commit-overrides.js';
+import { WorldRepository } from './world.js';
 
 export interface Repositories {
   readonly projects: ProjectRepository;
@@ -45,6 +46,15 @@ export interface Repositories {
    *   这张表让每次绕过都可审计，且记录**当时的状态快照**。
    */
   readonly commitOverrides: CommitOverrideRepository;
+  /**
+   * 世界观设定（P2-3）。
+   *
+   * ⚠ 表在 `0001_init.sql:214` 就建好了，但此前**全仓零引用**
+   *   （ADR-0003 列为「Schema 预留，MVP 不写入」）。到了 Full 阶段
+   *   就成了"表在那里，没人用" —— 与 timeline（P0-5）、
+   *   characters（P2-2）同一类缺陷。
+   */
+  readonly world: WorldRepository;
 }
 
 export function createRepositories(db: Database): Repositories {
@@ -60,6 +70,7 @@ export function createRepositories(db: Database): Repositories {
     corpus: new CorpusRepository(db),
     timeline: new TimelineRepository(db),
     commitOverrides: new CommitOverrideRepository(db),
+    world: new WorldRepository(db),
   };
 }
 
@@ -73,6 +84,8 @@ export { ForeshadowingRepository, FORESHADOW_STATUSES, FORESHADOW_TIERS } from '
 export { CorpusRepository, canProcess, PROCESSABLE_USAGE, CORPUS_SOURCE_TYPES, CORPUS_USAGE } from './corpus.js';
 export { TimelineRepository } from './timeline.js';
 export { CommitOverrideRepository } from './commit-overrides.js';
+export { WorldRepository, confirmBookSettings } from './world.js';
+export type { WorldEntityRow, CreateWorldEntityInput } from './world.js';
 export type { CommitOverrideRow, OverriddenCheck } from './commit-overrides.js';
 export type { CreateTimelineEventInput, TimelineQuery } from './timeline.js';
 // ⚠ 类型隔离是用户要求的硬约束，导出唯一入口避免各调用方自写过滤

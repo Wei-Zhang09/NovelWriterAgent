@@ -197,16 +197,19 @@ describe('chapter.getPlan', () => {
 });
 
 describe('工具总数（STEP 20 后）', () => {
-  it('工具总数随 STEP 递增（当前 28）', () => {
+  it('工具总数随 STEP 递增（当前 32）', () => {
     t = createTestProject();
     const names = registry(t).list().map((x) => x.name);
     // STEP 20 新增 book.{create,list} 与 character.{create,list,update}
     // P0-5 新增 timeline.{addEvent,check}
-    expect(names).toHaveLength(28);
+    // P2-3 新增 world.{create,list,update,remove}
+    expect(names).toHaveLength(32);
     expect(names).toContain('chapter.plan');
     expect(names).toContain('chapter.getPlan');
     expect(names).toContain('timeline.addEvent');
     expect(names).toContain('timeline.check');
+    expect(names).toContain('world.create');
+    expect(names).toContain('world.list');
   });
 
   it('权限报告：PROPOSE_WRITE 类含 plan 工具', () => {

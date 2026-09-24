@@ -61,6 +61,7 @@ describe('迁移', () => {
       '0011_pattern_scope_evidence',
       '0012_commit_force_audit',
       '0013_book_word_target',
+      '0014_settings_gate',
     ]);
   });
 
@@ -149,6 +150,7 @@ describe('迁移', () => {
       '0011_pattern_scope_evidence',
       '0012_commit_force_audit',
       '0013_book_word_target',
+      '0014_settings_gate',
     ]);
   });
 

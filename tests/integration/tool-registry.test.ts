@@ -66,7 +66,12 @@ describe('注册', () => {
     // P0-5 补的前缀：timeline（timeline_events 表早已存在，
     // 但此前全仓无代码使用、也没有任何工具暴露 —— 与 character.* 同类缺陷）
     expect(byPrefix('timeline.')).toEqual(['timeline.addEvent', 'timeline.check']);
-    expect(names).toHaveLength(28);
+    // P2-3 补的前缀：world（world_entities 表在 0001_init.sql:214 就建好了，
+    // 但全仓零引用 —— 与 timeline.* / character.* 同类缺陷）
+    expect(byPrefix('world.')).toEqual([
+      'world.create', 'world.list', 'world.remove', 'world.update',
+    ]);
+    expect(names).toHaveLength(32);
   });
 
   it('拒绝重复注册（静默覆盖会让"注册了哪个版本"不可知）', () => {
@@ -111,12 +116,17 @@ describe('注册', () => {
       'review.categories', 'review.get',
       // P0-5：检查时间线是只读的（"只想看看有没有问题"不该需要写权限）
       'timeline.check',
+      // P2-3：看设定是只读的（作者翻看设定不该需要写权限）
+      'world.list',
     ]);
     // STEP 20：book.create / character.create / character.update 都是写入
     // P0-5：登记时间线事件是写入
+    // P2-3：设定增删改都是写入（⚠ world.remove 也是 —— 删除设定会改变
+    //       门禁指纹，等于改变了 Agent 的写作依据，不是无害操作）
     expect(report.WRITE).toEqual([
       'book.create', 'chapter.create', 'character.create', 'character.update',
       'project.create', 'project.update', 'timeline.addEvent',
+      'world.create', 'world.remove', 'world.update',
     ]);
     // 计划与审阅都是"提议"，不是"提交"，故归 PROPOSE_WRITE
     expect(report.PROPOSE_WRITE).toEqual(['chapter.plan', 'evidence.add', 'fact.add', 'review.run']);
