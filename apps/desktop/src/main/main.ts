@@ -180,9 +180,21 @@ function createWindow(): void {
             const forms = document.querySelectorAll('.form').length;
             const errors = [...document.querySelectorAll('.form-msg--err, .callout--err')]
               .map(e => e.textContent);
+            // ⚠ P1 Workflow UI：面板必须真的渲染出来。
+            //   只断言"没报错"是不够的 —— 面板没被挂载时页面同样干净，
+            //   那正是"后端有、界面够不到"这类缺陷的表现。
+            const wfPanel = [...document.querySelectorAll('.form--rail h3')]
+              .some(h => h.textContent.includes('工作流'));
+            const wfStageRows = document.querySelectorAll('.wf-stage').length;
+            const wfButtons = [...document.querySelectorAll('.btn')]
+              .filter(b => /运行完整工作流|暂停|恢复|取消/.test(b.textContent))
+              .map(b => b.textContent);
             return {
               paneCount: panes, toolCount: toolRows, navSectionCount: navSections,
               formCount: forms, errorTexts: errors,
+              workflowPanelPresent: wfPanel,
+              workflowStageRows: wfStageRows,
+              workflowButtons: wfButtons,
               version: document.getElementById('ver')?.textContent ?? '',
               brand: document.querySelector('.brand')?.textContent ?? '',
             };
@@ -194,7 +206,10 @@ function createWindow(): void {
               pass: result.paneCount === 3
                 && result.toolCount >= 8
                 && result.formCount >= 1
-                && result.errorTexts.length === 0,
+                && result.errorTexts.length === 0
+                // 工作流面板与四个控制按钮都在（缺任一说明面板没挂上）
+                && result.workflowPanelPresent === true
+                && result.workflowButtons.length >= 4,
             };
             writeFileSync(join(here, '../gui-result.json'), JSON.stringify(out, null, 2), 'utf8');
             logger.info('GUI 探针完成', { pass: out.pass, toolCount: out.toolCount });

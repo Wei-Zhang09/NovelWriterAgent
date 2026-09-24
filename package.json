@@ -54,7 +54,8 @@
     "verify:retrieval": "electron apps/desktop/scripts/verify-retrieval.mjs",
     "verify:state": "electron apps/desktop/scripts/verify-state.mjs",
     "verify:timeline": "electron apps/desktop/scripts/verify-timeline.mjs",
-    "verify:summary-gate": "electron apps/desktop/scripts/verify-summary-gate.mjs"
+    "verify:summary-gate": "electron apps/desktop/scripts/verify-summary-gate.mjs",
+    "verify:workflow-panel": "node apps/desktop/scripts/verify-workflow-panel.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

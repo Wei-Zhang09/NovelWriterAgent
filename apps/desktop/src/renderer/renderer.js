@@ -11,6 +11,7 @@
  */
 import { renderSkillPanel, renderBackupPanel } from './panels.js';
 import { renderCorpusPanel } from './corpus-panel.js';
+import { renderWorkflowPanel } from './workflow-panel.js';
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => {
@@ -42,6 +43,9 @@ const state = {
   lastCanon: null,
   lastCommit: null,
   lastSearch: null,
+  /** 当前正在看的工作流（P1 Workflow UI）。切项目后失效，故只存内存 */
+  lastWorkflowId: null,
+  lastWorkflow: null,
 };
 
 async function call(method, params) {
@@ -874,6 +878,25 @@ function renderAgent() {
       planDetail.append(el('div', 'perm-line', `  · ${sc.sceneId}: ${sc.purpose}`));
     }
   });
+
+  // ── 工作流（P1 Workflow UI）──
+  //
+  // ⚠ 置顶且默认展开：这是**正常写作**的入口（一键跑完整章，
+  //   顺序由代码控制、中断可恢复）。下方的逐步按钮是精细控制手段，
+  //   不是主路径 —— 让它们排在工作流前面会引导用户去手动编排。
+  //
+  // ⚠ 需要 refreshChapters 作为回调：工作流跑完可能已提交章节，
+  //   左栏列表必须跟着刷新，否则用户看到的状态是过期的。
+  const wfMsg = el('div', 'form-msg');
+  g1.append(
+    renderWorkflowPanel({
+      el,
+      state,
+      invoke: call,
+      msg: wfMsg,
+      refreshChapters: loadChapters,
+    }),
+  );
 
   g1.append(planBox);
 

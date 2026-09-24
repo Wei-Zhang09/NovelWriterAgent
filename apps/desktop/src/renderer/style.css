@@ -289,3 +289,52 @@ body {
 }
 .skill-row:first-child { border-top: none; padding-top: 0; margin-top: 0; }
 .skill-name { font-weight: 600; font-size: 12px; margin-bottom: 2px; }
+
+/* ── 工作流面板（P1 Workflow UI） ─────────────────────────────
+   ⚠ 状态用「图标 + 文字」双编码，不只用颜色：
+     色盲用户与黑白截图上颜色都不可靠，而 ✓/●/○/✗ 任何情况下都读得出。
+     这与既有 chip 的做法一致（研究报告 §3.1 决策 6）。 */
+.wf-stage {
+  border-top: 1px dashed var(--border);
+  padding-top: 4px;
+  margin-top: 4px;
+}
+.wf-stage:first-child { border-top: none; padding-top: 0; margin-top: 0; }
+
+.wf-stage__head {
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  list-style: none;
+  padding: 2px 0;
+}
+.wf-stage__head::-webkit-details-marker { display: none; }
+.wf-stage__head::before {
+  content: '▸';
+  color: var(--muted);
+  font-size: 10px;
+  transition: transform 0.12s ease;
+}
+.wf-stage[open] > .wf-stage__head::before { transform: rotate(90deg); }
+
+.wf-stage__name { font-weight: 600; font-size: 12px; }
+.wf-stage__meta { color: var(--muted); font-size: 11px; margin-left: auto; }
+
+/* ⚠ 图标色与语义：● 是「正在跑」不是「待办」；
+   FAILED 用 err 色，SKIPPED 用 muted —— skipped 不是失败。 */
+.wf-icon { font-size: 11px; width: 12px; flex: 0 0 auto; }
+.wf-icon--pending { color: var(--muted); }
+.wf-icon--running { color: var(--accent); }
+.wf-icon--done { color: var(--ok); }
+.wf-icon--failed { color: var(--err); }
+.wf-icon--skipped { color: var(--muted); }
+
+.wf-stage__body {
+  padding: 4px 0 6px 18px;
+  font-size: 12px;
+}
+
+/* 提示级消息（发现未完成工作流）—— 用 warn 色，不是 err：
+   它不表示出错，只表示"有件事你需要知道" */
+.form-msg--warn { color: var(--warn); }
