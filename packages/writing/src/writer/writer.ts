@@ -274,7 +274,10 @@ export class Writer {
    *   技能是**增强**不是前置依赖。
    */
   private selectSkills(scene: ScenePlan, index: number): SkillSelection {
-    const empty: SkillSelection = { selected: [], rejected: [], block: '', considered: 0 };
+    const empty: SkillSelection = {
+      selected: [], rejected: [], block: '', considered: 0,
+      resolutions: [], sameScopeConflicts: [],
+    };
     if (!this.skillEngine || this.skillRows.length === 0) return empty;
 
     try {

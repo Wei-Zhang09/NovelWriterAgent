@@ -43,6 +43,11 @@ import type { SkillRow } from '@nwa/storage';
 import { filterSkillsByGenre, normalizeGenre, sameGenre } from '@nwa/storage';
 import type { Skill, SkillTrigger } from '@nwa/shared';
 import { SkillSchema } from '@nwa/shared';
+import {
+  resolveSkillConflicts,
+  type ConflictResolution,
+  type SameScopeConflict,
+} from './conflict-resolver.js';
 
 /** 检索场景的上下文（§25 的检索输入） */
 export interface SceneContext {
@@ -138,6 +143,20 @@ export interface SkillSelection {
   readonly block: string;
   /** 过滤后参与打分的候选数（不含已被类型/状态排除的） */
   readonly considered: number;
+  /**
+   * 冲突解决记录（Scope Precedence）。
+   *
+   * ⚠ 无冲突时为空数组 —— 三个 Scope 的技能全部保留。
+   *   Scope 优先级**只在冲突时**起作用。
+   */
+  readonly resolutions: readonly ConflictResolution[];
+  /**
+   * 同 Scope 之间的冲突（**未被删除**）。
+   *
+   * 同 Scope 时 Scope 本身不提供判据，只能靠既有评分机制排序；
+   * 这里如实记录，便于观测"两条同类技能给出相反指示"。
+   */
+  readonly sameScopeConflicts: readonly SameScopeConflict[];
 }
 
 /**
@@ -250,12 +269,36 @@ export class SkillEngine {
         a.skill.id.localeCompare(b.skill.id), // 稳定排序，保证可重复
     );
 
+    // ── 5. 冲突解决（Scope Precedence）──
+    //
+    // ⚠⚠ 必须在近重复抑制**之前** —— 顺序不能反，这是实测出来的。
+    //
+    //   互相**矛盾**的两条规则，措辞必然高度相似（谈同一件事、用相近的词），
+    //   所以它们在近重复判据下看起来就像"重复"。实测：
+    // ```
+    //   "避免直接解释人物情绪"(UNIVERSAL) ~ "悬疑高潮可以短暂直接揭示情绪"(GENRE)  → 0.43
+    //   "避免直接解释人物情绪"(UNIVERSAL) ~ "本作品在冲突段落允许直接揭示情绪"(STYLE) → 0.40
+    // ```
+    //   两者都越过 0.40 阈值。若先去重：
+    //   - 冲突解决拿不到这对规则 → `resolutions` 永远为空 → **功能形同虚设**
+    //   - 谁被删由**分数**决定，而不是由 Scope 具体性决定
+    //   - 实测 STYLE 曾被 UNIVERSAL 以"近重复"为由删掉 ——
+    //     正好与 `STYLE > UNIVERSAL` **完全相反**
+    //
+    //   去重的语义是"这两条说的是同一件事"，冲突的语义是"这两条说的是相反的事"。
+    //   措辞相似无法区分二者，所以**必须先做更高风险的判断（冲突）**，
+    //   再去重只在存活者之间进行。
+    const resolved = resolveSkillConflicts(sorted);
+    for (const d of resolved.dropped) {
+      rejected.push({ id: d.item.skill.id, name: d.item.skill.name, reason: d.reason });
+    }
+
     // ⚠ 先做近重复抑制**再**取 Top-N —— 顺序不能反。
     //
     //   若先取 Top-N 再去重，会出现"4 个名额被 2 组近重复占掉、
     //   只剩 2 条有效建议"的情况。先去重能让名额给到真正不同的技能。
     const deduped = dedupeBySimilarity(
-      sorted,
+      resolved.kept,
       (x) => skillText(x.skill),
       this.dedupeThreshold,
     );
@@ -267,9 +310,9 @@ export class SkillEngine {
       });
     }
 
-    const selected: SelectedSkill[] = [];
+    const picked: SelectedSkill[] = [];
     for (const s of deduped.kept) {
-      if (selected.length >= this.maxSkills) {
+      if (picked.length >= this.maxSkills) {
         rejected.push({
           id: s.skill.id,
           name: s.skill.name,
@@ -277,15 +320,20 @@ export class SkillEngine {
         });
         continue;
       }
-      const { rendered, truncated } = renderSkill(s.skill, this.maxCharsPerSkill);
-      selected.push({
+      picked.push({
         skill: s.skill,
         score: s.score,
         reasons: s.reasons,
-        rendered,
-        truncated,
+        rendered: '',
+        truncated: false,
       });
     }
+
+    // 只为存活技能渲染（落败者已在冲突解决阶段出局，不必渲染）
+    const selected: SelectedSkill[] = picked.map((k) => {
+      const { rendered, truncated } = renderSkill(k.skill, this.maxCharsPerSkill);
+      return { ...k, rendered, truncated };
+    });
 
     const block = renderBlock(selected);
 
@@ -293,6 +341,8 @@ export class SkillEngine {
       selected,
       rejected,
       block,
+      resolutions: resolved.resolutions,
+      sameScopeConflicts: resolved.sameScopeConflicts,
       // ⚠ `considered` 是**过滤后参与打分的候选数**，不是库行总数。
       //   报库行总数会让人误以为"有 N 个技能参与了竞争"，
       //   而其中可能有已被下架（DEPRECATED）或类型不符的。

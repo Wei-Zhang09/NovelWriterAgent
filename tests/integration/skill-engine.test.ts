@@ -523,3 +523,82 @@ describe('considered 的语义', () => {
     expect(rows.length).toBe(3);
   });
 });
+
+describe('⚠ Scope Precedence 已接入 SkillEngine（端到端）', () => {
+  it('无冲突时三个 Scope 的技能全部注入，resolutions 为空', () => {
+    const rows = [
+      mkRow({
+        id: 'u1', name: 'universal_pacing', scope: 'UNIVERSAL',
+        rules_json: JSON.stringify([{ rule: '用短句加速节奏' }]),
+        summary: '通用节奏写法',
+      }),
+      mkRow({
+        id: 'g1', name: 'genre_pacing', scope: 'GENRE',
+        rules_json: JSON.stringify([{ rule: '悬疑高潮放慢节奏以累积压力' }]),
+        summary: '悬疑类型节奏写法',
+      }),
+      mkRow({
+        id: 's1', name: 'style_whitespace', scope: 'STYLE', genre: '都市',
+        source_document_ids_json: JSON.stringify(['doc_a']),
+        rules_json: JSON.stringify([{ rule: '本作品在对话里留白' }]),
+        summary: '本作品对话留白',
+      }),
+    ];
+    const engine = new SkillEngine({ maxSkills: 4, styleSources: ['doc_a'] });
+    const sel = engine.retrieve(rows, { sceneFunction: 'CONFLICT', genre: '都市' });
+
+    expect(sel.selected).toHaveLength(3);
+    expect(sel.resolutions).toHaveLength(0);
+    expect(sel.sameScopeConflicts).toHaveLength(0);
+  });
+
+  it('GENRE 与 UNIVERSAL 冲突 → 只注入 GENRE，且落选原因写进 rejected', () => {
+    const rows = [
+      mkRow({
+        id: 'u1', name: 'universal_no_emotion', scope: 'UNIVERSAL',
+        rules_json: JSON.stringify([{ rule: '避免直接解释人物情绪' }]),
+        summary: '通用情绪写法',
+      }),
+      mkRow({
+        id: 'g1', name: 'genre_climax_emotion', scope: 'GENRE',
+        rules_json: JSON.stringify([{ rule: '悬疑高潮可以短暂直接揭示情绪' }]),
+        summary: '悬疑高潮情绪写法',
+      }),
+    ];
+    const engine = new SkillEngine({ maxSkills: 4 });
+    const sel = engine.retrieve(rows, { sceneFunction: 'CONFLICT', genre: '都市' });
+
+    expect(sel.selected.map((x) => x.skill.id)).toEqual(['g1']);
+    expect(sel.resolutions).toHaveLength(1);
+    expect(sel.resolutions[0]!.winner).toBe('g1');
+    expect(sel.resolutions[0]!.loser).toBe('u1');
+
+    const rej = sel.rejected.find((r) => r.id === 'u1');
+    expect(rej).toBeDefined();
+    expect(rej!.reason).toContain('Scope Precedence');
+  });
+
+  it('落败技能的 rendered 为空（不渲染必被丢弃的技能）', () => {
+    const rows = [
+      mkRow({
+        id: 'u1', name: 'universal_no_emotion', scope: 'UNIVERSAL',
+        rules_json: JSON.stringify([{ rule: '避免直接解释人物情绪' }]),
+        summary: '通用情绪写法',
+      }),
+      mkRow({
+        id: 's1', name: 'style_emotion', scope: 'STYLE', genre: '都市',
+        source_document_ids_json: JSON.stringify(['doc_a']),
+        rules_json: JSON.stringify([{ rule: '本作品在冲突段落允许直接揭示情绪' }]),
+        summary: '本作品情绪写法',
+      }),
+    ];
+    const engine = new SkillEngine({ maxSkills: 4, styleSources: ['doc_a'] });
+    const sel = engine.retrieve(rows, { sceneFunction: 'CONFLICT', genre: '都市' });
+
+    expect(sel.selected.map((x) => x.skill.id)).toEqual(['s1']);
+    // 存活者都有渲染文本
+    for (const x of sel.selected) expect(x.rendered.length).toBeGreaterThan(0);
+    // 注入块里不含落败技能的规则
+    expect(sel.block).not.toContain('避免直接解释人物情绪');
+  });
+});

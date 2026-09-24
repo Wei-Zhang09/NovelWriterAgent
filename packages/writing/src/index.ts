@@ -22,6 +22,15 @@ export { Writer, assembleChapter, extractDeviations, stripDeviationNotes } from 
 // ⚠ 引擎在 writing 而非 distillation：技能的**生产**（挖掘+编译）是离线链路，
 //   技能的**使用**只需要读 storage。运行时不该拖进整条蒸馏链路。
 export { SkillEngine, parseSkillRow, renderSkill } from './skills/engine.js';
+export {
+  resolveSkillConflicts,
+  detectRuleConflict,
+  SCOPE_RANK,
+  type ConflictResolution,
+  type SameScopeConflict,
+  type ResolvedSkillSet,
+  type ResolvableSkill,
+} from './skills/conflict-resolver.js';
 export type {
   SceneContext,
   SkillEngineOptions,
