@@ -177,6 +177,20 @@ export class SkillCompiler {
       `   ${SCENE_FUNCTIONS.join(' | ')}`,
       `   \`trigger.genres\` 填 ${genre ? `["${genre}"]` : '[]'}（空数组表示不限类型）。`,
       '   ⚠ 触发条件不要过窄：若某个场景功能在语料里很少，填它会检索不到。',
+      // ⚠⚠ 这里**故意不**要求模型填 trigger.povs / minEmotionIntensity /
+      //   minTension / narrativePositions。
+      //
+      //   原因：模式挖掘的产出（pattern_json）只有
+      //   trigger / context / decision / effect / boundary ——
+      //   **没有视角、没有强度、没有结构位置**这些信息。
+      //   要求模型基于这些材料声明"本技能适用于第一人称、张力≥0.8"
+      //   就是让它凭空编造证据范围，与 §九「Scope 是证据适用范围、
+      //   不得为方便而扩大」的纪律直接冲突。
+      //
+      //   引擎侧已支持这些维度（skills/engine.ts 会消费它们），
+      //   等挖掘端能产出对应证据后再在这里要求。
+      //   在那之前，这些字段留空 —— 空数组/undefined 表示"不限定"，
+      //   检索行为与现在一致（不参与该维度打分）。
       `6. \`category\` 只能从闭集里选：${SKILL_CATEGORIES.join(' | ')}`, 
       '7. 若这批模式**不足以**支撑一个清晰技能，返回空数组 —— 不要硬凑。',
       '8. ⚠ 这批模式的证据范围是**一致的**（同一 scope）。不要把它写成' +

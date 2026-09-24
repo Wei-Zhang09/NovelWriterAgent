@@ -22,6 +22,7 @@
  */
 import { ErrorCode, Logger, type Nullable } from '@nwa/core';
 import type { PlanOutput, ScenePlan, ChapterBrief } from '@nwa/shared';
+import { resolveIntensity } from '@nwa/shared';
 import type { ChapterWorkspace } from '@nwa/story';
 import type { SkillRow } from '@nwa/storage';
 import type { SkillEngine, SkillSelection } from '../skills/engine.js';
@@ -179,7 +180,7 @@ export class Writer {
       const previousTail = done.length > 0 ? tail(done[done.length - 1]!.text, this.tailChars) : null;
 
       // ── §25 Skill Engine 检索：为**这个场景**选 Top-N 技能 ──
-      const sel = this.selectSkills(scene, i);
+      const sel = this.selectSkills(plan.brief, scene, i);
       skillUsage.push({
         sceneIndex: i,
         sceneId: scene.sceneId,
@@ -195,7 +196,9 @@ export class Writer {
       });
 
       const messages: { role: 'system' | 'user'; content: string }[] = [
-        { role: 'system', content: buildSystemPrompt(plan.brief) },
+        // ⚠ 传 scene：视角/距离支持**场景级覆盖**（插叙段可以合法地
+        //   换视角），只传 brief 会让覆盖静默失效。
+        { role: 'system', content: buildSystemPrompt(plan.brief, scene) },
         // 把结构化约束逐条列出，而不是让模型去"读计划"
         { role: 'system', content: buildConstraintBlock(plan.brief, scene, i, scenes.length) },
       ];
@@ -324,7 +327,7 @@ export class Writer {
    *   Writer 必须能在"没有技能"的情况下正常工作（离线/未蒸馏）。
    *   技能是**增强**不是前置依赖。
    */
-  private selectSkills(scene: ScenePlan, index: number): SkillSelection {
+  private selectSkills(brief: ChapterBrief, scene: ScenePlan, index: number): SkillSelection {
     const empty: SkillSelection = {
       selected: [], rejected: [], block: '', considered: 0,
       resolutions: [], sameScopeConflicts: [],
@@ -332,13 +335,28 @@ export class Writer {
     if (!this.skillEngine || this.skillRows.length === 0) return empty;
 
     try {
+      // ⚠⚠ P1：这里此前是 `emotionIntensity: null` 写死，注释说
+      //   "从 emotionalCurve 无法可靠推断"。判断对，结论错 ——
+      //   正确做法是**让 Planner 声明档位**，代码映射成数值。
+      //
+      //   写死 null 的后果：所有声明了 `minEmotionIntensity` 的技能
+      //   永远拿不到那 0.3 分，§25 的 Emotion 维度**从未生效过**。
+      //
+      //   `resolveIntensity` 在档位缺失时返回 null（不是 0.5）——
+      //   宁可让该维度不参与，也不拿一个编造的数去比较阈值。
+      const emo = resolveIntensity(scene.emotionIntensityBand);
+      const tension = resolveIntensity(scene.tensionBand);
+
       const sel = this.skillEngine.retrieve(this.skillRows, {
         sceneFunction: scene.sceneFunction ?? null,
         genre: this.genre,
-        // 情感强度目前从 emotionalCurve 无法可靠推断 —— 传 null 让引擎
-        // 跳过该维度，而不是猜一个值（猜出来的分数不可复现）
-        emotionIntensity: null,
-        pov: scene.pov || null,
+        emotionIntensity: emo.value,
+        tension: tension.value,
+        // ⚠ 视角用**枚举**（narrativePov），不是 `scene.pov`（人物名）——
+        //   技能的 povs 声明的是视角类型，拿人名去比永远不匹配。
+        //   场景级优先，退回本章声明。
+        pov: scene.narrativePov ?? brief.narrativePov ?? null,
+        narrativePosition: scene.narrativePosition ?? null,
       });
 
       // ⚠ 逐场景记录检索结果（含**落选**原因）——
@@ -385,18 +403,72 @@ export class Writer {
 
 // ── Prompt 构造（§31：模块化，不写大 Prompt） ──────────────
 
-function buildSystemPrompt(brief: ChapterBrief): string {
-  return [
+/**
+ * 视角的**人话说法**（P1）。
+ *
+ * ⚠ 为什么要翻译而不是直接把枚举塞进 prompt：
+ *   模型看到 `THIRD_LIMITED` 能猜，但看到"第三人称限制视角（只跟随一个人，
+ *   不写其他人的内心）"才真正知道**边界在哪**。
+ *   视角问题几乎全部出在边界上（"不写其他人内心"），而不是出在命名上。
+ */
+const POV_TEXT: Readonly<Record<string, string>> = {
+  FIRST_PERSON: '第一人称（用"我"，只写"我"能知道的事）',
+  THIRD_LIMITED: '第三人称限制视角（只跟随一个人，不写其他人物的内心活动）',
+  THIRD_OMNISCIENT: '第三人称全知视角（叙述者知道所有人物的内心与全局）',
+};
+
+const DISTANCE_TEXT: Readonly<Record<string, string>> = {
+  CLOSE: '近距离（可以写内心活动与体感，读者贴着角色）',
+  MEDIUM: '中距离（以言行暗示为主，必要时才点内心）',
+  FAR: '远距离（只写可观察到的外部行为，不进入任何人内心）',
+};
+
+function buildSystemPrompt(brief: ChapterBrief, scene?: ScenePlan): string {
+  const lines: string[] = [
     '你是中文长篇小说写作者。你的任务是把给定的场景计划写成直接可用的正文。',
     '',
     '写作要求：',
-    `- 人称与视角：${brief.mainCharacters.join('、')} 视角，不要跳视角。`,
+  ];
+
+  // ── 视角（P1）───────────────────────────────────────
+  //
+  // ⚠⚠ 这里此前是：
+  //     `人称与视角：${brief.mainCharacters.join('、')} 视角，不要跳视角。`
+  //
+  //   两处错：
+  //   1. **把出场角色当成了视角** —— "本章有林晚、陈默、老板"
+  //      被渲染成"林晚、陈默、老板视角"，等于让模型同时用三个人的
+  //      眼睛写，与紧随其后的"不要跳视角"直接矛盾。
+  //      prompt 内部自相矛盾时，模型会任选一边，于是跳视角就成了
+  //      一个**时有时无**的现象，而不是必然失败 —— 最难查的那种。
+  //   2. **出场角色多 ≠ 视角多** —— 一章里五个人出场完全可以
+  //      是单一视角（其余人只被看到）。
+  //
+  //   现在：出场角色与视角分开说，各自说清边界。
+  //   ⚠ 场景级声明优先于本章声明（插叙段换视角是合法写法）。
+  const pov = scene?.narrativePov ?? brief.narrativePov;
+  const distance = scene?.narrativeDistance ?? brief.narrativeDistance;
+  if (pov) {
+    const povText = POV_TEXT[pov] ?? pov;
+    lines.push(`- 叙事视角：${povText}。`);
+    lines.push('  全篇只用一个视角，不得中途切到别人眼里。');
+  }
+  if (distance) {
+    lines.push(`- 叙事距离：${DISTANCE_TEXT[distance] ?? distance}。`);
+  }
+  lines.push(
+    `- 本章出场角色：${brief.mainCharacters.join('、')}。`,
+    '  出场不等于视角 —— 非视角人物只能被看到、被听到，不能写他们的内心。',
+  );
+
+  lines.push(
     '- 用具体的动作、对话与细节推进，不要用概述句代替场面。',
     '- 转折与停顿用省略号"……"，少用破折号。',
     '- 不要复述双方都已知的信息，不要写客套腔。',
     '- 不要写章节标题、不要写"第X章"、不要加解释性括号。',
     '- 不要总结本场景，写到该停的地方就停。',
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 function buildConstraintBlock(
@@ -415,7 +487,7 @@ function buildConstraintBlock(
     `目的：${scene.purpose}`,
   ];
   if (scene.setting) lines.push(`地点：${scene.setting}`);
-  if (scene.pov) lines.push(`视角：${scene.pov}`);
+  if (scene.pov) lines.push(`视角人物：${scene.pov}`);
   if (scene.startState) lines.push(`起始状态：${scene.startState}`);
   if (scene.endState) lines.push(`必须到达：${scene.endState}`);
   if (scene.goal) lines.push(`角色目标：${scene.goal}`);

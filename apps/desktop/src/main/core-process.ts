@@ -995,7 +995,13 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       issues: res.issues ?? [],
       contextTokens: assembled.report.totalTokens,
       brief: res.plan.brief,
-      scenes: res.plan.scenes.map((sc) => ({ sceneId: sc.sceneId, purpose: sc.purpose })),
+      // ⚠ 此前这里只投影 `{ sceneId, purpose }`，把其余字段**全部丢掉**。
+      //   后果：任何"模型有没有填某个字段"的验证都必然得到 0/N ——
+      //   数据在库里是对的，只是返回值看不见。
+      //   验证脚本因此会报出一个**不存在的问题**（比漏报更费时间：
+      //   会让人去改 prompt，而 prompt 本来是对的）。
+      //   现在原样返回整个场景对象（它已通过 schema 校验）。
+      scenes: res.plan.scenes,
       saveResult: saved.ok ? saved.data : null,
       ...(saved.ok ? {} : { saveError: saved.error }),
     };

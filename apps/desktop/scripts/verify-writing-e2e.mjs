@@ -23,7 +23,7 @@
  * 只有 Electron main 能解；让用户贴明文密钥是不可接受的。
  */
 import { app, utilityProcess, safeStorage } from 'electron';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -136,6 +136,19 @@ app.setPath('userData', join(app.getPath('appData'), '@nwa/desktop'));
 // 结果是 24 本重名「测试小说」和 23 个重复的「第1章」。
 // 现在 core-process 支持 NWA_PROJECTS_ROOT 覆盖，这里强制指向临时目录。
 const ISOLATED_ROOT = join(app.getPath('temp'), 'nwa-verify-writing');
+
+// ⚠⚠ 每次验证前必须**清空**隔离目录。
+//
+// 实测踩到：脚本只 mkdir，从不清理。于是第二次运行时，上一次留下的
+// 章节还是 COMMITTED 状态，而 `chapter.plan` 明确拒绝为已提交章节
+// 覆盖计划 —— 规划步骤直接失败。
+//
+// 这个失败**看起来像功能坏了**（"规划失败：未分类："），实际是
+// 验证脚本自己的残留。排查成本极高，而且每次重跑都要先手动删目录。
+//
+// 清理是安全的：目录名是本脚本专用的 `nwa-verify-writing`，
+// 且路径来自 app.getPath('temp')，不会碰到用户真实项目。
+rmSync(ISOLATED_ROOT, { recursive: true, force: true });
 mkdirSync(ISOLATED_ROOT, { recursive: true });
 process.env['NWA_PROJECTS_ROOT'] = ISOLATED_ROOT;
 

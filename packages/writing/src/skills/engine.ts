@@ -55,10 +55,37 @@ export interface SceneContext {
   readonly sceneFunction?: string | null;
   /** 目标类型（写什么类型的小说） */
   readonly genre?: string | null;
-  /** 情感强度 0~1（可选） */
+  /**
+   * 情感强度 0~1（可选）。
+   *
+   * ⚠ 调用方**不要**猜这个值 —— 它来自 Planner 声明的档位
+   *   （`resolveIntensity(scene.emotionIntensityBand)`）。
+   *   猜出来的浮点不可复现，会让检索结果时有时无。
+   */
   readonly emotionIntensity?: number | null;
-  /** 视角（可选，用于未来扩展） */
+  /**
+   * 叙事视角（P1）。
+   *
+   * ⚠ 此前这个字段**声明了但从未被读取**（grep 只有声明处一处命中），
+   *   即"只保留字段却全传 null"的典型 —— 接口看起来支持视角检索，
+   *   实际没有任何技能会因为视角不同而被选中或排除。
+   *
+   * 现在的用法：技能可声明 `trigger.pov` 限定适用视角；
+   * 声明了而当前场景视角不符 → **降权**（不是排除，见 score()）。
+   */
   readonly pov?: string | null;
+  /**
+   * 叙事位置（P1）—— 技能可声明适用位置。
+   *
+   * ⚠ 为什么与 sceneFunction 分开：同一个 CONFLICT 在 OPENING
+   *   与 CLIMAX 需要的写法完全不同（前者要藏、后者要爆）。
+   *   只用 sceneFunction 无法区分。
+   */
+  readonly narrativePosition?: string | null;
+  /**
+   * 张力档位（P1）—— 与 emotionIntensity 独立。
+   */
+  readonly tension?: number | null;
   /**
    * 用户指定要模仿的来源作品（语料 documentId）。
    *
@@ -402,6 +429,70 @@ export class SkillEngine {
         //   情感强度是估算值（来自 Plan 的自由文本），不该一票否决。
         score -= 0.5;
         reasons.push(`情感强度不足（${ctx.emotionIntensity} < ${minEmo}）`);
+      }
+    }
+
+    // ── 张力（P1）──
+    //
+    // ⚠ 与情感强度分开算，不合并成一个"强度"：
+    //   冷静的危机（低情绪 + 高张力）是真实存在的写法，
+    //   合并后这类场景检索到的技能会整体错位。
+    const minTension = skill.trigger.minTension;
+    if (minTension !== undefined && ctx.tension !== null && ctx.tension !== undefined) {
+      if (ctx.tension >= minTension) {
+        score += 0.25;
+        reasons.push(`张力满足（${ctx.tension} ≥ ${minTension}）`);
+      } else {
+        score -= 0.4;
+        reasons.push(`张力不足（${ctx.tension} < ${minTension}）`);
+      }
+    }
+
+    // ── 叙事视角（P1）──
+    //
+    // ⚠ 这一维此前完全不存在（`ctx.pov` 声明了但从未被读取）。
+    //
+    // 规则：技能声明了 `povs` 而当前场景视角不在其中 → **降权**。
+    //   为什么不排除：视角是**场景**属性，而手法往往跨视角可迁移
+    //   （"把情绪拆到动作与旁白"在三种人称下都成立）。
+    //   一票否决会让小样本技能库几乎检索不到东西 —— 这比"偶尔
+    //   注入了不太贴的手法"更糟，因为后者 Writer 能自行判断。
+    //
+    // ⚠⚠ 现状说明（不要误以为它已在跑）：
+    //   本维度目前是**预留扩展点**。技能编译器（skill-compiler.ts）
+    //   不产出 `povs` —— 因为模式挖掘的证据里**没有视角信息**
+    //   （pattern_json 只有 trigger/context/decision/effect/boundary）。
+    //   让编译器凭空声明视角范围就是伪造证据范围，与 §九 的纪律冲突。
+    //
+    //   所以：引擎侧支持完整且已测（技能若声明了就会被正确消费），
+    //   但在编译器能基于证据产出该字段之前，它对**自动编译的技能**
+    //   是空转的。人工复核时手填 `povs` 可以立即生效。
+    const wantPov = (ctx.pov ?? '').trim();
+    const povs = skill.trigger.povs;
+    if (wantPov !== '' && povs.length > 0) {
+      if (povs.includes(wantPov as never)) {
+        score += 0.25;
+        reasons.push(`叙事视角匹配（${wantPov}）`);
+      } else {
+        score -= 0.35;
+        reasons.push(`叙事视角不符（场景 ${wantPov} ∉ 技能 ${povs.join('/')}）`);
+      }
+    }
+
+    // ── 叙事位置（P1）──
+    //
+    // ⚠ 与 sceneFunction 正交，所以是**独立加分项**而不是替代它：
+    //   同一个 CONFLICT 在 OPENING 要藏、在 CLIMAX 要爆，
+    //   只有 sceneFunction 时这两类技能无法区分。
+    const wantPos = (ctx.narrativePosition ?? '').trim();
+    const positions = skill.trigger.narrativePositions;
+    if (wantPos !== '' && positions.length > 0) {
+      if (positions.includes(wantPos as never)) {
+        score += 0.25;
+        reasons.push(`叙事位置匹配（${wantPos}）`);
+      } else {
+        score -= 0.3;
+        reasons.push(`叙事位置不符（场景 ${wantPos} ∉ 技能 ${positions.join('/')}）`);
       }
     }
 

@@ -37,7 +37,7 @@
  * 结果是**要么全命中要么全不命中**，技能引擎形同虚设。
  */
 import { z } from 'zod';
-import { SceneFunctionSchema } from './plan.js';
+import { NarrativePositionSchema, NarrativePovSchema, SceneFunctionSchema } from './plan.js';
 
 /** 技能状态（与 0001 迁移的 CHECK 约束一致） */
 export const SKILL_STATUSES = [
@@ -89,6 +89,31 @@ export const SkillTriggerSchema = z.object({
   genres: z.array(z.string()).default([]),
   /** 情绪强度要求（可选，避免过度约束导致检索不到） */
   minEmotionIntensity: z.number().min(0).max(1).optional(),
+  /**
+   * 适用叙事视角（P1）。空数组 = 不限视角。
+   *
+   * ⚠ 用**权威枚举**而不是自由文本：自由文本会让"第一人称"
+   *   与"FIRST_PERSON"变成两个值，检索静默失效。
+   *
+   * ⚠ 视角不符时是**降权**不是排除 —— 视角是场景属性，
+   *   而手法往往可以跨视角迁移（"把情绪拆到动作"在三种视角下都成立）。
+   *   一票否决会让技能库在小样本下几乎检索不到东西。
+   */
+  povs: z.array(NarrativePovSchema).default([]),
+  /**
+   * 适用叙事位置（P1）。空数组 = 不限位置。
+   *
+   * ⚠ 与 `sceneTypes` 正交：位置决定"读者已知多少"，
+   *   同一个场景功能在不同位置需要不同写法。
+   */
+  narrativePositions: z.array(NarrativePositionSchema).default([]),
+  /**
+   * 张力要求（P1）。空 = 不限。
+   *
+   * ⚠ 与 `minEmotionIntensity` 独立：冷静的危机（低情绪、高张力）
+   *   与崩溃的独白（高情绪、低张力）是两种不同的场景。
+   */
+  minTension: z.number().min(0).max(1).optional(),
   /** 额外的前置条件（人类可读，供 Writer 判断，不参与索引） */
   notes: z.string().optional(),
 });

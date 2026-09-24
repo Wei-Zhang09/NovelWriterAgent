@@ -18,7 +18,7 @@
  * 本脚本真实调用模型，检查产出里是否还有占位符。
  */
 import { app, utilityProcess, safeStorage } from 'electron';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -137,6 +137,10 @@ app.setPath('userData', join(app.getPath('appData'), '@nwa/desktop'));
 
 // ⚠ 隔离目录：验证脚本不得污染用户真实项目（见 core-process 的说明）
 const ISOLATED_ROOT = join(app.getPath('temp'), 'nwa-verify-plan');
+
+// ⚠ 同 verify-writing-e2e：残留的 COMMITTED 章节会让 `chapter.plan`
+//   拒绝覆盖计划，于是"规划失败"看起来像功能坏了，实际是脚本残留。
+rmSync(ISOLATED_ROOT, { recursive: true, force: true });
 mkdirSync(ISOLATED_ROOT, { recursive: true });
 process.env['NWA_PROJECTS_ROOT'] = ISOLATED_ROOT;
 
@@ -160,11 +164,23 @@ app.whenReady().then(async () => {
     rec('模型已就绪', opened.data?.agentReady === true, `agentReady=${String(opened.data?.agentReady)}`);
 
     const info = await call('project.info', {});
-    const projectId = info.data?.projects?.[0]?.id;
+    let projectId = info.data?.projects?.[0]?.id;
     if (!projectId) {
-      rec('找到项目', false, '项目目录里没有项目 —— 请先在界面里新建一个');
+      // ⚠ 沙盒目录可能被系统清理（%TEMP% 下的验证目录）——
+      //   脚本必须能自举，否则"验证脚本因环境缺失而失败"会被
+      //   误读成"功能有问题"。
+      const np = await call('tool.invoke', {
+        name: 'project.create',
+        input: { name: '规划验证项目', genre: 'urban_fantasy' },
+        permission: 'ADMIN',
+      });
+      projectId = np.data?.id ?? np.data?.projectId;
+    }
+    if (!projectId) {
+      rec('找到项目', false, '项目目录里没有项目且创建失败');
       return finish(1);
     }
+    rec('找到项目', true, projectId);
     let books = await call('book.list', { projectId });
     let bookId = books.data?.books?.[0]?.id ?? books.data?.[0]?.id;
     if (!bookId) {
@@ -243,6 +259,58 @@ app.whenReady().then(async () => {
       bad.length === 0,
       bad.length === 0 ? '全部字段都是具体创作决定' : `仍有 ${bad.length} 处：${bad.slice(0, 3).join('；')}`,
     );
+
+    // ── P1：叙事维度的真实填充率 ─────────────────────────
+    //
+    // ⚠ 这一段是 P1 第一项的**真机验证**：
+    //   新增的字段必须由**真模型**填出来才有意义。
+    //   字段加进 schema 但模型不填（或填了被 default 抹掉），
+    //   等于维度仍然空转 —— 只是从"代码写死 null"换成了"模型给空"。
+    //
+    //   所以这里不测"schema 能不能解析"，而是测**填充率**：
+    //   模型声明了几成场景的档位/位置/视角。
+    const scenes = d.scenes ?? [];
+    const filled = (k) => scenes.filter((s) => s?.[k] !== undefined && s?.[k] !== null).length;
+    const pct = (n) => (scenes.length === 0 ? '0/0' : `${n}/${scenes.length}`);
+
+    const povDeclared = brief.narrativePov ?? null;
+    const posN = filled('narrativePosition');
+    const emoN = filled('emotionIntensityBand');
+    const tenN = filled('tensionBand');
+
+    rec(
+      'P1 本章声明了叙事视角 narrativePov',
+      povDeclared !== null,
+      povDeclared === null ? '模型未声明 —— Writer 只能自己决定视角（跳视角风险）' : String(povDeclared),
+    );
+    rec(
+      'P1 场景声明了叙事位置 narrativePosition',
+      scenes.length > 0 && posN === scenes.length,
+      `${pct(posN)}${posN < scenes.length ? '（缺声明 → 该维度不参与检索）' : ''}`,
+    );
+    rec(
+      'P1 场景声明了情绪强度档位 emotionIntensityBand',
+      scenes.length > 0 && emoN === scenes.length,
+      `${pct(emoN)}${emoN < scenes.length ? '（缺声明 → §25 Emotion 维度仍不生效）' : ''}`,
+    );
+    rec(
+      'P1 场景声明了张力档位 tensionBand',
+      scenes.length > 0 && tenN === scenes.length,
+      `${pct(tenN)}${tenN < scenes.length ? '（缺声明 → 张力维度不参与检索）' : ''}`,
+    );
+
+    // ⚠ 档位必须真的有区分度 —— 全填同一个值等于没填。
+    //   这与 P0-5「模型给不出可靠数值」是同一类观察：
+    //   要让模型给**判断**，但要检查判断不是敷衍。
+    const emoVals = scenes.map((s) => s?.emotionIntensityBand).filter(Boolean);
+    const distinct = new Set(emoVals).size;
+    if (emoVals.length > 1) {
+      rec(
+        'P1 强度档位有区分度（不是一律同一个值）',
+        distinct > 1,
+        distinct > 1 ? `${distinct} 种取值：${[...new Set(emoVals)].join('/')}` : `全部是 ${emoVals[0]} —— 档位失去意义`,
+      );
+    }
 
     console.log('\n──── 计划内容 ────');
     console.log(`目的：${fields.purpose}`);

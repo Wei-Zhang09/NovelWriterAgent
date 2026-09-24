@@ -23,6 +23,113 @@ export const ForeshadowingActionSchema = z.object({
 export type ForeshadowingAction = z.infer<typeof ForeshadowingActionSchema>;
 
 /**
+ * 叙事视角（P1）。
+ *
+ * ⚠ 这是**谁在看**，与 `mainCharacters`（本章有谁出场）是两件事。
+ *   此前 Writer 把两者混为一谈 —— prompt 里写
+ *   `人称与视角：${mainCharacters.join('、')} 视角`，
+ *   等于让模型同时用三个人的眼睛写，正好与同句的"不要跳视角"矛盾。
+ *   **出场角色多 ≠ 视角多。**
+ */
+export const NarrativePovSchema = z.enum([
+  'FIRST_PERSON',      // 第一人称（我）
+  'THIRD_LIMITED',     // 第三人称限制视角（跟随一个角色）
+  'THIRD_OMNISCIENT',  // 第三人称全知（叙述者无所不知）
+]);
+export type NarrativePov = z.infer<typeof NarrativePovSchema>;
+
+/**
+ * 叙事距离（P1）—— 读者离角色内心有多近。
+ *
+ * 与视角正交：同样是第三人称限制视角，可以贴着角色写（近）
+ * 也可以像旁观记录（远）。它决定"能不能直接写内心活动"。
+ */
+export const NarrativeDistanceSchema = z.enum([
+  'CLOSE',   // 近距离：可写内心、体感
+  'MEDIUM',  // 中距离：以言行暗示为主，偶尔内心
+  'FAR',     // 远距离：只写可观察到的外部行为
+]);
+export type NarrativeDistance = z.infer<typeof NarrativeDistanceSchema>;
+
+/**
+ * 叙事位置（P1）—— 本场景在整章/整书结构中的位置。
+ *
+ * ⚠ 与 `sceneFunction`（场景承担什么叙事任务）不同：
+ *   同一个 CONFLICT 可以是开篇铺垫也可以是终局对决。
+ *   位置决定"读者已知多少"，从而决定能不能解释、要不要留白。
+ */
+export const NarrativePositionSchema = z.enum([
+  'OPENING',     // 开篇（读者还在建立坐标）
+  'RISING',      // 上升（信息与压力累积）
+  'MIDPOINT',    // 中点（方向转折）
+  'CLIMAX',      // 高潮（最大张力处）
+  'FALLING',     // 下落（收束压力）
+  'RESOLUTION',  // 收尾（回到稳定）
+]);
+export type NarrativePosition = z.infer<typeof NarrativePositionSchema>;
+
+/**
+ * 强度档位（P1）—— 供模型声明"情绪强度/张力有多高"。
+ *
+ * ⚠⚠ 为什么让模型给**档位**而不是像 `0.72` 这样的数值：
+ *
+ *   1. 模型给的浮点数**不可复现** —— 同一段文字两次调用会给出 0.72 / 0.68，
+ *      而这个数会进入检索阈值比较（`emotionIntensity >= minEmotionIntensity`），
+ *      于是"同一条技能这次命中、下次不命中"，问题还查不出来。
+ *      这与 P0-4（模型给不出可靠字偏移）、P0-5（模型填不准 storyTimeValue）
+ *      是同一类问题：**模型擅长判断，不擅长给数**。
+ *   2. 阈值比较根本不需要浮点精度 —— LOW/MEDIUM/HIGH 三档足够区分
+ *      "这段是缓冲"与"这段是高潮"。
+ *
+ *   所以分工是：**模型给判断（档位），代码算数值**（见 `resolveIntensity`）。
+ *   数值仍然会出现在 Writer 的 prompt 里（可读性更好），但它由代码算出，
+ *   来源可追溯（`IntensitySource`）。
+ */
+export const IntensityBandSchema = z.enum(['LOW', 'MEDIUM', 'HIGH']);
+export type IntensityBand = z.infer<typeof IntensityBandSchema>;
+
+/**
+ * 档位 → 数值。**唯一权威映射**，不要在两处各写一份。
+ *
+ * 取 0.2 / 0.55 / 0.9 而不是 0/0.5/1：
+ *   - 不用 0 与 1 的端点值，是因为端点会让"模型没说"与"模型说极低"
+ *     在比较时表现相同，而这两者的含义完全不同；
+ *   - 0.2 与 0.9 也给"比 HIGH 还高"留了空间（未来可能加档位）。
+ */
+export const BAND_TO_INTENSITY: Readonly<Record<IntensityBand, number>> = {
+  LOW: 0.2,
+  MEDIUM: 0.55,
+  HIGH: 0.9,
+};
+
+/** 数值来源 —— 决定这个数能不能信、以及为 null 时是谁的锅 */
+export type IntensitySource =
+  /** 由 Planner 声明的档位算出 */
+  | 'DECLARED_BAND'
+  /** 没有档位信息 —— 该维度不参与检索，如实记录而不是填默认值 */
+  | 'UNKNOWN';
+
+export interface ResolvedIntensity {
+  /** 用于检索/展示的数值；`null` = 该维度不可用（**不是 0**） */
+  readonly value: number | null;
+  readonly source: IntensitySource;
+}
+
+/**
+ * 把档位解析成数值。
+ *
+ * ⚠ 档位缺失时返回 `{ value: null, source: 'UNKNOWN' }` —— **绝不填默认值**。
+ *   填一个 0.5 会让"模型没说"伪装成"模型说中等"，
+ *   于是检索里的阈值比较照常运行，而它比较的是一个编造的数。
+ *   这与 P0-6 的 `stability: 'NOT_RUN'` 是同一条纪律：
+ *   **没有测量就如实标未测，不要给一个看起来合理的值。**
+ */
+export function resolveIntensity(band: IntensityBand | null | undefined): ResolvedIntensity {
+  if (!band) return { value: null, source: 'UNKNOWN' };
+  return { value: BAND_TO_INTENSITY[band], source: 'DECLARED_BAND' };
+}
+
+/**
  * Chapter Brief（施工文档 §29 的 11 个字段）
  */
 export const ChapterBriefSchema = z.object({
@@ -34,8 +141,34 @@ export const ChapterBriefSchema = z.object({
   /** 本章结束时应达到的状态（目标状态） */
   targetState: z.string().min(1),
 
+  /**
+   * 本章出场的主要角色 —— **不是**视角。
+   *
+   * ⚠⚠ 这个字段此前被 Writer 当成视角用（prompt 写
+   *   `人称与视角：${mainCharacters.join('、')} 视角`），
+   *   于是"本章有林晚、陈默、老板"被渲染成"林晚、陈默、老板视角"。
+   *
+   *   两个后果都是错的：
+   *   1. 它同时给出了多个视角，与同一句的"不要跳视角"直接矛盾；
+   *   2. 它把**出场**当成了**观察点** —— 而一章里出场 5 个人
+   *      完全可以是单一视角（其余人只被看到）。
+   *
+   *   视角请用 `narrativePov` + ScenePlan.pov。
+   */
   mainCharacters: z.array(z.string().min(1)).min(1, '至少一个主要角色'),
   locations: z.array(z.string()).default([]),
+
+  /**
+   * 本章叙事视角（P1）—— 全书统一的讲述方式。
+   *
+   * ⚠ 放在 brief 而不是只放 scene：视角是**整本书的契约**，
+   *   逐场景各自声明会让"第三章突然变全知"这种问题无法被发现。
+   *   ScenePlan 上的 `narrativePov` 是**场景级覆盖**（有明确理由时用，
+   *   例如插叙段），缺省时以本字段为准。
+   */
+  narrativePov: NarrativePovSchema.optional(),
+  /** 全书默认叙事距离（P1）；ScenePlan 可覆盖 */
+  narrativeDistance: NarrativeDistanceSchema.optional(),
 
   /** 必须发生的事件（缺失即审稿不通过） */
   requiredEvents: z.array(z.string()).default([]),
@@ -88,13 +221,36 @@ export const SceneFunctionSchema = z.enum([
 ]);
 export type SceneFunction = z.infer<typeof SceneFunctionSchema>;
 
+
 /**
  * Scene Plan（施工文档 §30 的 14 个字段）
  */
 export const ScenePlanSchema = z.object({
   sceneId: z.string().min(1),
   purpose: z.string().min(1, 'scene purpose 不得为空'),
+  /**
+   * 视角人物（自由文本，§30 原字段）—— 「谁在看」。
+   *
+   * ⚠ 这是**具体的角色名**（"林晚"），不是"本章有谁出场"。
+   *   若本场景没有单一视角人物（全知叙述），留空即可。
+   */
   pov: z.string().default(''),
+  /**
+   * 叙事视角（枚举，P1）—— 「用第几人称看」。
+   *
+   * ⚠ 与 `pov` 分工：`pov` 说**是谁**，这里说**怎么讲**。
+   *   两者都缺时 Writer 只能自己决定，而"跳视角"正是这么发生的。
+   */
+  narrativePov: NarrativePovSchema.optional(),
+  /** 叙事距离（P1）—— 决定能不能直接写内心 */
+  narrativeDistance: NarrativeDistanceSchema.optional(),
+  /**
+   * 叙事位置（P1）—— 本场景在结构中的位置。
+   *
+   * ⚠ 与 `sceneFunction` 正交：位置决定"读者已知多少"，
+   *   从而决定该解释还是该留白。技能检索会用到它。
+   */
+  narrativePosition: NarrativePositionSchema.optional(),
   setting: z.string().default(''),
 
   startState: z.string().default(''),
@@ -110,6 +266,28 @@ export const ScenePlanSchema = z.object({
 
   emotionalCurve: z.string().default(''),
   pacing: z.string().default(''),
+
+  /**
+   * 本场景情绪强度档位（P1）—— §25 Emotion 维度的**数据来源**。
+   *
+   * ⚠ 这是修一个真实的空转：此前 Writer 检索技能时写死
+   *   `emotionIntensity: null`，注释说"从 emotionalCurve 无法可靠推断"。
+   *   那个判断是对的（自然语言推不出数值），但结论错了 ——
+   *   正确做法不是永久传 null，而是**让 Planner 声明档位**，
+   *   由代码映射成数值（`resolveIntensity`）。
+   *
+   *   传 null 的后果：所有声明了 `minEmotionIntensity` 的技能
+   *   永远拿不到那 0.3 分，该维度**从未生效过**。
+   */
+  emotionIntensityBand: IntensityBandSchema.optional(),
+  /**
+   * 本场景张力档位（P1）。
+   *
+   * ⚠ 与 `emotionIntensityBand` 分开：情绪强度是"角色有多激动"，
+   *   张力是"读者有多紧张"。追车戏可以情绪平（角色冷静）而张力高。
+   *   合成一个维度会让"冷静的危机"无法被检索到。
+   */
+  tensionBand: IntensityBandSchema.optional(),
 
   /**
    * 场景功能（§19.1 的 15 类）—— Skill Engine 检索的**主键**（§25）。
@@ -206,7 +384,95 @@ export function validatePlanSemantics(plan: PlanOutput): string[] {
     issues.push(`${p.field} 含占位符「${p.hit}」—— 必须给出具体的创作决定，不得留待确认`);
   }
 
+  // 7. ⚠⚠ 视角与出场角色的关系（P1）
+  //
+  // 这一条修的是此前 prompt 里的概念错误：把「本章出场的人」
+  // 当成「视角」用。既然视角现在有了独立字段，就必须校验两者
+  // 不矛盾 —— 否则 Planner 会声明一个不在场的人当视角人物，
+  // 而 Writer 会照着写出一段"某人看着自己不在场的场面"。
+  //
+  // ⚠⚠ 但这里**必须容忍模型把视角类型写进 pov 字段**。
+  //   实测证据：本仓库既有的 planner 测试夹具写的正是
+  //   `pov: '第三人称限知'` —— 一个视角类型，而不是人名。
+  //   模型天然会把 §30 那个自由文本的 `pov` 当成"视角"来填。
+  //
+  //   若把这种情况判为 blocking，后果是**每一章都要修复重试**，
+  //   而修复重试会再产出一个同样的值 —— 直到次数用尽后整章失败。
+  //   这就是"误报比漏检更糟"的具体形态。
+  //
+  //   所以：看起来像视角类型的 → 不当人名校验（Writer 侧照样能
+  //   正确理解，因为它也读 narrativePov）；只有看起来像**人名**
+  //   却不在场的，才是真问题。
+  for (const [i, s] of plan.scenes.entries()) {
+    const pov = (s.pov ?? '').trim();
+    if (pov.length === 0) continue;
+    if (looksLikeViewpointType(pov)) continue; // 模型填成了视角类型 —— 容忍
+
+    // 全知视角不存在"视角人物" —— 声明了就是自相矛盾
+    const effectivePov = s.narrativePov ?? plan.brief.narrativePov;
+    if (effectivePov === 'THIRD_OMNISCIENT') {
+      issues.push(
+        `scene[${i}](${s.sceneId}) 声明了视角人物「${pov}」但叙事视角是 THIRD_OMNISCIENT —— ` +
+          '全知叙述没有单一视角人物，两者只能留一个',
+      );
+      continue;
+    }
+
+    // 视角人物必须在场（容错匹配：模型常写成"林晚（视角）"这类）
+    const inCast = plan.brief.mainCharacters.some((c) => looseNameMatch(c, pov));
+    if (!inCast) {
+      issues.push(
+        `scene[${i}](${s.sceneId}) 的视角人物「${pov}」不在本章出场角色里` +
+          `（${plan.brief.mainCharacters.join('、')}）—— 视角人物必须在场`,
+      );
+    }
+  }
+
   return issues;
+}
+
+/**
+ * 判断一段文本是不是**视角类型**而不是人名（P1）。
+ *
+ * ⚠ 存在的理由是实测：模型会把 §30 的自由文本字段 `pov`
+ *   填成"第三人称限知""第一人称"这类视角类型，而不是角色名。
+ *   这是**可以理解的行为**（字段名就叫 pov），不是错误 ——
+ *   强行判错会让每章都卡在修复重试上。
+ *
+ * 判定偏宽松：宁可把一个奇怪的人名当成视角类型（漏检），
+ * 也不要把视角类型当成人名（误报 → 修复重试 → 整章失败）。
+ */
+function looksLikeViewpointType(s: string): boolean {
+  // 中英文视角术语。不要求精确匹配 —— 模型会写成
+  // "第三人称限知""有限第三人称视角""third-person limited" 等多种形式。
+  return /第一人称|第二人称|第三人称|全知|限知|限制视角|有限视角|多视角|视角切换|first[-\s]?person|third[-\s]?person|omniscient|limited/i.test(
+    s,
+  );
+}
+
+/**
+ * 容错的名字匹配（P1）。
+ *
+ * ⚠ 为什么不用严格相等：实测模型会把同一角色写成
+ *   「林晚」「林晚（视角）」「林晚 Lin Wan」等多种形式。
+ *   严格相等会产生大量**假阳性**，而假阳性的代价是
+ *   Planner 反复自我修复（浪费一次调用）甚至最终失败 ——
+ *   比漏检一个真问题更糟。
+ *
+ * 所以规则是：任一方包含另一方即视为同一角色，并忽略
+ * 括号补充说明与空白。**宁可漏检，不要误报。**
+ */
+function looseNameMatch(a: string, b: string): boolean {
+  const norm = (s: string): string =>
+    s
+      // 去掉括号补充（中英文括号）
+      .replace(/[（(][^）)]*[）)]/g, '')
+      .replace(/\s+/g, '')
+      .trim();
+  const x = norm(a);
+  const y = norm(b);
+  if (x.length === 0 || y.length === 0) return false;
+  return x === y || x.includes(y) || y.includes(x);
 }
 
 /** 判定为占位符的文本模式 */
