@@ -45,6 +45,26 @@ export type {
 export { CanonPromoter } from './canon/canon-promoter.js';
 export type { PromotePolicy, PromoteOutcome, PromoteReport } from './canon/canon-promoter.js';
 
+// ── State Settlement（§六 P0-4）────────────────────────────
+export { StateExtractor } from './state/state-extractor.js';
+export type {
+  StateExtractorOptions,
+  StateExtractionRequest,
+  StateExtractionResult,
+} from './state/state-extractor.js';
+export {
+  StateVerifier,
+  verifyQuoteSpan,
+  resolveQuoteSpan,
+  resolveAndVerifySpan,
+  overallStatus,
+} from './state/state-verifier.js';
+export type { StateVerifierOptions, VerifyInput } from './state/state-verifier.js';
+export { StateProposalRepository } from './state/state-proposal.js';
+export type { StateProposalRecord } from './state/state-proposal.js';
+export { StateSettlement } from './state/state-settlement.js';
+export type { StateSettlementOptions, SettleResult } from './state/state-settlement.js';
+
 export const STORY_PACKAGE_READY = true;
 
 // ── Backup / Import / Export（STEP 21 / §58 §59） ────────────

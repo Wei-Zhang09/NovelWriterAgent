@@ -34,7 +34,7 @@ import type { Repositories, Database } from '@nwa/storage';
 import type { ToolRegistry, NovelWorkflowServices } from '@nwa/harness';
 import type { RetrievalService } from '@nwa/harness';
 import type { ToolContext } from '@nwa/shared';
-import { ChapterWorkspace, ContinuityChecker } from '@nwa/story';
+import { ChapterWorkspace, ContinuityChecker, StateExtractor, StateSettlement } from '@nwa/story';
 import { Writer, Reviewer, Reviser, Planner } from '@nwa/writing';
 import type { ReviewIssue } from '@nwa/shared';
 
@@ -136,6 +136,32 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
         );
       }
       const existing = deps.repos.chapters.listByBook(bookId);
+
+      // ⚠ 必须**尊重传入的 chapterNumber**。此前这里只取 max+1，
+      //   调用方说"写第 1 章"却建出第 2 章 —— 参数被静默忽略。
+      //   实测：verify:state 传 chapterNumber:1，提议挂到了第 2 章上，
+      //   于是"按 chapterId 查提议"查不到，看起来像没落库。
+      const requested = input.chapterNumber;
+      if (requested !== null && requested !== undefined) {
+        // 该章已存在则复用（重跑工作流不该建出重复章节）
+        const hit = existing.find((c) => c.chapter_number === requested);
+        if (hit) {
+          log.info('复用已存在的章节', { chapterId: hit.id, chapterNumber: requested });
+          return { chapterId: hit.id, chapterNumber: hit.chapter_number };
+        }
+        const id = `chapter_${bookId}_${String(requested).padStart(3, '0')}`;
+        const ch = deps.repos.chapters.create({
+          id,
+          bookId,
+          chapterNumber: requested,
+          title: `第 ${requested} 章`,
+          status: 'DRAFT',
+        });
+        log.info('已按请求创建章节', { chapterId: ch.id, chapterNumber: requested });
+        return { chapterId: ch.id, chapterNumber: ch.chapter_number };
+      }
+
+      // 未指定章号 → 接续下一章
       const n = existing.reduce((m, c) => Math.max(m, c.chapter_number), 0) + 1;
       const id = `chapter_${bookId}_${String(n).padStart(3, '0')}`;
       const ch = deps.repos.chapters.create({
@@ -145,7 +171,7 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
         title: `第 ${n} 章`,
         status: 'DRAFT',
       });
-      log.info('已创建章节', { chapterId: ch.id, chapterNumber: n });
+      log.info('已创建章节（未指定章号，接续下一章）', { chapterId: ch.id, chapterNumber: n });
       return { chapterId: ch.id, chapterNumber: ch.chapter_number };
     },
 
@@ -609,21 +635,114 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
       };
     },
 
-    // ── 9. 状态结算（P0-4 的接口位；完整实现属该任务）──
+    // ── 9. 状态结算（§六 P0-4）──
     //
-    // ⚠ 现在如实返回"未实现"，**不假装成功**。
-    //   若这里返回 verified:true 而实际没验证，就会让未验证的状态
-    //   被当成已验证而进入 Canon —— 那正是 P0-4 要防的事。
+    // 完整链路：提取（模型）→ 落提议(PROPOSED) → 验证（代码）→
+    //          应用（**只有 VERIFIED 才允许**）
+    //
+    // ⚠ 硬约束：没有 VERIFIED 的 State Proposal 不得进入 Canon。
+    //   验证是**代码判定**（引文能否在正文里精确定位），不调模型 ——
+    //   模型既当运动员又当裁判会把"我推断的"当成"我验证过的"。
     async settleState(input) {
       const ch = needChapter(deps, input.chapterId);
-      log.warn('状态结算尚未实现（P0-4 待办），如实标为未验证', { chapterId: ch.id });
+      const ws = workspaceFor(ch.chapter_number);
+      const draft = ws.readText('draft');
+      if (draft === null) {
+        throw new AppError(
+          ErrorCode.WORKSPACE_CORRUPTED,
+          '工作区里没有草稿，无法做状态结算',
+        );
+      }
+
+      // 已有候选事实（canon.extract 的产物）—— 纳入同一条提议，
+      // 让**一个门禁管住所有进 Canon 的东西**。
+      const savedFacts = ws.readJson<{ facts: never[] }>('proposedFacts');
+      const proposedFacts = savedFacts?.facts ?? [];
+
+      const chars = deps.repos.characters
+        .listByBook(ch.book_id)
+        .map((c) => ({ id: c.id, name: c.name, aliases: [] as string[] }));
+
+      // 上一章结束时各角色状态（帮助模型判断"变了没有"）
+      const previousStates = chars
+        .map((c) => {
+          const st = deps.repos.characters.latestState(c.id);
+          if (!st) return null;
+          let status = '';
+          try {
+            const v = JSON.parse(st.state_json) as Record<string, unknown>;
+            if (typeof v['status'] === 'string') status = v['status'];
+          } catch {
+            /* 解析失败则跳过该角色 */
+          }
+          return status ? { characterName: c.name, status } : null;
+        })
+        .filter((x): x is { characterName: string; status: string } => x !== null);
+
+      const model = deps.runtime;
+      const extractor = new StateExtractor({
+        // 抽取是结构化小任务，走 utility 槽位（§54 任务路由）
+        structured: model
+          ? (req) => model.structured('utility', req) as never
+          : async () => ({
+              ok: false as const,
+              error: { code: ErrorCode.MODEL_AUTH_FAILED, message: '尚未配置模型' },
+              attempts: 0,
+            }),
+        logger: deps.logger.child('state-extractor'),
+        bookId: ch.book_id,
+        characters: chars,
+      });
+
+      const settlement = new StateSettlement({
+        repos: deps.repos,
+        db: deps.db,
+        logger: deps.logger.child('state'),
+        bookId: ch.book_id,
+        extractor,
+        proposedFacts: proposedFacts as never,
+        sourceRef: `chapters/${String(ch.chapter_number).padStart(3, '0')}.md`,
+      });
+
+      const r = await settlement.settle({
+        chapterId: ch.id,
+        chapterNumber: ch.chapter_number,
+        draftText: draft,
+        ...(input.workflowId ? { workflowId: input.workflowId } : {}),
+        ...(previousStates.length > 0 ? { previousStates } : {}),
+      });
+
+      // ⚠ 只有 VERIFIED 才应用。REJECTED 时**如实不写**，把原因带回上层
+      //   —— 静默跳过会让"这一章的状态没进 Canon"变成查不出的现象。
+      let applied = {
+        factsWritten: 0,
+        characterStatesWritten: 0,
+        timelineEventsWritten: 0,
+        foreshadowingWritten: 0,
+        skipped: [] as readonly string[],
+      };
+      if (r.verified) {
+        applied = settlement.apply({
+          proposalId: r.proposalId,
+          chapterNumber: ch.chapter_number,
+          draftText: draft,
+        });
+      } else {
+        log.warn('状态提议未通过验证 → 不写入 Canon（§六硬约束）', {
+          chapterId: ch.id,
+          proposalId: r.proposalId,
+          rejected: r.rejected.length,
+        });
+      }
+
       return {
-        proposalId: null,
-        verified: false,
-        factCount: 0,
-        characterStateCount: 0,
-        timelineEventCount: 0,
-        rejected: ['状态结算未实现（P0-4）：本阶段不做任何状态提取'],
+        proposalId: r.proposalId,
+        verified: r.verified,
+        factCount: applied.factsWritten,
+        characterStateCount: applied.characterStatesWritten,
+        timelineEventCount: applied.timelineEventsWritten,
+        foreshadowingCount: applied.foreshadowingWritten,
+        rejected: [...r.rejected, ...applied.skipped],
       };
     },
 

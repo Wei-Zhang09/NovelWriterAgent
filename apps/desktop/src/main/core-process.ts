@@ -84,6 +84,7 @@ import { FtsIndex } from '@nwa/storage';
 import { bigramTokenizer, Retriever, buildMatchExpression } from '@nwa/retrieval';
 import type { ReviewIssue } from '@nwa/shared';
 import { TransitionGate, RetrievalService } from '@nwa/harness';
+import { StateProposalRepository } from '@nwa/story';
 import type { ToolContext } from '@nwa/shared';
 import type { AgentHandler, ContextEntry, SlotName } from '@nwa/harness';
 
@@ -3208,6 +3209,114 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
         currentStage: w.currentStage,
         resumeCursor: w.resumeCursor,
         updatedAt: w.updatedAt,
+      })),
+    };
+  },
+
+  /**
+   * 状态提议（§六 P0-4）—— 回答「这一章的状态结算做了什么、为什么没进 Canon」。
+   *
+   * ⚠ 门禁的判据是**库里那条记录的 status**，所以必须能查到它 ——
+   *   查不到的话，"某条状态为什么没进 Canon"就永远无法回答。
+   */
+  'state.proposals': (params: { chapterId?: string; status?: string }) => {
+    const p = requireProject();
+    const repo = new StateProposalRepository(p.db, logger.child('state'));
+    const rows = params.chapterId
+      ? repo.listByChapter(params.chapterId)
+      : params.status
+        ? repo.listByStatus(params.status as never)
+        : [];
+    return {
+      count: rows.length,
+      proposals: rows.map((r) => ({
+        id: r.id,
+        chapterId: r.chapterId,
+        workflowId: r.workflowId,
+        status: r.status,
+        factCount: r.facts.length,
+        characterStateCount: r.characterStates.length,
+        timelineEventCount: r.timelineEvents.length,
+        foreshadowingCount: r.foreshadowing.length,
+        verifiedCount: r.verification?.verifiedCount ?? 0,
+        rejectedCount: r.verification?.rejectedCount ?? 0,
+        rejectedReasons: (r.verification?.verdicts ?? [])
+          .filter((v) => !v.verified)
+          .map((v) => `${v.label}：${v.reason ?? '未通过'}`),
+        createdAt: r.createdAt,
+      })),
+    };
+  },
+
+  /**
+   * 状态证据（§六 P0-4）—— 回答「这条状态/事件/伏笔来自正文哪一句」。
+   *
+   * ⚠ 这是"可回溯"的验证入口。只报"有多少条状态"不叫可回溯，
+   *   必须能查出**每条指向正文的哪一段**、且那段文本确实等于引文。
+   */
+  'state.evidence': (params: { bookId?: string }) => {
+    const p = requireProject();
+    const bookId = params.bookId ?? resolveBookId();
+    const rows = p.db.all<{
+      id: string;
+      source_type: string;
+      source_ref: string;
+      quote: string;
+      start_offset: number;
+      end_offset: number;
+      note: string | null;
+    }>(
+      `SELECT id, source_type, source_ref, quote, start_offset, end_offset, note
+         FROM evidence WHERE book_id = ? ORDER BY created_at, id`,
+      bookId,
+    );
+
+    // ⚠ 引用完整性：证据写了却没人引用 = 写了白写。
+    //   核对 foreshadowing.evidence_ids_json 与 timeline_events.data_json.evidenceId
+    //   真正指向了哪些证据，算出"孤儿证据"数量。
+    const referenced = new Set<string>();
+    for (const r of p.db.all<{ evidence_ids_json: string | null }>(
+      'SELECT evidence_ids_json FROM foreshadowing WHERE book_id = ?',
+      bookId,
+    )) {
+      if (!r.evidence_ids_json) continue;
+      try {
+        const v = JSON.parse(r.evidence_ids_json) as unknown;
+        if (Array.isArray(v)) for (const x of v) if (typeof x === 'string') referenced.add(x);
+      } catch {
+        /* 解析失败则忽略 */
+      }
+    }
+    for (const r of p.db.all<{ data_json: string }>(
+      'SELECT data_json FROM timeline_events WHERE book_id = ?',
+      bookId,
+    )) {
+      try {
+        const v = JSON.parse(r.data_json) as { evidenceId?: string };
+        if (v.evidenceId) referenced.add(v.evidenceId);
+      } catch {
+        /* 解析失败则忽略 */
+      }
+    }
+    const orphanCount = rows.filter((r) => !referenced.has(r.id)).length;
+
+    return {
+      bookId,
+      count: rows.length,
+      referencedCount: rows.filter((r) => referenced.has(r.id)).length,
+      orphanCount,
+      bySource: Object.entries(
+        rows.reduce<Record<string, number>>((acc, r) => {
+          acc[r.source_ref] = (acc[r.source_ref] ?? 0) + 1;
+          return acc;
+        }, {}),
+      ).map(([sourceRef, n]) => ({ sourceRef, count: n })),
+      samples: rows.slice(0, 5).map((r) => ({
+        id: r.id,
+        sourceRef: r.source_ref,
+        note: r.note,
+        quote: r.quote.slice(0, 40),
+        span: [r.start_offset, r.end_offset],
       })),
     };
   },

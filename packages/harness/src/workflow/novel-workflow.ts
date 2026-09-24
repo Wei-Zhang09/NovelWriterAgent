@@ -162,12 +162,15 @@ export interface NovelWorkflowServices {
   readonly settleState: (input: {
     chapterId: string;
     chapterNumber: number;
+    /** ⚠ 提议要挂到工作流上，便于"这次结算属于哪次运行"可回答 */
+    workflowId: string;
   }) => Promise<{
     proposalId: string | null;
     verified: boolean;
     factCount: number;
     characterStateCount: number;
     timelineEventCount: number;
+    foreshadowingCount: number;
     rejected: readonly string[];
   }>;
 
@@ -464,7 +467,11 @@ export function createNovelWorkflowStages(
       async run(_input: StageInput, ctx: StageContext): Promise<WorkflowStageResult> {
         const chapterId = needChapterId(ctx);
         const chapterNumber = needChapterNumber(ctx);
-        const r = await services.settleState({ chapterId, chapterNumber });
+        const r = await services.settleState({
+          chapterId,
+          chapterNumber,
+          workflowId: ctx.workflowId,
+        });
         if (r.proposalId) {
           ctx.emit('STATE_PROPOSED', { stage: 'state_settlement', proposalId: r.proposalId });
         }
@@ -476,6 +483,7 @@ export function createNovelWorkflowStages(
             factCount: r.factCount,
             characterStateCount: r.characterStateCount,
             timelineEventCount: r.timelineEventCount,
+            foreshadowingCount: r.foreshadowingCount,
             rejected: r.rejected,
           },
         };

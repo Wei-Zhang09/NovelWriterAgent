@@ -44,6 +44,8 @@ export interface ForeshadowingRow {
   readonly updated_at: string;
   /** 实际回收章（PAID_OFF 后写入） */
   readonly payoff_chapter?: number | null;
+  /** 证据 id 的 JSON 数组（回答「这条伏笔来自正文哪一句」） */
+  readonly evidence_ids_json?: string | null;
 }
 
 /**
@@ -74,12 +76,14 @@ export class ForeshadowingRepository {
     description?: string;
     setupChapter?: number;
     expectedPayoffChapter?: number;
+    /** 证据 id（回答「这条伏笔来自正文哪一句」） */
+    evidenceIds?: readonly string[];
   }): ForeshadowingRow {
     this.db.run(
       `INSERT INTO foreshadowing
          (id, book_id, name, setup_chapter, expected_payoff_chapter,
-          status, tier, importance, description, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          status, tier, importance, description, evidence_ids_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       input.id,
       input.bookId,
       input.name,
@@ -89,6 +93,9 @@ export class ForeshadowingRepository {
       input.tier ?? 'SIDE',
       input.importance ?? 1,
       input.description ?? null,
+      input.evidenceIds && input.evidenceIds.length > 0
+        ? JSON.stringify(input.evidenceIds)
+        : null,
       now(),
       now(),
     );
@@ -140,6 +147,31 @@ export class ForeshadowingRepository {
    * ⚠ 非法推进抛错而不是静默接受 —— 静默接受会让伏笔账目失真，
    *   而伏笔账目是长篇里最难事后修复的数据之一。
    */
+  /**
+   * 追加证据 id（不覆盖已有的）。
+   *
+   * 用途：伏笔在后续章节被推进/回收时，把当次的引文证据也挂上 ——
+   * 一条伏笔的来龙去脉因此可回溯，而不是只有首次埋设的那一句。
+   */
+  appendEvidence(id: string, evidenceIds: readonly string[]): void {
+    if (evidenceIds.length === 0) return;
+    const row = this.get(id);
+    let existing: string[] = [];
+    try {
+      const v = JSON.parse(row.evidence_ids_json ?? '[]') as unknown;
+      if (Array.isArray(v)) existing = v.filter((x): x is string => typeof x === 'string');
+    } catch {
+      /* 解析失败当作空 */
+    }
+    const merged = [...new Set([...existing, ...evidenceIds])];
+    this.db.run(
+      'UPDATE foreshadowing SET evidence_ids_json = ?, updated_at = ? WHERE id = ?',
+      JSON.stringify(merged),
+      now(),
+      id,
+    );
+  }
+
   advance(id: string, to: ForeshadowStatus, opts?: { chapter?: number }): ForeshadowingRow {
     const row = this.get(id);
     const from = row.status as ForeshadowStatus;
