@@ -73,3 +73,27 @@ export type {
   ConceptResult,
   ConceptStructuredCaller,
 } from './blueprint/concept-generator.js';
+
+// ── 开书向导 Phase 2：核心设定与角色生成 ────────────────────
+export {
+  SettingsGenerator,
+  renderSettingsRequest,
+  detectSettingsConflicts,
+} from './blueprint/settings-generator.js';
+export type {
+  SettingsGeneratorOptions,
+  SettingsRequest,
+  SettingsResult,
+  SettingsStructuredCaller,
+  SettingsConflict,
+  CharacterConflict,
+  WorldConflict,
+} from './blueprint/settings-generator.js';
+
+// ── 开书向导 Phase 2：物化进正式表（角色/世界观） ──────────
+export { materializeSettings } from './blueprint/materialize-settings.js';
+export type {
+  MaterializeInput,
+  MaterializeResult,
+  ConflictDecision,
+} from './blueprint/materialize-settings.js';
