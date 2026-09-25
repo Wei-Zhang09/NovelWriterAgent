@@ -61,3 +61,15 @@ export type {
   DraftResult,
 } from './writer/writer.js';
 export type { PlannerOptions, PlanRequest, PlanResult, StructuredCaller } from './planner/planner.js';
+
+// ── 开书向导 Phase 1：选题方向生成 ──────────────────────────
+//
+// ⚠ 用户诉求：「配置 AI 生成大纲角色等等相关功能，再由用户进行选择、修改，
+//   最后确认一切前置信息后，再开始写作」。本模块负责"生成"那一半。
+export { ConceptGenerator, renderRequest } from './blueprint/concept-generator.js';
+export type {
+  ConceptGeneratorOptions,
+  ConceptRequest,
+  ConceptResult,
+  ConceptStructuredCaller,
+} from './blueprint/concept-generator.js';

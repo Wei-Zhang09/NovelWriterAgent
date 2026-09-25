@@ -18,3 +18,4 @@ export * from './schemas/fact-extraction.js';
 export * from './schemas/skill.js';
 // ⚠ state 放在最后：它复用 fact-extraction 的 ProposedFact
 export * from './schemas/state.js';
+export * from './schemas/blueprint.js';
