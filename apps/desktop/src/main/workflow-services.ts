@@ -40,7 +40,7 @@ import {
 import type { Repositories, Database } from '@nwa/storage';
 import type { ToolRegistry, NovelWorkflowServices } from '@nwa/harness';
 import { hashOfFile } from '@nwa/harness';
-import { evaluateSettingsGate, hashSettings } from '@nwa/core';
+import { evaluateSettingsGate, hashSettings, renderWorldRulesForReview } from '@nwa/core';
 import {
   renderCharacterBlock,
   toCharacterBrief,
@@ -738,10 +738,20 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
         }
       }
 
+      // ⚠ 世界规则清单（P2-4）：机械判据只能覆盖"不可逆被推翻"这类
+      //   明确情形，其余规则（"灵力稀薄""贵族不得经商"）需要模型结合
+      //   上下文判断。把规则**原文 + id** 给出去，模型才能引用规则 id
+      //   报 WORLD_RULE 问题（可复核），而不是凭感觉说"好像违反了世界观"。
+      const confirmedWorldRules = deps.repos.world
+        .listByBook(ch.book_id)
+        .filter((r) => r.status === 'CONFIRMED')
+        .map((r) => ({ id: r.id, name: r.name, description: r.description ?? '' }));
+      const rulesText = renderWorldRulesForReview(confirmedWorldRules);
+
       const review = await reviewer.review({
         chapterNumber: ch.chapter_number,
         draftText: draft,
-        contextText: evidenceText,
+        contextText: [rulesText, evidenceText].filter((t) => t.trim().length > 0).join('\n\n'),
         deterministicIssues: deterministic,
       });
 

@@ -476,3 +476,104 @@ describe('伏笔六态机的推进规则（§14）', () => {
     expect(r.payoff_chapter).toBe(42);
   });
 });
+
+/**
+ * ── P2-4：世界规则维度 ──────────────────────────────────────────
+ *
+ * 补上一个**此前只声明未实现**的维度：`CONTINUITY_DIMENSIONS` 里一直有
+ * `worldRule`，但没有任何检查逻辑（实测：全文件对该词的引用只有
+ * 维度数组与 semanticHints 各一处）。
+ *
+ * 结果是作者手写的世界规则完全不在连续性检查范围内：
+ *   设定说「施法会消耗寿命，不可逆」，正文写「他恢复了被抽走的寿命」
+ *   → 检查器一声不响。
+ */
+describe('⚠ 世界规则维度（P2-4）', () => {
+  it('⚠ 已确认规则被推翻 → BLOCKING（设定与 Canon 终于联动）', () => {
+    const { proj, bookId, checker } = setup();
+    proj.repos.world.create({
+      id: 'w_rule1',
+      bookId,
+      type: 'WORLD_RULE',
+      name: '灵力枯竭',
+      description: '施法会消耗寿命，不可逆',
+    });
+    proj.repos.world.confirmAll(bookId);
+
+    const report = checker.check({
+      chapterNumber: 1,
+      draftText: '他运起秘法，被抽走的寿命竟缓缓恢复了过来。',
+    });
+    const w = report.issues.filter((i) => i.dimension === 'worldRule');
+    expect(w).toHaveLength(1);
+    expect(w[0]!.severity).toBe('BLOCKING');
+    // 每条判断必须能回溯到出处（§7.6 的硬约束）
+    expect(w[0]!.sourceRef).toBe('world_entities:w_rule1');
+    expect(report.ok).toBe(false);
+  });
+
+  it('⚠ 草稿状态的规则不参与判定（不能拿作者还在改的设定拦人）', () => {
+    const { proj, bookId, checker } = setup();
+    proj.repos.world.create({
+      id: 'w_draft',
+      bookId,
+      type: 'WORLD_RULE',
+      name: '灵力枯竭',
+      description: '施法会消耗寿命，不可逆',
+    });
+    // 刻意不 confirmAll
+    const report = checker.check({
+      chapterNumber: 1,
+      draftText: '他运起秘法，被抽走的寿命竟缓缓恢复了过来。',
+    });
+    expect(report.issues.filter((i) => i.dimension === 'worldRule')).toHaveLength(0);
+  });
+
+  it('⚠ 没有规则 → 该维度静默通过，但 checked.worldRules 如实为 0', () => {
+    const { checker } = setup();
+    const report = checker.check({ chapterNumber: 1, draftText: '任意正文。' });
+    expect(report.issues.filter((i) => i.dimension === 'worldRule')).toHaveLength(0);
+    expect(report.checked.worldRules).toBe(0);
+  });
+
+  it('checked.worldRules 统计已确认规则数（防空跑通过）', () => {
+    const { proj, bookId, checker } = setup();
+    proj.repos.world.create({ id: 'a', bookId, type: 'WORLD_RULE', name: '甲', description: '禁止乙' });
+    proj.repos.world.create({ id: 'b', bookId, type: 'WORLD_RULE', name: '丙', description: '不可逆' });
+    proj.repos.world.confirmAll(bookId);
+    const report = checker.check({ chapterNumber: 1, draftText: '任意正文。' });
+    expect(report.checked.worldRules).toBe(2);
+  });
+
+  it('⚠ 多书隔离：A 书的规则不判 B 书的稿', () => {
+    const { proj, bookId, checker } = setup();
+    proj.repos.world.create({
+      id: 'w_a', bookId, type: 'WORLD_RULE', name: '灵力枯竭', description: '施法会消耗寿命，不可逆',
+    });
+    proj.repos.world.confirmAll(bookId);
+    const other = proj.repos.books.create({
+      id: 'bk_other', projectId: proj.repos.projects.list()[0]!.id, title: '另一本',
+    });
+    const draft = '他运起秘法，被抽走的寿命竟缓缓恢复了过来。';
+
+    // 正向对照：⚠ 必须证明 A 书的规则**确实会判违反** ——
+    //   否则下面的"B 书不判"可能只是因为判据压根没生效，
+    //   那样这条测试是绿的却什么都没证明。
+    const ownReport = checker.check({ chapterNumber: 1, draftText: draft });
+    expect(ownReport.issues.filter((i) => i.dimension === 'worldRule')).toHaveLength(1);
+
+    const otherChecker = new ContinuityChecker({ repos: proj.repos, logger, bookId: other.id });
+    const report = otherChecker.check({ chapterNumber: 1, draftText: draft });
+    expect(report.issues.filter((i) => i.dimension === 'worldRule')).toHaveLength(0);
+    expect(report.checked.worldRules).toBe(0);
+  });
+
+  it('⚠ 纯只读：检查不写库、不改稿', () => {
+    const { proj, bookId, checker } = setup();
+    proj.repos.world.create({ id: 'w_ro', bookId, type: 'WORLD_RULE', name: '禁术', description: '禁止复活死者' });
+    proj.repos.world.confirmAll(bookId);
+    const before = proj.repos.world.get('w_ro').updated_at;
+    checker.check({ chapterNumber: 1, draftText: '他决定复活死者。' });
+    expect(proj.repos.world.get('w_ro').updated_at).toBe(before);
+  });
+});

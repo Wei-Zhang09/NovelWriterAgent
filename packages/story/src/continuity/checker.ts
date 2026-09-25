@@ -26,7 +26,7 @@
  *
  * 本类不持有任何写工具，只读。
  */
-import { Logger, type Nullable } from '@nwa/core';
+import { Logger, checkWorldRules, type Nullable } from '@nwa/core';
 import type { PlanOutput } from '@nwa/shared';
 import type { Repositories } from '@nwa/storage';
 
@@ -74,6 +74,13 @@ export interface ContinuityReport {
     readonly canonFacts: number;
     readonly characters: number;
     readonly scenes: number;
+    /**
+     * P2-4：参与检查的**已确认**世界规则数。
+     *
+     * ⚠ 加这个计数是为了防空跑通过 —— 与 canonFacts 同理：
+     *   若不计，则"作者还没确认任何规则"与"规则都通过了"无法区分。
+     */
+    readonly worldRules: number;
   };
 }
 
@@ -109,10 +116,13 @@ export class ContinuityChecker {
 
     const canonFacts = this.repos.facts.listByStatus(this.bookId, 'CANON');
     const characters = this.repos.characters.listByBook(this.bookId);
+    // P2-4：已确认的世界规则（只读一次，供计数与检查共用）
+    const confirmedRules = this.loadConfirmedRules();
 
     issues.push(...this.checkDeathStatus(chapterNumber, draftText, characters));
     issues.push(...this.checkCharacterIdentity(chapterNumber, draftText, characters));
     issues.push(...this.checkCanonFacts(chapterNumber, draftText, canonFacts));
+    issues.push(...this.checkWorldRuleViolations(chapterNumber, draftText));
     issues.push(...this.checkScenePlanning(plan));
     issues.push(...this.checkForeshadowing(chapterNumber, draftText, plan));
 
@@ -132,6 +142,7 @@ export class ContinuityChecker {
         canonFacts: canonFacts.length,
         characters: characters.length,
         scenes: plan?.scenes.length ?? 0,
+        worldRules: confirmedRules.length,
       },
     };
   }
@@ -283,6 +294,69 @@ export class ContinuityChecker {
       });
     }
     return out;
+  }
+
+  /**
+   * §7.6「世界规则」—— P2-4 补上（此前**只声明了维度，没有实现**）。
+   *
+   * 检查作者**已确认**的世界规则是否被正文推翻。此前连续性检查只看
+   * Canon facts（从正文推断的），作者手写的规则完全不在范围内：
+   *   设定说「施法会消耗寿命，不可逆」，正文写「他恢复了被抽走的寿命」
+   *   → 检查器一声不响。
+   *
+   * ⚠ **只取 CONFIRMED**，与注入 Writer 的口径一致：
+   *   草稿是"作者还在改，先别当准"，拿它判 BLOCKING 会让作者
+   *   被自己尚未定稿的设定拦住。
+   *
+   * ⚠ 判定本身在 `@nwa/core` 的 `checkWorldRules`（纯函数，可穷举单测）；
+   *   这里只负责取数据 + 包装成 issue。
+   */
+  private checkWorldRuleViolations(
+    chapterNumber: number,
+    draftText: string,
+  ): ContinuityIssue[] {
+    const rules = this.loadConfirmedRules();
+    if (rules.length === 0) return [];
+
+    const res = checkWorldRules(rules, draftText, this.logger);
+    return res.violations.map((v) => ({
+      id: `ci_wrule_${v.ruleId}_${chapterNumber}`,
+      dimension: 'worldRule' as const,
+      // ⚠ BLOCKING：作者明确声明"不可逆"的规则被推翻，属于设定层面的
+      //   硬矛盾，与"已死角色出场"同级。判据本身刻意保守（宁可漏判），
+      //   所以一旦报出，误报率很低，值得阻断。
+      severity: 'BLOCKING' as const,
+      code: 'BLOCKING_CONTINUITY_ERROR',
+      message: `违反已确认的世界规则：${v.explanation}`,
+      sourceRef: `world_entities:${v.ruleId}`,
+      draftRef: v.quote,
+      entityRefs: [v.ruleId],
+    }));
+  }
+
+  /**
+   * 读取本书**已确认**的世界规则。
+   *
+   * ⚠ 单点读取：`checked.worldRules` 计数与实际参与判定的规则必须同源，
+   *   否则会出现"计数说有 3 条、实际判了 0 条"这类无法察觉的偏差。
+   *
+   * ⚠ 读取失败**返回空数组并记日志**，不抛错 —— 读设定失败不该让
+   *   整个一致性检查崩掉（同角色状态 JSON 损坏的处理）。
+   *   但空数组会让该维度静默跳过，所以日志必须留痕。
+   */
+  private loadConfirmedRules(): { id: string; name: string; description: string }[] {
+    try {
+      return this.repos.world
+        .listByBook(this.bookId)
+        .filter((r) => r.status === 'CONFIRMED')
+        .map((r) => ({ id: r.id, name: r.name, description: r.description ?? '' }));
+    } catch (e) {
+      this.logger.warn('世界规则读取失败，跳过该维度', {
+        bookId: this.bookId,
+        error: e instanceof Error ? e.message : String(e),
+      });
+      return [];
+    }
   }
 
   private resolveSubjectName(subjectId: string | null): string | null {

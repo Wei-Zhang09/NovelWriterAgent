@@ -30,7 +30,13 @@ export function createContinuityTools(
         message: string;
         sourceRef: string;
       }[];
-      checked: { canonFacts: number; characters: number; scenes: number };
+      checked: {
+        canonFacts: number;
+        characters: number;
+        scenes: number;
+        /** P2-4：参与检查的已确认世界规则数（0 = 作者尚未确认规则，非"都通过"） */
+        worldRules: number;
+      };
     }
   > = {
     name: 'continuity.check',
@@ -58,6 +64,9 @@ export function createContinuityTools(
         canonFacts: z.number().int(),
         characters: z.number().int(),
         scenes: z.number().int(),
+        // P2-4：世界规则维度。⚠ 必填而非 optional —— 缺字段会让
+        //   "没检查"与"检查了 0 条"无法区分。
+        worldRules: z.number().int(),
       }),
     }),
     permission: 'READ',
