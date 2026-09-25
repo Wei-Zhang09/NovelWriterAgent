@@ -296,6 +296,64 @@ app.whenReady().then(async () => {
     );
     for (const w of restored.data?.warnings ?? []) console.log(`    ⚠ ${w}`);
 
+    // ── 6b. ⚠⚠ 覆盖恢复**不能**吃掉未提交正文 ──
+    //
+    // 导出**不含** workspace/，而恢复会把整个目标目录 rename 走。
+    // 若不单独处理，用户的未提交正文（manuscript.md）、自动保存副本、
+    // 版本节点会跟着 pre-restore 目录一起消失 —— 恢复成功、不报错。
+    //
+    // ⚠ 目标必须是**没被 project.open 打开**的目录，否则 rename 报 EPERM
+    //   （Windows 不允许移动被打开的项目目录）。
+    console.log('\n──── 覆盖恢复不丢未提交正文 ────\n');
+    const owTarget = join(sandbox, 'overwrite-target');
+    mkdirSync(join(owTarget, 'chapters'), { recursive: true });
+    writeFileSync(join(owTarget, 'chapters', '001.md'), '旧正文：会被备份覆盖', 'utf8');
+    const owWs = join(owTarget, 'workspace', 'chapter-001');
+    mkdirSync(join(owWs, 'versions'), { recursive: true });
+    writeFileSync(join(owWs, 'manuscript.md'), '用户正在写的正文：铜牌的反面刻着一个日期。', 'utf8');
+    writeFileSync(join(owWs, 'manuscript.autosave.md'), '自动保存副本', 'utf8');
+    writeFileSync(join(owWs, 'versions', 'v001.md'), '第一版', 'utf8');
+
+    const ow = await call('backup.restore', {
+      backupDir: outDir,
+      targetDir: owTarget,
+      overwrite: true,
+    });
+    rec('覆盖恢复执行', ow.data?.ok === true, ow.data?.error?.message ?? '成功');
+    rec(
+      '覆盖恢复确实换了正文（证明恢复真的发生了）',
+      existsSync(join(owTarget, 'chapters', '001.md')) &&
+        readFileSync(join(owTarget, 'chapters', '001.md'), 'utf8').includes('铜牌') &&
+        !readFileSync(join(owTarget, 'chapters', '001.md'), 'utf8').includes('会被备份覆盖'),
+      'chapters/001.md 已换成备份内容',
+    );
+
+    // ⚠ 核心断言：未提交正文必须还在
+    const owManu = join(owWs, 'manuscript.md');
+    const owManuText = existsSync(owManu) ? readFileSync(owManu, 'utf8') : '';
+    rec(
+      '⚠⚠ 覆盖恢复后未提交正文仍在（manuscript.md）',
+      owManuText.includes('铜牌的反面'),
+      existsSync(owManu) ? `${owManuText.length} 字节` : '❌ 正文消失了',
+    );
+    rec(
+      '⚠ 自动保存副本仍在',
+      existsSync(join(owWs, 'manuscript.autosave.md')),
+      existsSync(join(owWs, 'manuscript.autosave.md')) ? '已保留' : '❌ 丢失',
+    );
+    rec(
+      '⚠ 版本节点仍在（versions/）',
+      existsSync(join(owWs, 'versions', 'v001.md')),
+      existsSync(join(owWs, 'versions', 'v001.md')) ? '已保留' : '❌ 丢失',
+    );
+    // 不能靠"暂时挪走但没挪回"来通过 —— 暂存目录必须已被清理
+    const leftovers = readdirSync(sandbox).filter((d) => d.includes('pre-restore-workspace'));
+    rec(
+      '⚠ 暂存目录已清理（正文挪回原位，不是留在 .pre-restore-workspace-*）',
+      leftovers.length === 0,
+      leftovers.join('、') || '无残留',
+    );
+
     // ── 7. 独立重建入口 ──
     const rebuild = await call('backup.rebuildFts', {});
     rec(

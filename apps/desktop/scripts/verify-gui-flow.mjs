@@ -51,6 +51,9 @@ const child = spawn(
       //   指向不存在的路径 → agentReady=false → 界面显示"需先配置模型"，
       //   正好也是我们要断言的"诚实失败"路径。
       NWA_USER_MODELS_PATH: join(tmpdir(), 'nwa-verify-flow-no-model.json'),
+      // ⚠ 偏好（主题 / 上次在写的书）也要隔离 —— 否则验证会读走作者真实
+      //   主题设置，还会把验证用的书 id 写进作者的 prefs.json。
+      NWA_USER_PREFS_PATH: join(tmpdir(), 'nwa-verify-flow-prefs.json'),
     },
     stdio: 'inherit',
   },

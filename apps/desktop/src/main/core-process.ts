@@ -253,6 +253,78 @@ function userModelsConfigPath(): string {
   return process.env['NWA_USER_MODELS_PATH'] ?? join(homedir(), 'NovelWriterProjects', 'models.json');
 }
 
+/**
+ * 应用级偏好（**跨项目、跨重启**）。
+ *
+ * ## 为什么要有它
+ *
+ * 主题（浅/暗）与"上次在写哪本书"都是**用户级**状态，不是项目内容：
+ * 换个项目不该换主题，而"当前书"是"用户正在写哪一本"的记忆。
+ *
+ * 之前两者都不落盘 —— `selectedBookId` 是 renderer 的内存变量，
+ * 主题同理。后果：关掉软件重开，主题回到默认、当前书回到**最老那本**，
+ * 作者每次启动都要手动切回去。
+ *
+ * ## ⚠ 为什么放用户级目录而不是项目目录
+ *
+ * 放项目目录的话：① 主题会随项目变（不是用户预期）；
+ * ② 备份/导出会把"界面偏好"当成项目内容带走。
+ * 所以放在 `NWA_USER_*` 同族的用户级位置（可用环境变量覆盖，
+ * 与 `userModelsConfigPath()` 同一套隔离思路）。
+ *
+ * ⚠ 这里**不存任何密钥**，只存界面偏好与最后打开的书 id。
+ */
+interface AppPrefs {
+  /** 主题：'dark' 为默认（长时间写作） */
+  theme?: 'dark' | 'light';
+  /** 上次正在写的书 id —— 重启后恢复"当前书" */
+  lastBookId?: string;
+  /** 上次打开的项目目录 */
+  lastProjectDir?: string;
+}
+
+function userPrefsPath(): string {
+  return (
+    process.env['NWA_USER_PREFS_PATH'] ??
+    join(homedir(), 'NovelWriterProjects', 'prefs.json')
+  );
+}
+
+function loadPrefs(): AppPrefs {
+  const p = userPrefsPath();
+  if (!existsSync(p)) return {};
+  try {
+    const raw = JSON.parse(readFileSync(p, 'utf8')) as unknown;
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {};
+    return raw as AppPrefs;
+  } catch (err) {
+    // ⚠ 偏好文件坏了不该让软件起不来 —— 退回默认值，但如实记日志
+    logger.warn('prefs.json 解析失败，使用默认偏好', { path: p, error: String(err) });
+    return {};
+  }
+}
+
+function savePrefs(patch: AppPrefs): AppPrefs {
+  const merged: AppPrefs = { ...loadPrefs() };
+  // ⚠ 逐键合并，`undefined` 的语义是**不改动**，不是"删除"。
+  //
+  //   直接 `{...old, ...patch}` 再删 undefined 键是错的：那会把
+  //   `{lastBookId: undefined}` 解释成"忘掉当前书" —— 调用方本意
+  //   通常只是"这次不设置这个字段"，结果把用户的记忆清掉了。
+  //   偏好是**静默失效**类数据，丢了不会报错，只会让人每次重切一遍。
+  //   （`merged[k] = patch[k]` 这种写法 TS 无法把联合键与联合值关联起来，
+  //     所以经 Record 写入；值的类型仍由 AppPrefs 约束。）
+  const out = merged as Record<string, unknown>;
+  for (const k of Object.keys(patch) as (keyof AppPrefs)[]) {
+    const v = patch[k];
+    if (v !== undefined) out[k] = v;
+  }
+  const p = userPrefsPath();
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, JSON.stringify(merged, null, 2), 'utf8');
+  return merged;
+}
+
 function loadModelsConfig(dir: string): ModelsConfig | null {
   // 项目目录优先；找不到则回退到用户级位置
   const candidates = [modelsConfigPath(dir)];
@@ -496,7 +568,20 @@ function corpusRepo(): CorpusRepository {
  * 且回退目标是**最近创建的书**（`listByProject` 的最后一个），
  * 而不是最老的那本。
  *
- * @param explicit 调用方指定的 bookId（优先）
+ * ## 两级接口（读路径用严格版，别用宽松版）
+ *
+ * - `requireBookId()` —— **严格**：项目里一本书都没有就明确报错。
+ * - `resolveBookId()` —— **宽松**：没有书时返回 `undefined`。
+ *
+ * ⚠ 曾经的问题：`timeline.query` / `state.evidence` 用严格版，
+ *   而 `summary.pending` / `search.query` / `canon.list` /
+ *   `context.assemble` / `retrieval.truth` 用宽松版 —— 同一个概念
+ *   两套行为。宽松版的 `undefined` 往下走会静默变成空串
+ *   （`undefined ?? ''`），查询按 `book_id = ''` 过滤返回 0 条：
+ *   用户看到"这本书没有内容"，而不是"还没选书"。
+ *   两者要采取的行动完全不同。
+ *
+ *   现已**统一为严格版**。新增读路径请一律用 `requireBookId()`。
  */
 /**
  * 严格版 `resolveBookId`：解析不到就**明确报错**。
@@ -676,6 +761,21 @@ function buildWorkflowEngine(p: OpenProject): WorkflowEngine {
 }
 
 const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = {
+  /**
+   * 应用偏好（主题 / 上次在写的书 / 上次项目）。
+   *
+   * ⚠ 读写都**不依赖已打开的项目** —— 主题在项目打开前就要能用，
+   *   否则启动瞬间会闪一下默认主题。
+   */
+  'prefs.get': () => loadPrefs(),
+
+  'prefs.set': (params: { theme?: 'dark' | 'light'; lastBookId?: string; lastProjectDir?: string }) =>
+    savePrefs({
+      ...(params.theme !== undefined ? { theme: params.theme } : {}),
+      ...(params.lastBookId !== undefined ? { lastBookId: params.lastBookId } : {}),
+      ...(params.lastProjectDir !== undefined ? { lastProjectDir: params.lastProjectDir } : {}),
+    }),
+
   /** 健康检查 */
   'core.health': () => ({
     pid: process.pid,
@@ -1949,7 +2049,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
    */
   'context.assemble': (params: { bookId?: string | null; budget?: { inputTokens?: number; outputReserveTokens?: number; protectedMaxTokens?: number } }) => {
     const p = requireProject();
-    const bookId = resolveBookId(params.bookId);
+    const bookId = requireBookId(params.bookId);
 
     const canonEntries: ContextEntry[] = [];
     const memoryEntries: ContextEntry[] = [];
@@ -2229,7 +2329,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
   /** 列出当前 Canon 与待裁决项（STEP 9 UI） */
   'canon.list': (params: { bookId?: string | null } = {}) => {
     const p = requireProject();
-    const bookId = resolveBookId(params.bookId);
+    const bookId = requireBookId(params.bookId);
     if (!bookId) return { canon: [], provisional: [], contradicted: [], conflicts: [] };
 
     const chars = p.repos.characters.listByBook(bookId);
@@ -3139,7 +3239,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
    */
   'search.query': (params: { bookId?: string | null; query: string; limit?: number }) => {
     const p = requireProject();
-    const bookId = resolveBookId(params.bookId);
+    const bookId = requireBookId(params.bookId);
 
     const retriever = new Retriever({ runner: p.fts, tokenizer: bigramTokenizer });
     const chapterTrace = retriever.retrieve({
@@ -3182,7 +3282,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
   /** 待确认摘要清单（ADR-0006 约束 C 的验收卡） */
   'summary.pending': (params: { bookId?: string | null } = {}) => {
     const p = requireProject();
-    const bookId = resolveBookId(params.bookId);
+    const bookId = requireBookId(params.bookId);
     if (!bookId) return { pending: [], approvedCount: 0 };
     const indexer = new SummaryIndexer({
       repos: p.repos,
@@ -4007,7 +4107,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
    */
   'retrieval.truth': (params: { bookId?: string | null; chapterNumber: number }) => {
     const p = requireProject();
-    const bookId = resolveBookId(params.bookId);
+    const bookId = requireBookId(params.bookId);
     if (!bookId) {
       throw new AppError(ErrorCode.TOOL_VALIDATION_ERROR, '没有可用的书（请先创建或打开一本书）');
     }

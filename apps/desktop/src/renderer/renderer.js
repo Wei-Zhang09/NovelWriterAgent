@@ -24,6 +24,8 @@ const el = (tag, cls, text) => {
 
 /** 应用状态（v1.0 单项目） */
 const state = {
+  /** 应用偏好（主题 / 上次在写的书）—— 启动时从主进程读回 */
+  prefs: null,
   project: null,
   books: [],
   chapters: [],
@@ -94,12 +96,19 @@ async function loadProjects() {
     const b = await call('book.list', { projectId: state.project.id });
     state.books = b.ok ? b.data.books : [];
 
-    // 选中书目：优先保留当前选择；若它已不存在（换了项目）则回退到第一本。
+    // 选中书目：优先保留当前选择；若它已不存在（换了项目）则回退。
+    //
+    // ⚠ 回退顺序有讲究：**先试上次在写的书**（prefs），再退到第一本。
+    //   只退到第一本的话，作者每次启动都要手动切回在写的那本 ——
+    //   而"上次在写哪本"是可记住的事实，不该让人重做一遍。
+    //
     // 注意：不能在 books 为空时保留旧 selectedBookId，否则中栏会渲染出
     // 一个指向不存在书目的"新建章节"表单（曾在本流程验证中暴露）。
     const stillValid = state.books.some((x) => x.id === state.selectedBookId);
     if (!stillValid) {
-      state.selectedBookId = state.books[0]?.id ?? null;
+      const remembered = state.prefs?.lastBookId;
+      const rememberedOk = state.books.some((x) => x.id === remembered);
+      state.selectedBookId = (rememberedOk ? remembered : state.books[0]?.id) ?? null;
     }
     await loadChapters();
   }
@@ -107,6 +116,42 @@ async function loadProjects() {
   renderNav(projects);
   renderCenter();
   renderAgent();
+}
+
+/**
+ * 读回应用偏好并立即应用主题。
+ *
+ * ⚠ 放在 boot 最前面：主题是"打开就能看到"的东西，
+ *   等数据加载完再切会闪一下默认主题。
+ */
+async function loadPrefs() {
+  const r = await call('prefs.get', {});
+  state.prefs = r.ok ? r.data : {};
+  applyTheme(state.prefs?.theme ?? 'dark');
+}
+
+/** 把主题写到 <html data-theme> —— 样式只认这一个属性 */
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme === 'light' ? 'light' : 'dark');
+  const btn = $('theme');
+  if (btn) {
+    btn.textContent = theme === 'light' ? '☀ 浅色' : '☾ 暗色';
+    btn.setAttribute('aria-pressed', String(theme === 'light'));
+  }
+}
+
+/** 切换主题并落盘（不落盘的话重开就回到默认） */
+async function setTheme(theme) {
+  applyTheme(theme);
+  state.prefs = { ...(state.prefs ?? {}), theme };
+  await call('prefs.set', { theme });
+}
+
+/** 记住"正在写哪本书" —— 重启后据此恢复当前书 */
+async function rememberBook(bookId) {
+  if (!bookId) return;
+  state.prefs = { ...(state.prefs ?? {}), lastBookId: bookId };
+  await call('prefs.set', { lastBookId: bookId });
 }
 
 function renderNav(projects) {
@@ -134,6 +179,8 @@ function renderNav(projects) {
     item.append(el('span', 'nav-meta', `至第 ${b.currentChapter} 章`));
     item.addEventListener('click', async () => {
       state.selectedBookId = b.id;
+      // ⚠ 记住"正在写哪本" —— 切换只改当前写作目标，不动任何一本书的内容
+      await rememberBook(b.id);
       await loadChapters();
       renderNav(projects);
       renderCenter();
@@ -2219,6 +2266,9 @@ async function boot() {
   const info = await window.nwa.appInfo();
   $('ver').textContent = `Electron ${info.electron} · Node ${info.node}`;
 
+  // 偏好要在打开项目**之前**读 —— 主题不该等数据加载完才生效
+  await loadPrefs();
+
   const open = await call('project.open', {});
   if (!open.ok) {
     $('center').replaceChildren(el('div', 'empty', `打开项目失败：${open.error.message}`));
@@ -2227,6 +2277,17 @@ async function boot() {
   await loadModelConfig();
   await loadProjects();
   await loadRunStatus();
+}
+
+// 主题切换按钮 —— 落盘到用户级 prefs.json，重开保留
+{
+  const btn = $('theme');
+  if (btn) {
+    btn.addEventListener('click', () => {
+      const next = state.prefs?.theme === 'light' ? 'dark' : 'light';
+      void setTheme(next);
+    });
+  }
 }
 
 window.nwa.onCoreExited((p) => {

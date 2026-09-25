@@ -1241,6 +1241,47 @@ function createWindow(): void {
                   Boolean(restoreBtn?.disabled));
             }
 
+            // 6d) 主题切换 + 偏好持久化（浅/暗主题、当前书）
+            //     ⚠ 本区块内禁止出现反引号（工程约定 1）。
+            //     ⚠ 断言必须查**下游终点**：不能只看按钮文字变了，
+            //       要查 <html data-theme> 真的改了，且真的写进了 prefs.json。
+            {
+              // ⚠ 6c 区块里的 callIpc 被它自己的花括号圈住了，这里要重新定义
+              const callIpc = async (m, prm) => {
+                const r = await window.nwa.invoke(m, prm);
+                return (r && r.ok) ? r.data : null;
+              };
+              const before = document.documentElement.getAttribute('data-theme');
+              const btn = $('theme');
+              rec('主题切换按钮存在', Boolean(btn), 'btn=' + (btn ? btn.textContent.trim() : '缺失'));
+
+              btn?.click();
+              // 等一次 IPC 往返（点击 → prefs.set → 落盘）
+              await new Promise((r) => setTimeout(r, 300));
+              const after = document.documentElement.getAttribute('data-theme');
+              rec('⚠ 点击后 data-theme 真的切换了', before !== after, before + ' → ' + after);
+
+              // ⚠ 查落盘终点：主进程 prefs.get 应能读回刚切换的主题
+              const saved = await callIpc('prefs.get', {});
+              rec('⚠ 主题已落盘（prefs.json 可读回）',
+                  saved?.theme === after,
+                  'prefs.theme=' + String(saved?.theme));
+
+              // 当前书：记住"正在写哪本"，重开时据此恢复
+              const st = window.__nwaState;
+              rec('⚠ 当前书 id 已记住（重开据此恢复，不再退回最老那本）',
+                  Boolean(st?.prefs?.lastBookId),
+                  'lastBookId=' + String(st?.prefs?.lastBookId ?? '(空)'));
+
+              // ⚠ 读回偏好后必须真的作用到 <html> 上，否则"记住了但没用"
+              const reApplied = st?.prefs?.theme === after;
+              rec('⚠ 读回的偏好作用于界面（不是只存不用）', reApplied,
+                  'state.prefs.theme=' + String(st?.prefs?.theme));
+
+              // 切回暗色，避免影响后续断言对颜色的假设
+              if (after === 'light') { btn?.click(); await new Promise((r) => setTimeout(r, 300)); }
+            }
+
             return { steps };
           })()`;
 

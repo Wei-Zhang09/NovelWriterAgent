@@ -1,19 +1,70 @@
 /* 三栏工作台（施工文档 §41）
    职责：左栏切对象 / 中栏主体内容 / 右栏动作+诊断
    状态表达：颜色 + 文字双编码；暂停/待操作不得用危险色（研究报告 §3.1 决策 6） */
-:root {
+/* ═══════════════════════════════════════════════════════════
+   主题令牌：暗色（默认）+ 浅色
+   ⚠ 切换只改 <html data-theme>，组件规则一份 —— 不写两套样式。
+     两套样式各自维护必然漂移，最后没人知道哪个是"对的"。
+   ═══════════════════════════════════════════════════════════ */
+:root, [data-theme="dark"] {
   --bg: #111318;
   --pane: #171a21;
   --pane-2: #1c2029;
   --border: #262b36;
   --fg: #e6e8ee;
   --muted: #8b93a7;
+  --muted-2: #7d8698;
   --ok: #3fb950;
   --warn: #d29922;
   --err: #f85149;
   --info: #58a6ff;
   --pause: #7c83ff;
   --accent: #2f81f7;
+  /* ⚠ accent 分两个令牌：作**文字/边框**要够亮（与深底对比），
+     作**填充**（上面放白字）要够深。同一个色号满足不了两种用法。 */
+  --accent-fill: #2563eb;
+  --accent-fg: #fff;
+  /* 语义面（chip / tag / danger / 状态文字）—— 原先是硬编码 hex，
+     浅色下会变成深底深字。提成令牌后两套主题各给一组。 */
+  --nav-active-bg: #1f2430;
+  --chip-info-bg: #16293d;  --chip-info-bd: #1f3b5c;
+  --chip-warn-bg: #2c2410;  --chip-warn-bd: #4a3a12;
+  --chip-ok-bg: #12291b;    --chip-ok-bd: #1c4029;
+  --chip-pause-bg: #1c1f3d; --chip-pause-bd: #2b2f5c;
+  --chip-err-bg: #3a1414;   --chip-err-bd: #5c1f1f;
+  --danger-bg: #3a1a1a; --danger-bd: #6b2b2b; --danger-fg: #e88;
+  --danger-bg-hover: #451f1f;
+  --tag-err-bg: #7f1d1d;  --tag-err-fg: #fecaca;
+  --tag-warn-bg: #78350f; --tag-warn-fg: #fed7aa;
+  --perm-ok-fg: #4ade80;  --perm-err-fg: #fca5a5;
+}
+[data-theme="light"] {
+  --bg: #f7f8fa;
+  --pane: #ffffff;
+  --pane-2: #f1f4f7;
+  --border: #e1e6ec;
+  --fg: #202936;
+  --muted: #64748b;
+  --muted-2: #6b7788;
+  --ok: #24704a;
+  --warn: #9a6515;
+  --err: #a43b42;
+  --info: #3777c3;
+  --pause: #5b61c9;
+  --accent: #3777c3;
+  --accent-fill: #3777c3;
+  --accent-fg: #fff;
+  --nav-active-bg: #e8eef6;
+  --chip-info-bg: #eaf3fc;  --chip-info-bd: #b9d6f2;
+  --chip-warn-bg: #fff5dc;  --chip-warn-bd: #e8d6a8;
+  --chip-ok-bg: #e8f5ed;    --chip-ok-bd: #b9e0cb;
+  --chip-pause-bg: #ecedfb; --chip-pause-bd: #c5c7ee;
+  --chip-err-bg: #fcebed;   --chip-err-bd: #eec4c8;
+  --danger-bg: #fdeaea; --danger-bd: #e8a9a9; --danger-fg: #a43b42;
+  --danger-bg-hover: #fbdada;
+  --tag-err-bg: #a43b42;  --tag-err-fg: #fff;
+  --tag-warn-bg: #9a6515; --tag-warn-fg: #fff;
+  --perm-ok-fg: #24704a;  --perm-err-fg: #a43b42;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -34,6 +85,16 @@ body {
 .brand { font-weight: 600; }
 .phase { color: var(--muted); font-size: 12px; }
 .ver { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.theme-toggle {
+  height: 26px; padding: 0 11px; font-size: 12px; cursor: pointer;
+  color: var(--fg); background: var(--pane-2);
+  border: 1px solid var(--border); border-radius: 5px;
+}
+.theme-toggle:hover { border-color: var(--muted); }
+.theme-toggle[aria-pressed="true"] {
+  background: var(--accent-fill); border-color: var(--accent-fill);
+  color: var(--accent-fg); font-weight: 600;
+}
 
 /* 三栏 */
 .panes { display: grid; grid-template-columns: 260px minmax(0, 1fr) 300px; flex: 1; min-height: 0; }
@@ -56,7 +117,7 @@ body {
   color: var(--muted); transition: background .12s;
 }
 .nav-item:hover { background: var(--pane-2); }
-.nav-item--active { background: #1f2430; color: var(--fg); }
+.nav-item--active { background: var(--nav-active-bg); color: var(--fg); }
 .nav-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav-meta { font-size: 11px; color: var(--muted); flex: none; }
 .nav-item--chapter { padding-left: 16px; }
@@ -68,11 +129,11 @@ body {
   border: 1px solid transparent;
 }
 .chip--muted { color: var(--muted); border-color: var(--border); }
-.chip--info { color: var(--info); border-color: #1f3b5c; background: #16293d; }
-.chip--warn { color: var(--warn); border-color: #4a3a12; background: #2c2410; }
-.chip--ok { color: var(--ok); border-color: #1c4029; background: #12291b; }
-.chip--pause { color: var(--pause); border-color: #2b2f5c; background: #1c1f3d; }
-.chip--err { color: var(--err); border-color: #5c1f1f; background: #3a1414; }
+.chip--info { color: var(--info); border-color: var(--chip-info-bd); background: var(--chip-info-bg); }
+.chip--warn { color: var(--warn); border-color: var(--chip-warn-bd); background: var(--chip-warn-bg); }
+.chip--ok { color: var(--ok); border-color: var(--chip-ok-bd); background: var(--chip-ok-bg); }
+.chip--pause { color: var(--pause); border-color: var(--chip-pause-bd); background: var(--chip-pause-bg); }
+.chip--err { color: var(--err); border-color: var(--chip-err-bd); background: var(--chip-err-bg); }
 
 /* 中栏 */
 .center h2 { font-size: 16px; color: var(--fg); text-transform: none; letter-spacing: 0; margin-bottom: 4px; }
@@ -106,7 +167,7 @@ body {
 }
 .btn:hover:not(:disabled) { border-color: var(--accent); }
 .btn:disabled { opacity: .5; cursor: default; }
-.btn--primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn--primary { background: var(--accent-fill); border-color: var(--accent-fill); color: var(--accent-fg); }
 
 .callout {
   margin: 16px 0; padding: 10px 12px; border-left: 3px solid var(--info);
@@ -123,11 +184,11 @@ body {
 .tool-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
 .tool-name { font-family: Consolas, monospace; font-size: 11px; flex: 1; }
 .perm { font-size: 10px; padding: 0 5px; border-radius: 3px; flex: none; letter-spacing: .02em; }
-.perm--read { color: var(--info); background: #16293d; }
-.perm--propose_write { color: var(--warn); background: #2c2410; }
-.perm--write { color: var(--ok); background: #12291b; }
-.perm--commit { color: var(--pause); background: #1c1f3d; }
-.perm--admin { color: var(--err); background: #3a1414; }
+.perm--read { color: var(--info); background: var(--chip-info-bg); }
+.perm--propose_write { color: var(--warn); background: var(--chip-warn-bg); }
+.perm--write { color: var(--ok); background: var(--chip-ok-bg); }
+.perm--commit { color: var(--pause); background: var(--chip-pause-bg); }
+.perm--admin { color: var(--err); background: var(--chip-err-bg); }
 .perm-summary { font-size: 11px; color: var(--muted); }
 .perm-line { padding: 2px 0; }
 .diag {
@@ -152,7 +213,7 @@ body {
 
 /* 演示按钮：表达"这个操作会被拒绝"，不是真危险操作，故用柔和色 */
 .btn--danger-soft {
-  background: #2c2410; border-color: #4a3a12; color: var(--warn);
+  background: var(--chip-warn-bg); border-color: var(--chip-warn-bd); color: var(--warn);
   font-size: 11px; padding: 5px 10px;
 }
 .btn--danger-soft:hover:not(:disabled) { border-color: var(--warn); }
@@ -161,10 +222,10 @@ body {
    这个类此前被 panels.js 的"执行恢复"按钮用了，但**从未定义过** ——
    危险按钮和普通按钮长得一模一样，作者看不出哪个点了会丢数据。 */
 .btn--danger {
-  background: #3a1a1a; border-color: #6b2b2b; color: #e88;
+  background: var(--danger-bg); border-color: var(--danger-bd); color: var(--danger-fg);
   font-weight: 600;
 }
-.btn--danger:hover:not(:disabled) { border-color: var(--danger, #d9534f); background: #451f1f; }
+.btn--danger:hover:not(:disabled) { border-color: var(--err); background: var(--danger-bg-hover); }
 .btn--danger:disabled { opacity: .45; cursor: not-allowed; }
 
 /* 模型自报偏离计划（P1）：只作复核提示，不是正文的一部分 */
@@ -229,7 +290,7 @@ body {
 }
 /* 超字数时必须显眼 —— 它是"还不能确认"的唯一原因 */
 .issue-src--err {
-  color: var(--danger, #d9534f);
+  color: var(--err);
 }
 .tag {
   flex: 0 0 auto;
@@ -237,12 +298,12 @@ body {
   padding: 1px 6px;
   border-radius: 3px;
 }
-.tag--err { background: #7f1d1d; color: #fecaca; }
-.tag--warn { background: #78350f; color: #fed7aa; }
+.tag--err { background: var(--tag-err-bg); color: var(--tag-err-fg); }
+.tag--warn { background: var(--tag-warn-bg); color: var(--tag-warn-fg); }
 
 /* 门禁预检结果（STEP 8） */
-.perm-line--ok { color: #4ade80; }
-.perm-line--err { color: #fca5a5; }
+.perm-line--ok { color: var(--perm-ok-fg); }
+.perm-line--err { color: var(--perm-err-fg); }
 
 /* 检索输入与小按钮（补缺口） */
 .input {
@@ -418,9 +479,9 @@ body {
    它只是不可逆地推进状态。所以用实心强调 + 上浮，而非 danger 的边框样式，
    两者外观不同，作者不会把"提交"当成"删除"。 */
 .btn--commit {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
+  color: var(--accent-fg);
   font-weight: 600;
 }
 .btn--commit:hover { filter: brightness(1.12); }

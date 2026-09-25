@@ -24,6 +24,19 @@
  * ⚠ 第 1 步**不可跳过**：用一个损坏的备份去覆盖好数据，
  *   是这类功能能造成的最严重损失。校验失败必须在**任何写入之前**中止。
  *
+ * ## ⚠⚠ 恢复**不碰**目标项目的 `workspace/`（未提交正文的保命线）
+ *
+ * 导出**不含** `workspace/`（见 export-project.ts：它是"未验证中间产物"）。
+ * 但 M3 之后 `workspace/chapter-NNN/manuscript.md` 是**用户亲手写的正文**，
+ * 不是中间产物 —— 这个分类在 M3 之前成立，之后不成立。
+ *
+ * 因此恢复时必须把 `workspace/` 从"移走"里**排除**，否则：
+ * 用户的未提交正文、自动保存副本、全部版本节点会在恢复后**静默消失**
+ * （恢复成功、不报错、用户以为只是导入了备份）。
+ *
+ * 实现见 `preserveWorkspace()` —— 在 rename 之前先把它挪到一旁，
+ * 复制备份之后再挪回来。
+ *
  * ## ⚠ 为什么不自动重建 FTS 到备份里
  *
  * 备份**不含** FTS 索引（§59 说它是派生数据）。恢复后必须重建，
@@ -86,6 +99,67 @@ export interface RestoreResult {
 /** 恢复流程中「现状」被移到的目录名后缀 */
 const PRE_RESTORE_PREFIX = '.pre-restore-';
 
+/** 恢复过程中暂存目标项目 `workspace/` 的目录名后缀 */
+const WORKSPACE_STASH_PREFIX = '.pre-restore-workspace-';
+
+interface WorkspaceStash {
+  /** 原始位置（目标项目下的 workspace/） */
+  readonly original: string;
+  /** 暂存位置（挪到一旁时用；未挪动过为 null） */
+  readonly stashedAt: string | null;
+}
+
+/**
+ * 把目标项目的 `workspace/`（用户未提交正文的保命线）从"整体移走"里排除。
+ *
+ * 返回句柄，复制完备份后用 `restoreWorkspace()` 挪回原位。
+ *
+ * ⚠ 任何一步失败都必须**如实返回 warnings**，不能静默继续 ——
+ *   静默继续的后果是用户正文消失且无人知晓。
+ */
+function preserveWorkspace(targetDir: string, logger: Logger, warnings: string[]): WorkspaceStash {
+  const original = join(targetDir, PROJECT_DIRS.workspace);
+  if (!existsSync(original)) return { original, stashedAt: null };
+
+  const stashedAt = `${targetDir}${WORKSPACE_STASH_PREFIX}${stamp()}`;
+  try {
+    renameSync(original, stashedAt);
+    logger.info('已暂存目标项目的 workspace/（未提交正文，恢复后挪回）', { stashedAt });
+    return { original, stashedAt };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    warnings.push(
+      `无法暂存目标项目的 ${PROJECT_DIRS.workspace}/（${msg}）：` +
+        '它里面有**未提交的正文**，而备份不含这部分。' +
+        '请先关闭该项目后重试，否则恢复会让这些内容消失。',
+    );
+    return { original, stashedAt: null };
+  }
+}
+
+/** 把 `preserveWorkspace()` 挪走的 workspace/ 放回原位 */
+function restoreWorkspace(stash: WorkspaceStash, logger: Logger, warnings: string[]): void {
+  if (stash.stashedAt === null) return;
+
+  // 备份里理论不含 workspace/，但若真的含了，挪回会覆盖 —— 如实报告。
+  if (existsSync(stash.original)) {
+    warnings.push(
+      `${PROJECT_DIRS.workspace}/ 在恢复过程中被创建，暂存的未提交正文**未**挪回。` +
+        `内容保留在：${stash.stashedAt}`,
+    );
+    return;
+  }
+  try {
+    renameSync(stash.stashedAt, stash.original);
+    logger.info('已把未提交正文挪回', { to: stash.original });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    warnings.push(
+      `未提交正文**未能**挪回原位（${msg}）。内容保留在：${stash.stashedAt}，请手动移回。`,
+    );
+  }
+}
+
 export function restoreBackup(opts: RestoreOptions): RestoreResult {
   const { backupDir, targetDir, logger } = opts;
   const warnings: string[] = [];
@@ -119,6 +193,7 @@ export function restoreBackup(opts: RestoreOptions): RestoreResult {
 
   // ── 2. 目标已存在 → 检查是否允许覆盖，并先把现状移走 ──
   let previousMovedTo: string | null = null;
+  let stash: WorkspaceStash = { original: join(targetDir, PROJECT_DIRS.workspace), stashedAt: null };
   const targetExists = existsSync(targetDir) && readdirSync(targetDir).length > 0;
   if (targetExists) {
     if (opts.overwrite !== true) {
@@ -129,10 +204,17 @@ export function restoreBackup(opts: RestoreOptions): RestoreResult {
           '覆盖现有项目必须显式传 overwrite=true（避免误操作丢失数据）',
       );
     }
+    // ⚠ 先把 workspace/ 挪出目标目录，再整体移走 ——
+    //   否则用户的未提交正文会跟着 pre-restore 目录一起"消失"
+    //   （恢复成功、不报错，用户以为只是导入了备份）。
+    stash = preserveWorkspace(targetDir, logger, warnings);
+
     previousMovedTo = `${targetDir}${PRE_RESTORE_PREFIX}${stamp()}`;
     try {
       renameSync(targetDir, previousMovedTo);
     } catch (e) {
+      // 整体移走失败 → 把刚挪开的 workspace/ 放回去，保持现状原样
+      restoreWorkspace(stash, logger, warnings);
       // ⚠ Windows 上**不能重命名正在打开的项目目录**：数据库文件
       //   （project.db / -wal / -shm）被持有句柄时 rename 会报 EPERM。
       //
@@ -166,6 +248,9 @@ export function restoreBackup(opts: RestoreOptions): RestoreResult {
       filter: (s) => !s.endsWith(`${sep}manifest.json`),
     });
 
+    // ── 3b. 把未提交正文挪回原位 ──
+    restoreWorkspace(stash, logger, warnings);
+
     // ── 4. 重建 FTS（§58 的必要一步）──
     let ftsRebuilt: { chapters: number; memories: number } | null = null;
     if (opts.tokenizer) {
@@ -197,6 +282,9 @@ export function restoreBackup(opts: RestoreOptions): RestoreResult {
     const msg = e instanceof Error ? e.message : String(e);
     logger.error('恢复失败，尝试回滚', e, { targetDir, previousMovedTo });
 
+    // ⚠ 顺序要紧：先把 targetDir 还原成"恢复前那棵树"，**再**把正文挪回。
+    //   反过来（先挪回、后 rename）会被 rename 把正文一起带走 ——
+    //   挪回的位置正好在要被替换掉的 targetDir 里面。
     if (previousMovedTo) {
       try {
         rmSync(targetDir, { recursive: true, force: true });
@@ -219,6 +307,9 @@ export function restoreBackup(opts: RestoreOptions): RestoreResult {
         };
       }
     }
+
+    // 现状已还原（或本就无需还原）→ 把未提交正文挪回原位
+    restoreWorkspace(stash, logger, warnings);
 
     return {
       ok: false,
