@@ -17,7 +17,7 @@
  *
  * 所以：任何写 memory_fts 的路径都必须经过本类。
  */
-import { Logger } from '@nwa/core';
+import { Logger, chapterRel } from '@nwa/core';
 import type { Repositories, FtsIndex } from '@nwa/storage';
 
 export interface ReindexResult {
@@ -64,7 +64,7 @@ export class SummaryIndexer {
         itemId: `summary_${c.id}`,
         bookId,
         itemType: 'SUMMARY',
-        sourceRef: c.body_path ?? `chapters/${String(c.chapter_number).padStart(3, '0')}.md`,
+        sourceRef: c.body_path ?? chapterRel(bookId, c.chapter_number),
         // 章节号一并写入，便于检索结果排序与展示
         text: `第 ${c.chapter_number} 章 ${summary}`,
       });
@@ -113,7 +113,7 @@ export class SummaryIndexer {
       itemId,
       bookId: chapter.book_id,
       itemType: 'SUMMARY',
-      sourceRef: chapter.body_path ?? `chapters/${String(chapter.chapter_number).padStart(3, '0')}.md`,
+      sourceRef: chapter.body_path ?? chapterRel(chapter.book_id, chapter.chapter_number),
       text: `第 ${chapter.chapter_number} 章 ${chapter.summary}`,
     });
     return { indexed: true };

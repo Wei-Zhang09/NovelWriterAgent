@@ -209,6 +209,7 @@ export function createAllTools(
       readonly db: import('@nwa/storage').Database;
       readonly rootDir: string;
       readonly readWorkspaceText: (
+        bookId: string,
         chapterNumber: number,
         name: CommitSourceKey,
       ) => string | null;

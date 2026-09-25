@@ -32,11 +32,11 @@ afterEach(() => {
   }
 });
 
-function meta() {
+function meta(book = bookId()) {
   return {
     id: projectId(),
     name: '契约测试',
-    bookId: bookId(),
+    bookId: book,
     title: '书',
     createdAt: now(),
     schemaVersion: '0001_init',
@@ -99,20 +99,30 @@ describe('项目目录脚手架', () => {
 });
 
 describe('路径辅助函数的固定形状', () => {
-  it('章节 / 摘要 / 工作区路径符合契约', () => {
-    const p = projectPaths('D:/demo/book');
-    expect(p.chapter(1).replace(/\\/g, '/')).toMatch(/chapters\/001\.md$/);
-    expect(p.chapter(31).replace(/\\/g, '/')).toMatch(/chapters\/031\.md$/);
-    expect(p.summary(7).replace(/\\/g, '/')).toMatch(/summaries\/007\.md$/);
-    expect(p.workspace(4).replace(/\\/g, '/')).toMatch(/workspace\/chapter-004$/);
+  it('章节 / 摘要 / 工作区路径符合契约（按书隔离）', () => {
+    const p = projectPaths('D:/demo/book', 'book_x');
+    // ⚠ 必须断言到 books/<bookId>/ 这一层：只匹配 /chapters\/001\.md$/
+    //   对「有无书维度」两种实现都成立 —— 那正是 P0-1 逃过测试的原因。
+    expect(p.chapter(1).replace(/\\/g, '/')).toMatch(/books\/book_x\/chapters\/001\.md$/);
+    expect(p.chapter(31).replace(/\\/g, '/')).toMatch(/books\/book_x\/chapters\/031\.md$/);
+    expect(p.summary(7).replace(/\\/g, '/')).toMatch(/books\/book_x\/summaries\/007\.md$/);
+    expect(p.workspace(4).replace(/\\/g, '/')).toMatch(/books\/book_x\/workspace\/chapter-004$/);
+  });
+
+  it('⚠ 两本书的同章号路径必须不同（P0-1 回归守卫）', () => {
+    const a = projectPaths('D:/demo/book', 'book_aaa');
+    const b = projectPaths('D:/demo/book', 'book_bbb');
+    expect(a.chapter(1)).not.toBe(b.chapter(1));
+    expect(a.summary(1)).not.toBe(b.summary(1));
+    expect(a.workspace(1)).not.toBe(b.workspace(1));
   });
 
   it('工作区内 10 个中间产物文件路径固定', () => {
-    const p = projectPaths('D:/demo/book');
+    const p = projectPaths('D:/demo/book', 'book_x');
     expect(WORKSPACE_FILES).toHaveLength(10);
     for (const f of WORKSPACE_FILES) {
       expect(p.workspaceFile(3, f).replace(/\\/g, '/')).toMatch(
-        new RegExp(`workspace/chapter-003/${f.replace('.', '\\.')}$`),
+        new RegExp(`books/book_x/workspace/chapter-003/${f.replace('.', '\\.')}$`),
       );
     }
   });
@@ -128,29 +138,29 @@ describe('路径辅助函数的固定形状', () => {
 describe('章节工作区', () => {
   it('ensureChapterWorkspace 创建并返回目录，可重复调用', () => {
     const root = tmp();
-    scaffoldProjectDir(root, meta());
-    const d1 = ensureChapterWorkspace(root, 5);
+    scaffoldProjectDir(root, meta('book_x'));
+    const d1 = ensureChapterWorkspace(root, 'book_x', 5);
     expect(existsSync(d1)).toBe(true);
-    const d2 = ensureChapterWorkspace(root, 5);
+    const d2 = ensureChapterWorkspace(root, 'book_x', 5);
     expect(d2).toBe(d1);
   });
 
   it('不同章节使用不同工作区（隔离性）', () => {
     const root = tmp();
-    scaffoldProjectDir(root, meta());
-    ensureChapterWorkspace(root, 1);
-    ensureChapterWorkspace(root, 2);
-    const ws = readdirSync(join(root, PROJECT_DIRS.workspace)).sort();
+    scaffoldProjectDir(root, meta('book_x'));
+    ensureChapterWorkspace(root, 'book_x', 1);
+    ensureChapterWorkspace(root, 'book_x', 2);
+    const ws = readdirSync(join(root, PROJECT_DIRS.books, 'book_x', 'workspace')).sort();
     expect(ws).toEqual(['chapter-001', 'chapter-002']);
   });
 
   it('⚠ 工作区与正式章节目录分离（未验证正文不得进 chapters/）', () => {
     const root = tmp();
-    scaffoldProjectDir(root, meta());
-    ensureChapterWorkspace(root, 1);
-    writeFileSync(projectPaths(root).workspaceFile(1, 'draft.md'), '草稿内容', 'utf8');
-    // 草稿存在于 workspace，但 chapters/ 仍为空
-    expect(readdirSync(join(root, PROJECT_DIRS.chapters))).toHaveLength(0);
+    scaffoldProjectDir(root, meta('book_x'));
+    ensureChapterWorkspace(root, 'book_x', 1);
+    writeFileSync(projectPaths(root, 'book_x').workspaceFile(1, 'draft.md'), '草稿内容', 'utf8');
+    // 草稿存在于 workspace，但正式 chapters/ 仍为空
+    expect(readdirSync(join(root, PROJECT_DIRS.books, 'book_x', 'chapters'))).toHaveLength(0);
   });
 });
 

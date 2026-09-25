@@ -74,7 +74,7 @@ try {
     const summary = `第 ${n} 章：张三继续前行。`;
 
     // 工作区产物（模拟 Writer 的输出）
-    const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: n, logger });
+    const ws = new ChapterWorkspace({ rootDir: dir, bookId: bid, chapterNumber: n, logger });
     ws.ensure();
     ws.writeText('draft', body);
 

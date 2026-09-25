@@ -49,8 +49,15 @@ import {
 } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, relative, sep } from 'node:path';
-import { Logger } from '@nwa/core';
-import { PROJECT_DB_FILE, PROJECT_DIRS, PROJECT_META_FILE, projectPaths } from '@nwa/storage';
+import { Logger, bookRootRel } from '@nwa/core';
+import {
+  Database,
+  MIGRATIONS,
+  PROJECT_DB_FILE,
+  PROJECT_DIRS,
+  PROJECT_META_FILE,
+  projectLevelPaths,
+} from '@nwa/storage';
 
 /** 导出清单 */
 export interface ExportManifest {
@@ -87,7 +94,19 @@ export const EXPORT_FORMAT_VERSION = 1;
  * 见文件头说明：这些都是 §59 定义的"派生"或"未验证中间产物"。
  */
 const SKIP_DIRS: readonly string[] = [
-  PROJECT_DIRS.workspace, // 中间产物，未验证
+  /**
+   * ⚠ 跳过整个 `books/` 而不是 `workspace/`（P0-1 起布局按书隔离）。
+   *
+   *   旧布局里 `workspace/` 在项目根，跳过它不会碰到正文。
+   *   新布局下 `workspace/` 在 `books/<bookId>/` 里，若仍按
+   *   「跳过名为 workspace 的目录」处理，`cpSync` 的 filter 会把
+   *   **整个 books/ 树里所有 workspace 目录**都跳过 —— 同时 chapters/
+   *   与 summaries/ 又被 `books/` 这一层带进来，结果就是
+   *   "正文导出了、但每个 workspace 都被摘掉"，语义含糊。
+   *   直接跳过 `books/`，再由下面逐书精确拷贝需要的那两个目录，
+   *   语义就是明确的："只导出 chapters 与 summaries，不导出中间产物"。
+   */
+  PROJECT_DIRS.books,
   PROJECT_DIRS.exports, // 导出目录本身（防递归）
   PROJECT_DIRS.backups, // 备份目录本身（防递归）
 ];
@@ -117,7 +136,7 @@ export interface ExportResult {
  */
 export function exportProject(opts: ExportOptions): ExportResult {
   const { rootDir, logger } = opts;
-  const paths = projectPaths(rootDir);
+  const paths = projectLevelPaths(rootDir);
 
   if (!existsSync(rootDir)) {
     throw new Error(`项目目录不存在：${rootDir}`);
@@ -145,9 +164,22 @@ export function exportProject(opts: ExportOptions): ExportResult {
   //   用 PROJECT_DIRS 拼 —— 不要把目录名硬编码成字符串（契约变更会漏改）。
   const dirOf = (d: string) => join(rootDir, d);
 
-  // ── 真源：正文与摘要（Markdown）──
-  copyIfExists(dirOf(PROJECT_DIRS.chapters), join(outDir, PROJECT_DIRS.chapters), excluded);
-  copyIfExists(dirOf(PROJECT_DIRS.summaries), join(outDir, PROJECT_DIRS.summaries), excluded);
+  // ── 真源：正文与摘要（Markdown，**按书**）──
+  //
+  // ⚠ 布局是 `books/<bookId>/chapters/001.md`（P0-1）。导出物保留同样的
+  //   结构，因此恢复后路径天然对得上，不需要转换。
+  //   书列表从 DB 读 —— 不扫目录：磁盘上可能有已被删除的书留下的空目录，
+  //   而 DB 才是"这本书存在"的权威。
+  const books = listBooks(paths.db);
+  if (books.length === 0) {
+    excluded.push(`${PROJECT_DIRS.books}/（项目里还没有书）`);
+  }
+  for (const b of books) {
+    const from = join(rootDir, bookRootRel(b.id));
+    const to = join(outDir, bookRootRel(b.id));
+    copyIfExists(join(from, 'chapters'), join(to, 'chapters'), excluded, SKIP_DIRS_PER_BOOK);
+    copyIfExists(join(from, 'summaries'), join(to, 'summaries'), excluded, SKIP_DIRS_PER_BOOK);
+  }
 
   // ── 用户资产：技能 ──
   copyIfExists(dirOf(PROJECT_DIRS.skills), join(outDir, PROJECT_DIRS.skills), excluded);
@@ -161,7 +193,7 @@ export function exportProject(opts: ExportOptions): ExportResult {
 
   // ── 派生数据：明确不导出，并如实声明 ──
   excluded.push(
-    `${PROJECT_DIRS.workspace}/（未验证的中间产物，不属真源）`,
+    `${PROJECT_DIRS.books}/<bookId>/workspace/（未验证的中间产物，不属真源）`,
     'FTS 索引（§59：派生数据，恢复后重建）',
   );
 
@@ -259,16 +291,40 @@ export function verifyExport(dir: string): {
 
 // ── 内部辅助 ──
 
-function copyIfExists(src: string, dest: string, excluded: string[]): void {
+function copyIfExists(
+  src: string,
+  dest: string,
+  excluded: string[],
+  skip: readonly string[] = SKIP_DIRS,
+): void {
   if (!existsSync(src)) {
     excluded.push(`${relative(process.cwd(), src)}（不存在，跳过）`);
     return;
   }
   cpSync(src, dest, {
     recursive: true,
-    filter: (s) => !SKIP_DIRS.some((d) => s.includes(`${sep}${d}${sep}`) || s.endsWith(`${sep}${d}`)),
+    filter: (s) =>
+      !skip.some((d) => s.includes(`${sep}${d}${sep}`) || s.endsWith(`${sep}${d}`)),
   });
 }
+
+/**
+ * 逐书拷贝目录时用的跳过规则。
+ *
+ * ⚠ **不能**用 SKIP_DIRS：它含 `books`（防递归与整体跳过中间产物），
+ *   而逐书拷贝的源路径本身就长在 `books/<bookId>/` 下面 ——
+ *   套用 SKIP_DIRS 会把要拷的 `chapters` 一并过滤掉，
+ *   结果是"导出物里什么都没有"，而导出本身报成功。
+ *
+ *   逐书拷贝时只需要排除「中间产物」与「递归目录」：
+ *   - workspace：未验证中间产物（§59）
+ *   - exports / backups：理论不在书目录下，但防递归
+ */
+const SKIP_DIRS_PER_BOOK: readonly string[] = [
+  PROJECT_DIRS.workspace,
+  PROJECT_DIRS.exports,
+  PROJECT_DIRS.backups,
+];
 
 /** 递归收集目录下的全部文件（相对路径，用 / 分隔保证跨平台一致） */
 function collectFiles(dir: string, base = dir, out: string[] = []): string[] {
@@ -281,6 +337,21 @@ function collectFiles(dir: string, base = dir, out: string[] = []): string[] {
     }
   }
   return out.sort();
+}
+
+/**
+ * 读出项目里所有书的 id（导出用）。
+ *
+ * ⚠ 从 DB 读而不是扫 `books/` 目录：磁盘上可能残留已删除书的空目录，
+ *   而"这本书存在"的权威是 DB。扫目录会导出幽灵书。
+ */
+function listBooks(dbPath: string): { id: string }[] {
+  const db = new Database({ path: dbPath, migrations: MIGRATIONS });
+  try {
+    return db.all<{ id: string }>('SELECT id FROM books ORDER BY created_at');
+  } finally {
+    db.close();
+  }
 }
 
 function readProjectId(rootDir: string): string {

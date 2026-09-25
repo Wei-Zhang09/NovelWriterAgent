@@ -30,7 +30,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { Logger } from '@nwa/core';
+import { Logger, chapterRel, workspaceRel } from '@nwa/core';
 import { createCommitTools, COMMIT_SOURCE_ORDER, COMMIT_SOURCE_FILE } from '@nwa/harness';
 import type { CommitSourceKey } from '@nwa/harness';
 import { createTestProject, makeChapter, type TestProject } from './helpers.js';
@@ -53,13 +53,18 @@ afterEach(() => {
 });
 
 /** 在工作区写一份产物（模拟 Writer / Agent / 用户分别写过） */
-function writeWorkspace(chapterNumber: number, file: string, text: string): void {
-  const d = join(dir, 'workspace', `chapter-${String(chapterNumber).padStart(3, '0')}`);
+function writeWorkspace(
+  bookId: string,
+  chapterNumber: number,
+  file: string,
+  text: string,
+): void {
+  const d = join(dir, workspaceRel(bookId, chapterNumber));
   mkdirSync(d, { recursive: true });
   writeFileSync(join(d, file), text, 'utf8');
 }
 
-const chapterFile = (n = 1) => join(dir, 'chapters', `${String(n).padStart(3, '0')}.md`);
+const chapterFile = (bookId: string, n = 1) => join(dir, chapterRel(bookId, n));
 
 /** 造一套提交工具，readWorkspaceText 从真实磁盘读（与 core-process 同实现） */
 function toolsOf(proj: TestProject) {
@@ -68,8 +73,8 @@ function toolsOf(proj: TestProject) {
     repos: proj.repos,
     rootDir: dir,
     logger,
-    readWorkspaceText: (chapterNumber: number, name: CommitSourceKey) => {
-      const d = join(dir, 'workspace', `chapter-${String(chapterNumber).padStart(3, '0')}`);
+    readWorkspaceText: (bookId: string, chapterNumber: number, name: CommitSourceKey) => {
+      const d = join(dir, workspaceRel(bookId, chapterNumber));
       const p = join(d, COMMIT_SOURCE_FILE[name]);
       return existsSync(p) ? readFileSync(p, 'utf8') : null;
     },
@@ -103,9 +108,9 @@ describe('⚠ 提交源优先级链：manuscript ?? revision ?? draft', () => {
     const chapter = makeChapter(proj, 1);
     passReview(proj, chapter.id);
 
-    writeWorkspace(1, 'draft.md', AI_DRAFT);
-    writeWorkspace(1, 'revision.md', AI_REVISION);
-    writeWorkspace(1, 'manuscript.md', USER_TEXT);
+    writeWorkspace(proj.bookId, 1, 'draft.md', AI_DRAFT);
+    writeWorkspace(proj.bookId, 1, 'revision.md', AI_REVISION);
+    writeWorkspace(proj.bookId, 1, 'manuscript.md', USER_TEXT);
 
     const tools = toolsOf(proj);
     const commit = tools.find((x) => x.name === 'workspace.commit')!;
@@ -113,7 +118,7 @@ describe('⚠ 提交源优先级链：manuscript ?? revision ?? draft', () => {
 
     expect(report.ok).toBe(true);
     // ⚠ 读**落盘文件**而不是返回值：用户真正关心的是正史里是什么
-    const written = readFileSync(chapterFile(1), 'utf8');
+    const written = readFileSync(chapterFile(proj.bookId, 1), 'utf8');
     expect(written).toContain(USER_TEXT);
     // 反向：AI 的修订稿**不得**出现在正史里
     expect(written).not.toContain(AI_REVISION);
@@ -126,14 +131,14 @@ describe('⚠ 提交源优先级链：manuscript ?? revision ?? draft', () => {
     const chapter = makeChapter(proj, 1);
     passReview(proj, chapter.id);
 
-    writeWorkspace(1, 'draft.md', AI_DRAFT);
-    writeWorkspace(1, 'revision.md', AI_REVISION);
+    writeWorkspace(proj.bookId, 1, 'draft.md', AI_DRAFT);
+    writeWorkspace(proj.bookId, 1, 'revision.md', AI_REVISION);
 
     const tools = toolsOf(proj);
     const commit = tools.find((x) => x.name === 'workspace.commit')!;
     commit.execute({ chapterId: chapter.id, commitMode: 'FORCE', forceReason: '测试' });
 
-    const written = readFileSync(chapterFile(1), 'utf8');
+    const written = readFileSync(chapterFile(proj.bookId, 1), 'utf8');
     expect(written).toContain(AI_REVISION);
     expect(written).not.toContain(AI_DRAFT);
   });
@@ -143,13 +148,13 @@ describe('⚠ 提交源优先级链：manuscript ?? revision ?? draft', () => {
     t = proj;
     const chapter = makeChapter(proj, 1);
     passReview(proj, chapter.id);
-    writeWorkspace(1, 'draft.md', AI_DRAFT);
+    writeWorkspace(proj.bookId, 1, 'draft.md', AI_DRAFT);
 
     const tools = toolsOf(proj);
     const commit = tools.find((x) => x.name === 'workspace.commit')!;
     commit.execute({ chapterId: chapter.id, commitMode: 'FORCE', forceReason: '测试' });
 
-    expect(readFileSync(chapterFile(1), 'utf8')).toContain(AI_DRAFT);
+    expect(readFileSync(chapterFile(proj.bookId, 1), 'utf8')).toContain(AI_DRAFT);
   });
 
   it('⚠ 三份都没有 → 拒绝提交（不编造正文）', () => {
@@ -179,9 +184,9 @@ describe('⚠ 提交源被记录（可验证 §15「AI 不覆盖用户正文」�
     t = proj;
     const chapter = makeChapter(proj, 1);
     passReview(proj, chapter.id);
-    writeWorkspace(1, 'draft.md', AI_DRAFT);
-    writeWorkspace(1, 'revision.md', AI_REVISION);
-    writeWorkspace(1, 'manuscript.md', USER_TEXT);
+    writeWorkspace(proj.bookId, 1, 'draft.md', AI_DRAFT);
+    writeWorkspace(proj.bookId, 1, 'revision.md', AI_REVISION);
+    writeWorkspace(proj.bookId, 1, 'manuscript.md', USER_TEXT);
 
     const tools = toolsOf(proj);
     const commit = tools.find((x) => x.name === 'workspace.commit')!;
@@ -199,7 +204,7 @@ describe('⚠ 提交源被记录（可验证 §15「AI 不覆盖用户正文」�
     t = proj;
     const chapter = makeChapter(proj, 1);
     passReview(proj, chapter.id);
-    writeWorkspace(1, 'revision.md', AI_REVISION);
+    writeWorkspace(proj.bookId, 1, 'revision.md', AI_REVISION);
 
     const tools = toolsOf(proj);
     const commit = tools.find((x) => x.name === 'workspace.commit')!;
@@ -218,8 +223,8 @@ describe('⚠ 提交源被记录（可验证 §15「AI 不覆盖用户正文」�
     t = proj;
     const chapter = makeChapter(proj, 1);
     passReview(proj, chapter.id);
-    writeWorkspace(1, 'draft.md', AI_DRAFT);
-    writeWorkspace(1, 'manuscript.md', USER_TEXT);
+    writeWorkspace(proj.bookId, 1, 'draft.md', AI_DRAFT);
+    writeWorkspace(proj.bookId, 1, 'manuscript.md', USER_TEXT);
 
     const tools = toolsOf(proj);
     const dry = tools.find((x) => x.name === 'workspace.proposeCommit')!;
@@ -243,7 +248,7 @@ describe('⚠ Save ≠ Commit（manuscript 存在本身不改变门禁）', () =
     t = proj;
     const chapter = makeChapter(proj, 1);
     passReview(proj, chapter.id);
-    writeWorkspace(1, 'manuscript.md', USER_TEXT);
+    writeWorkspace(proj.bookId, 1, 'manuscript.md', USER_TEXT);
 
     // 造一条 BLOCKING 审阅
     proj.repos.chapters.saveReview(

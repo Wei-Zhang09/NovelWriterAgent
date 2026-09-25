@@ -29,7 +29,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { Logger } from '@nwa/core';
+import { Logger , workspaceRel } from '@nwa/core';
 import { createCommitTools } from '@nwa/harness';
 import type { AnyToolDefinition } from '@nwa/shared';
 import { createTestProject, makeChapter, type TestProject } from './helpers.js';
@@ -63,8 +63,8 @@ function setup(chapterNumber = 1, opts: { summary?: string | null } = {}) {
   const proj = t!;
   const ch = makeChapter(proj, chapterNumber, 'READY_TO_COMMIT');
 
-  // 工作区草稿
-  const wsDir = join(dir, 'workspace', `chapter-${String(chapterNumber).padStart(3, '0')}`);
+  // 工作区草稿（按书隔离，P0-1）
+  const wsDir = join(dir, workspaceRel(proj.bookId, chapterNumber));
   mkdirSync(wsDir, { recursive: true });
   writeFileSync(join(wsDir, 'draft.md'), '正文正文正文', 'utf8');
 
@@ -84,7 +84,7 @@ function setup(chapterNumber = 1, opts: { summary?: string | null } = {}) {
     repos: proj.repos,
     rootDir: dir,
     logger,
-    readWorkspaceText: (_n, name) => (name === 'draft' ? '正文正文正文' : null),
+    readWorkspaceText: (_b, _n, name) => (name === 'draft' ? '正文正文正文' : null),
   });
   const commitTool = tools.find((x) => x.name === 'workspace.commit')!;
   return { ch, commitTool, repos: proj.repos };

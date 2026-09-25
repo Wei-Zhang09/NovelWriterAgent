@@ -37,6 +37,7 @@ import {
   perSceneWords,
   checkWordCountDeviation,
   sha256Text,
+  chapterRel,
 } from '@nwa/core';
 import type { Repositories, Database } from '@nwa/storage';
 import { ManuscriptRepository } from '@nwa/storage';
@@ -255,9 +256,16 @@ function assertSettingsGate(deps: WorkflowServicesDeps, bookId: string): void {
 export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflowServices {
   const log = deps.logger.child('workflow-services');
 
-  const workspaceFor = (chapterNumber: number): ChapterWorkspace => {
+  /**
+   * 章节工作区（按书隔离，P0-1）。
+   *
+   * ⚠ `bookId` 必填：工作区路径是 `books/<bookId>/workspace/chapter-NNN`，
+   *   不带书就会落到别的书的工作区 —— 写 B 书会覆盖 A 书未提交的产物。
+   */
+  const workspaceFor = (bookId: string, chapterNumber: number): ChapterWorkspace => {
     const ws = new ChapterWorkspace({
       rootDir: deps.dir,
+      bookId,
       chapterNumber,
       logger: deps.logger.child('workspace'),
     });
@@ -292,6 +300,8 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
    *   无法解释的现象（作者只会看到版本列表少了几条）。
    */
   const recordVersion = (input: {
+    /** 章节所属的书（版本内容路径按书隔离，P0-1） */
+    bookId: string;
     chapterId: string;
     chapterNumber: number;
     text: string | null;
@@ -301,6 +311,7 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
     if (input.text === null) return;
     try {
       manuscriptRepo().createVersion({
+        bookId: input.bookId,
         chapterId: input.chapterId,
         chapterNumber: input.chapterNumber,
         text: input.text,
@@ -333,13 +344,15 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
    *   （"请先写正文" / "无法做连续性检查"），由调用方决定。
    */
   const readCurrentBody = (
+    bookId: string,
     chapterNumber: number,
   ): { body: string | null; source: string } => {
     return pickCommitSource(
       {
-        readWorkspaceText: (n: number, name: CommitSourceKey) =>
-          workspaceFor(n).readText(name),
+        readWorkspaceText: (b: string, n: number, name: CommitSourceKey) =>
+          workspaceFor(b, n).readText(name),
       },
+      bookId,
       chapterNumber,
     );
   };
@@ -587,7 +600,7 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
         );
       }
 
-      const ws = workspaceFor(ch.chapter_number);
+      const ws = workspaceFor(ch.book_id, ch.chapter_number);
       // ⚠ 必须**真的写文件**，否则下面返回的 planPath 指向一个不存在的
       //   文件 —— 而 workflow_artifacts 会把它当"产物路径"存下来。
       //   实测：plan 阶段标记 DONE 时，工作区目录是空的，plan.json
@@ -642,7 +655,7 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
       if (!plan) {
         throw new AppError(ErrorCode.TOOL_VALIDATION_ERROR, '该章节还没有计划，请先规划');
       }
-      const ws = workspaceFor(ch.chapter_number);
+      const ws = workspaceFor(ch.book_id, ch.chapter_number);
       const { rows: skillRows, genre } = deps.loadSkills();
 
       // ⚠ 角色设定（P2-2）：与 plan stage 共用同一个 helper，
@@ -724,6 +737,7 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
       //   版本必须与**磁盘上的 draft.md 逐字相同**，
       //   否则"版本"与"产物"是两个东西，恢复出来的内容对不上。
       recordVersion({
+        bookId: ch.book_id,
         chapterId,
         chapterNumber,
         text: ws.readText('draft'),
@@ -745,9 +759,9 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
     // 再让模型审阅，两者合并。状态由 issues 机械推导。
     async review(input) {
       const ch = needChapter(deps, input.chapterId);
-      const ws = workspaceFor(ch.chapter_number);
+      const ws = workspaceFor(ch.book_id, ch.chapter_number);
       // ⚠ 检查对象 = 提交对象（M1 / ADR-0008）：读当前正文而非固定读 draft。
-      const current = readCurrentBody(ch.chapter_number);
+      const current = readCurrentBody(ch.book_id, ch.chapter_number);
       const draft = current.body;
       if (draft === null) {
         throw new AppError(
@@ -896,7 +910,7 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
     async revision(input) {
       const ch = needChapter(deps, input.chapterId);
       const model = needModel(deps, '改稿');
-      const ws = workspaceFor(ch.chapter_number);
+      const ws = workspaceFor(ch.book_id, ch.chapter_number);
       const draft = ws.readText('draft');
       if (draft === null) {
         throw new AppError(ErrorCode.WORKSPACE_CORRUPTED, '工作区里没有草稿，无法改稿');
@@ -935,6 +949,7 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
       //   一个"候选版本"，作者显式接受后才会成为新的正文版本。
       //   把 revision 记成版本正是为了让作者能对比与接受。
       recordVersion({
+        bookId: ch.book_id,
         chapterId: ch.id,
         chapterNumber: ch.chapter_number,
         text: ws.readText('revision'),
@@ -953,9 +968,9 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
     // ── 8. 连续性检查 ──
     async continuity(input) {
       const ch = needChapter(deps, input.chapterId);
-      const ws = workspaceFor(ch.chapter_number);
+      const ws = workspaceFor(ch.book_id, ch.chapter_number);
       // ⚠ 检查对象 = 提交对象（M1）：读当前正文，不固定读 draft。
-      const draft = readCurrentBody(ch.chapter_number).body;
+      const draft = readCurrentBody(ch.book_id, ch.chapter_number).body;
       if (draft === null) {
         throw new AppError(ErrorCode.WORKSPACE_CORRUPTED, '工作区里没有草稿，无法做连续性检查');
       }
@@ -1025,11 +1040,11 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
     //   模型既当运动员又当裁判会把"我推断的"当成"我验证过的"。
     async settleState(input) {
       const ch = needChapter(deps, input.chapterId);
-      const ws = workspaceFor(ch.chapter_number);
+      const ws = workspaceFor(ch.book_id, ch.chapter_number);
       // ⚠ 结算对象 = 提交对象（M1）：读当前正文，不固定读 draft。
       //   否则"提议已验证"针对的是 AI 初稿，而提交的是用户手改稿 ——
       //   进 Canon 的状态与正文实际发生的事对不上。
-      const draft = readCurrentBody(ch.chapter_number).body;
+      const draft = readCurrentBody(ch.book_id, ch.chapter_number).body;
       if (draft === null) {
         throw new AppError(
           ErrorCode.WORKSPACE_CORRUPTED,
@@ -1084,7 +1099,7 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
         bookId: ch.book_id,
         extractor,
         proposedFacts: proposedFacts as never,
-        sourceRef: `chapters/${String(ch.chapter_number).padStart(3, '0')}.md`,
+        sourceRef: chapterRel(ch.book_id, ch.chapter_number),
       });
 
       const r = await settlement.settle({
@@ -1135,7 +1150,7 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
     //   summary != empty AND summary_approved == 1，否则拒绝 Commit。
     async readyToCommit(input) {
       const ch = needChapter(deps, input.chapterId);
-      const ws = workspaceFor(ch.chapter_number);
+      const ws = workspaceFor(ch.book_id, ch.chapter_number);
       const missing: string[] = [];
       /**
        * FORCE 模式下被跳过的检查项（**提示**，不阻塞）。
@@ -1243,7 +1258,7 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
       if (ch.status !== 'COMMITTED') {
         problems.push(`章节状态是 ${ch.status}，不是 COMMITTED`);
       }
-      const ws = workspaceFor(ch.chapter_number);
+      const ws = workspaceFor(ch.book_id, ch.chapter_number);
       if (ws.readText('draft') === null) problems.push('工作区草稿丢失');
       return { ok: problems.length === 0, problems };
     },

@@ -30,6 +30,9 @@ import type { ReviewIssue } from '@nwa/shared';
 let dir: string;
 const logger = new Logger('test:reviser', { level: 'error' });
 
+/** 测试用固定书 id（P0-1 起路径按书隔离，工作区必须知道自己在哪本书里） */
+const TEST_BOOK_ID = 'book_test';
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'nwa-rev-'));
 });
@@ -98,7 +101,7 @@ function callerByPass(pass1: unknown, pass2: unknown): RevisionStructuredCaller 
 }
 
 function reviserOf(raw: unknown, n = 1, opts: Partial<{ retryUnresolved: boolean }> = {}) {
-  const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: n, logger });
+  const ws = new ChapterWorkspace({ rootDir: dir, bookId: TEST_BOOK_ID, chapterNumber: n, logger });
   ws.ensure();
   return {
     reviser: new Reviser({ structured: callerReturning(raw), workspace: ws, logger, ...opts }),
@@ -490,7 +493,7 @@ describe('⚠ 关联替换：同一问题多处不一致必须一起改', () => 
 // ══════════════════════════════════════════════════════════
 describe('⚠ 未解决的阻塞问题做第二轮定向重试', () => {
   it('第一轮没解决 → 第二轮解决', async () => {
-    const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
+    const ws = new ChapterWorkspace({ rootDir: dir, bookId: TEST_BOOK_ID, chapterNumber: 1, logger });
     const reviser = new Reviser({
       structured: callerByPass(
         // 第一轮：匹配不到（模型记错原文）
@@ -513,7 +516,7 @@ describe('⚠ 未解决的阻塞问题做第二轮定向重试', () => {
   });
 
   it('两轮都失败 → 如实报告未解决（不假装成功）', async () => {
-    const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
+    const ws = new ChapterWorkspace({ rootDir: dir, bookId: TEST_BOOK_ID, chapterNumber: 1, logger });
     const reviser = new Reviser({
       structured: callerReturning({
         edits: [{ find: '始终匹配不到', replace: 'X', reason: '', issueId: 'ri_1' }],
@@ -536,7 +539,7 @@ describe('⚠ 未解决的阻塞问题做第二轮定向重试', () => {
 
   it('只重试 BLOCKING，不重试 MAJOR（收益低于风险）', async () => {
     let calls = 0;
-    const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
+    const ws = new ChapterWorkspace({ rootDir: dir, bookId: TEST_BOOK_ID, chapterNumber: 1, logger });
     const reviser = new Reviser({
       structured: async (req) => {
         calls++;
@@ -556,7 +559,7 @@ describe('⚠ 未解决的阻塞问题做第二轮定向重试', () => {
 
   it('retryUnresolved=false 时只跑一轮', async () => {
     let calls = 0;
-    const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
+    const ws = new ChapterWorkspace({ rootDir: dir, bookId: TEST_BOOK_ID, chapterNumber: 1, logger });
     const reviser = new Reviser({
       structured: async (req) => {
         calls++;
@@ -577,7 +580,7 @@ describe('⚠ 未解决的阻塞问题做第二轮定向重试', () => {
 
   it('第二轮 prompt 带「这是第二轮」提示', async () => {
     const prompts: string[] = [];
-    const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
+    const ws = new ChapterWorkspace({ rootDir: dir, bookId: TEST_BOOK_ID, chapterNumber: 1, logger });
     const reviser = new Reviser({
       structured: async (req) => {
         prompts.push(req.messages.at(-1)!.content);
@@ -755,7 +758,7 @@ describe('⚠ 绝不覆盖原稿', () => {
 
     const r = await reviser.revise({ chapterNumber: 1, draftText: DRAFT, issues: [issue()] });
 
-    expect(r.revisionPath).toBe(join(dir, 'workspace', 'chapter-001', 'revision.md'));
+    expect(r.revisionPath).toBe(join(dir, 'books', TEST_BOOK_ID, 'workspace', 'chapter-001', 'revision.md'));
     expect(ws.readText('draft')).toBe(DRAFT);
   });
 
@@ -842,7 +845,7 @@ describe('⚠ 绝不覆盖原稿', () => {
 describe('只处理 BLOCKING / MAJOR', () => {
   it('MINOR / NOTE 不触发改稿调用', async () => {
     let called = false;
-    const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
+    const ws = new ChapterWorkspace({ rootDir: dir, bookId: TEST_BOOK_ID, chapterNumber: 1, logger });
     const reviser = new Reviser({
       structured: async () => {
         called = true;
@@ -883,7 +886,7 @@ describe('只处理 BLOCKING / MAJOR', () => {
 describe('Prompt 与契约', () => {
   it('⚠ system 提示要求只输出替换指令、不要全文', async () => {
     let sys = '';
-    const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
+    const ws = new ChapterWorkspace({ rootDir: dir, bookId: TEST_BOOK_ID, chapterNumber: 1, logger });
     const reviser = new Reviser({
       structured: async (req) => {
         sys = req.messages[0]!.content;
@@ -902,7 +905,7 @@ describe('Prompt 与契约', () => {
 
   it('⚠ system 提示说明矛盾类问题要「每处都给 edit + canonical」', async () => {
     let sys = '';
-    const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
+    const ws = new ChapterWorkspace({ rootDir: dir, bookId: TEST_BOOK_ID, chapterNumber: 1, logger });
     const reviser = new Reviser({
       structured: async (req) => {
         sys = req.messages[0]!.content;
@@ -920,7 +923,7 @@ describe('Prompt 与契约', () => {
 
   it('问题带 id 传给模型（关联替换需要）', async () => {
     let user = '';
-    const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
+    const ws = new ChapterWorkspace({ rootDir: dir, bookId: TEST_BOOK_ID, chapterNumber: 1, logger });
     const reviser = new Reviser({
       structured: async (req) => {
         user = req.messages.at(-1)!.content;
@@ -942,7 +945,7 @@ describe('Prompt 与契约', () => {
 
   it('温度固定低温（改稿要保守）', async () => {
     let temp: number | undefined;
-    const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
+    const ws = new ChapterWorkspace({ rootDir: dir, bookId: TEST_BOOK_ID, chapterNumber: 1, logger });
     const reviser = new Reviser({
       structured: async (req) => {
         temp = req.temperature;
@@ -983,7 +986,7 @@ describe('Prompt 与契约', () => {
   });
 
   it('数组容错后仍能正常应用替换（端到端）', async () => {
-    const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
+    const ws = new ChapterWorkspace({ rootDir: dir, bookId: TEST_BOOK_ID, chapterNumber: 1, logger });
     const reviser = new Reviser({
       // 故意返回裸数组
       structured: async (req) => {
@@ -1009,7 +1012,7 @@ describe('Prompt 与契约', () => {
 // ══════════════════════════════════════════════════════════
 describe('失败处理', () => {
   it('结构化输出失败 → 写原稿并返回错误（不静默）', async () => {
-    const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
+    const ws = new ChapterWorkspace({ rootDir: dir, bookId: TEST_BOOK_ID, chapterNumber: 1, logger });
     const reviser = new Reviser({
       structured: async () => ({
         ok: false,
@@ -1029,7 +1032,7 @@ describe('失败处理', () => {
   });
 
   it('⚠ 失败时把模型原始输出落盘（否则无从诊断）', async () => {
-    const ws = new ChapterWorkspace({ rootDir: dir, chapterNumber: 1, logger });
+    const ws = new ChapterWorkspace({ rootDir: dir, bookId: TEST_BOOK_ID, chapterNumber: 1, logger });
     const reviser = new Reviser({
       structured: async () => ({
         ok: false,

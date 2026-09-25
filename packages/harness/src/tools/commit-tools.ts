@@ -12,7 +12,7 @@
  *   提交是不可逆的，不该一键完成。
  */
 import { z } from 'zod';
-import { AppError, ErrorCode } from '@nwa/core';
+import { AppError, ErrorCode, chapterRel, summaryRel } from '@nwa/core';
 import { commitOverrideId } from '@nwa/core';
 import type { AnyToolDefinition, ToolDefinition } from '@nwa/shared';
 import type { Repositories, Database } from '@nwa/storage';
@@ -55,15 +55,21 @@ export const COMMIT_SOURCE_FILE: Readonly<Record<CommitSourceKey, string>> = {
  */
 export function pickCommitSource(
   deps: {
+    /**
+     * ⚠ `bookId` 是**第一个**参数：工作区按书隔离（P0-1），
+     *   不带书就读到别的书的稿子。设为必填让"忘记传书"编译期暴露。
+     */
     readonly readWorkspaceText: (
+      bookId: string,
       chapterNumber: number,
       name: CommitSourceKey,
     ) => string | null;
   },
+  bookId: string,
   chapterNumber: number,
 ): { body: string | null; source: string } {
   for (const key of COMMIT_SOURCE_ORDER) {
-    const text = deps.readWorkspaceText(chapterNumber, key);
+    const text = deps.readWorkspaceText(bookId, chapterNumber, key);
     if (text !== null) {
       return { body: text, source: COMMIT_SOURCE_FILE[key] };
     }
@@ -82,6 +88,7 @@ export function createCommitTools(
     readonly logger: import('@nwa/core').Logger;
     /** 读取工作区正文（由调用方注入，避免 harness 依赖 story） */
     readonly readWorkspaceText: (
+      bookId: string,
       chapterNumber: number,
       name: CommitSourceKey,
     ) => string | null;
@@ -132,13 +139,12 @@ export function createCommitTools(
     errorCodes: [ErrorCode.STORAGE_QUERY_FAILED, ErrorCode.TOOL_VALIDATION_ERROR],
     execute: ({ chapterId }) => {
       const chapter = deps.repos.chapters.get(chapterId);
-      const n = String(chapter.chapter_number).padStart(3, '0');
 
       // 源优先级链（ADR-0008）：manuscript ?? revision ?? draft
       //
       // ⚠ 用户正文优先。此前是 `revision ?? draft`，**从不读用户正文**，
       //   用户改完点提交会被静默丢弃且不报错 —— 见 COMMIT_SOURCE_ORDER 注释。
-      const picked = pickCommitSource(deps, chapter.chapter_number);
+      const picked = pickCommitSource(deps, chapter.book_id, chapter.chapter_number);
       const body = picked.body;
       const source = picked.source;
 
@@ -155,9 +161,17 @@ export function createCommitTools(
         }
       }
 
+      // ⚠ 预览路径必须与真实落盘**同一个来源**（chapterRel/summaryRel），
+      //   否则"将要写入"与实际写入会漂移，而这个预览正是用户点提交前看的。
       const willWrite = [
-        { path: `chapters/${n}.md`, bytes: body ? Buffer.byteLength(body, 'utf8') : 0 },
-        { path: `summaries/${n}.md`, bytes: chapter.summary ? Buffer.byteLength(chapter.summary, 'utf8') : 0 },
+        {
+          path: chapterRel(chapter.book_id, chapter.chapter_number),
+          bytes: body ? Buffer.byteLength(body, 'utf8') : 0,
+        },
+        {
+          path: summaryRel(chapter.book_id, chapter.chapter_number),
+          bytes: chapter.summary ? Buffer.byteLength(chapter.summary, 'utf8') : 0,
+        },
         { path: 'artifacts/index.json', bytes: 0 },
       ];
 
@@ -223,8 +237,8 @@ export function createCommitTools(
     ],
     execute: (input) => {
       const chapter = deps.repos.chapters.get(input.chapterId);
-      const n = String(chapter.chapter_number).padStart(3, '0');
-      const chapterPath = `chapters/${n}.md`;
+      // ⚠ 按书隔离（P0-1）：用章节行自己的 book_id，不用任何"当前书"解析
+      const chapterPath = chapterRel(chapter.book_id, chapter.chapter_number);
 
       // 门禁必须开
       if (deps.assertGateOpen) deps.assertGateOpen(input.chapterId);
@@ -236,7 +250,7 @@ export function createCommitTools(
         );
       }
 
-      const picked = pickCommitSource(deps, chapter.chapter_number);
+      const picked = pickCommitSource(deps, chapter.book_id, chapter.chapter_number);
       const body = picked.body;
       if (body === null) {
         throw new AppError(

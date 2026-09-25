@@ -131,10 +131,8 @@ export const worldEntityId = (): string => `world_${randomUUID()}`;
 export const chapterId = (book: string, chapterNumber: number): string =>
   `ch_${book}_${String(chapterNumber).padStart(3, '0')}`;
 
-/** 工作区目录名（施工计划 §6.1 的固定契约） */
-export const workspaceDirName = (chapterNumber: number): string =>
-  `chapter-${String(chapterNumber).padStart(3, '0')}`;
-
-/** 章节正文文件名（施工计划 §6.1 的固定契约） */
-export const chapterFileName = (chapterNumber: number): string =>
-  `${String(chapterNumber).padStart(3, '0')}.md`;
+// ⚠ workspaceDirName / chapterFileName 已移到 `paths.ts`。
+//   它们属于"项目内路径契约"，与"ID 生成"是两件事；而且路径只能有一处定义
+//   —— 两处各写一份必然漂移，表现为"写到 A 处、读从 B 处"，不报错只是对不上。
+//   这里保留 re-export 以免既有 import 断裂。
+export { workspaceDirName, chapterFileName } from './paths.js';

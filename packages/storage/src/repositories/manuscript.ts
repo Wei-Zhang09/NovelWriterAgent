@@ -40,7 +40,15 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { AppError, ErrorCode, sha256Text, type Logger, type Nullable } from '@nwa/core';
+import {
+  AppError,
+  ErrorCode,
+  sha256Text,
+  assertSafeBookId,
+  workspaceRel,
+  type Logger,
+  type Nullable,
+} from '@nwa/core';
 import { now, type Database } from '@nwa/storage';
 
 /**
@@ -126,6 +134,8 @@ export type ManuscriptVersionSource = (typeof MANUSCRIPT_VERSION_SOURCES)[number
 export interface ManuscriptVersion {
   readonly id: string;
   readonly chapterId: string;
+  /** 章节所属的书（版本内容路径按书隔离，P0-1）。0018 之前的老数据为 null */
+  readonly bookId: string | null;
   readonly chapterNumber: number;
   /** 同章内单调递增序号（从 1 起）。⚠ 排序用它，不用 created_at */
   readonly seq: number;
@@ -142,6 +152,8 @@ export interface ManuscriptVersion {
 interface ManuscriptVersionRow {
   readonly id: string;
   readonly chapter_id: string;
+  /** 0018 新增；老行为 null（其 content_path 指向旧布局） */
+  readonly book_id: string | null;
   readonly chapter_number: number;
   readonly seq: number;
   readonly source_type: string;
@@ -156,6 +168,7 @@ function toVersion(r: ManuscriptVersionRow): ManuscriptVersion {
   return {
     id: r.id,
     chapterId: r.chapter_id,
+    bookId: r.book_id,
     chapterNumber: r.chapter_number,
     seq: r.seq,
     // ⚠ 不信任库里的字符串：表上没有 CHECK 约束（迁移里刻意不加，
@@ -191,19 +204,40 @@ export class ManuscriptRepository {
     this.logger = opts.logger;
   }
 
-  /** 章节工作区目录（与 ChapterWorkspace 的布局一致：workspace/chapter-NNN） */
-  private dirOf(chapterNumber: number): string {
+  /**
+   * 章节工作区目录（与 ChapterWorkspace 的布局一致，**按书隔离**）。
+   *
+   * ⚠ 路径是 `books/<bookId>/workspace/chapter-NNN`。原先是
+   *   `workspace/chapter-NNN`（只有章号），而 DB 允许两本书各有第 1 章，
+   *   于是两书同章号共用同一目录 —— 用户正文与版本节点会互相覆盖（P0-1）。
+   */
+  private dirOf(bookId: string, chapterNumber: number): string {
     if (!Number.isInteger(chapterNumber) || chapterNumber <= 0) {
       throw new AppError(
         ErrorCode.TOOL_VALIDATION_ERROR,
         `章号必须是正整数，收到：${String(chapterNumber)}`,
       );
     }
-    return join(this.rootDir, 'workspace', `chapter-${String(chapterNumber).padStart(3, '0')}`);
+    assertSafeBookId(bookId);
+    return join(this.rootDir, workspaceRel(bookId, chapterNumber));
   }
 
-  private pathOf(chapterNumber: number, name: string): string {
-    return join(this.dirOf(chapterNumber), name);
+  private pathOf(bookId: string, chapterNumber: number, name: string): string {
+    return join(this.dirOf(bookId, chapterNumber), name);
+  }
+
+  /**
+   * 回查章节所属的书（权威来源：`chapters.book_id`）。
+   *
+   * ⚠ 只用于**老数据**（0018 之前的版本行没有 book_id）。
+   *   新数据一律自带 book_id，不走这里。
+   */
+  private bookIdOfChapter(chapterId: string): string | null {
+    const row = this.db.get<{ book_id: string }>(
+      'SELECT book_id FROM chapters WHERE id = ?',
+      chapterId,
+    );
+    return row?.book_id ?? null;
   }
 
   /**
@@ -212,8 +246,8 @@ export class ManuscriptRepository {
    * ⚠ 不存在返回 null 而不是抛错：调用方（编辑器）要能区分
    *   "这一章还没有正文"（显示空编辑器）与"读取失败"（报错）。
    */
-  get(chapterNumber: number): Nullable<string> {
-    const p = this.pathOf(chapterNumber, FILES.manuscript);
+  get(bookId: string, chapterNumber: number): Nullable<string> {
+    const p = this.pathOf(bookId, chapterNumber, FILES.manuscript);
     if (!existsSync(p)) return null;
     return readFileSync(p, 'utf8');
   }
@@ -225,14 +259,14 @@ export class ManuscriptRepository {
    *   自动恢复会让作者在不知情的情况下拿到一份没确认过的文本，
    *   而"我以为打开的是定稿"是最难查的一类错乱。
    */
-  open(chapterNumber: number): {
+  open(bookId: string, chapterNumber: number): {
     text: Nullable<string>;
     sourceHash: Nullable<string>;
     recovery: AutosaveRecoveryCheck;
   } {
-    const text = this.get(chapterNumber);
+    const text = this.get(bookId, chapterNumber);
     const sourceHash = text === null ? null : sha256Text(text);
-    return { text, sourceHash, recovery: this.checkRecovery(chapterNumber) };
+    return { text, sourceHash, recovery: this.checkRecovery(bookId, chapterNumber) };
   }
 
   /**
@@ -242,14 +276,14 @@ export class ManuscriptRepository {
    *   重写会更新 mtime，而 mtime 正是 §十一 判断"哪份更新"的依据之一。
    *   每次 autosave 都刷新 mtime 会让恢复检测永远认为"有更新的内容"。
    */
-  save(chapterNumber: number, text: string): ManuscriptSaveResult {
-    const p = this.pathOf(chapterNumber, FILES.manuscript);
-    const prev = this.get(chapterNumber);
+  save(bookId: string, chapterNumber: number, text: string): ManuscriptSaveResult {
+    const p = this.pathOf(bookId, chapterNumber, FILES.manuscript);
+    const prev = this.get(bookId, chapterNumber);
     const hash = sha256Text(text);
     const changed = prev === null || sha256Text(prev) !== hash;
 
     if (changed) {
-      mkdirSync(this.dirOf(chapterNumber), { recursive: true });
+      mkdirSync(this.dirOf(bookId, chapterNumber), { recursive: true });
       writeFileSync(p, text, { encoding: 'utf8', flag: 'w' });
     }
 
@@ -285,14 +319,15 @@ export class ManuscriptRepository {
    *   也会让用户在没确认的情况下丢掉旧正文。
    */
   autosave(
+    bookId: string,
     chapterNumber: number,
     text: string,
     state?: Omit<EditorState, 'savedAt' | 'sourceHash'>,
   ): { path: string; sourceHash: string; savedAt: string } {
     const hash = sha256Text(text);
     const savedAt = now();
-    mkdirSync(this.dirOf(chapterNumber), { recursive: true });
-    writeFileSync(this.pathOf(chapterNumber, FILES.autosave), text, {
+    mkdirSync(this.dirOf(bookId, chapterNumber), { recursive: true });
+    writeFileSync(this.pathOf(bookId, chapterNumber, FILES.autosave), text, {
       encoding: 'utf8',
       flag: 'w',
     });
@@ -300,18 +335,18 @@ export class ManuscriptRepository {
     if (state) {
       const full: EditorState = { ...state, savedAt, sourceHash: hash };
       writeFileSync(
-        this.pathOf(chapterNumber, FILES.editorState),
+        this.pathOf(bookId, chapterNumber, FILES.editorState),
         JSON.stringify(full, null, 2),
         { encoding: 'utf8', flag: 'w' },
       );
     }
 
-    return { path: this.pathOf(chapterNumber, FILES.autosave), sourceHash: hash, savedAt };
+    return { path: this.pathOf(bookId, chapterNumber, FILES.autosave), sourceHash: hash, savedAt };
   }
 
   /** 读编辑器状态；损坏或缺失返回 null（不让坏数据炸掉打开流程） */
-  readEditorState(chapterNumber: number): Nullable<EditorState> {
-    const p = this.pathOf(chapterNumber, FILES.editorState);
+  readEditorState(bookId: string, chapterNumber: number): Nullable<EditorState> {
+    const p = this.pathOf(bookId, chapterNumber, FILES.editorState);
     if (!existsSync(p)) return null;
     try {
       return JSON.parse(readFileSync(p, 'utf8')) as EditorState;
@@ -339,8 +374,8 @@ export class ManuscriptRepository {
    *   "发现未恢复的编辑内容" —— 一个总是出现的提示等于没有提示，
    *   作者会条件反射地点"放弃"，真正的丢失场景就救不回来了。
    */
-  checkRecovery(chapterNumber: number): AutosaveRecoveryCheck {
-    const autoPath = this.pathOf(chapterNumber, FILES.autosave);
+  checkRecovery(bookId: string, chapterNumber: number): AutosaveRecoveryCheck {
+    const autoPath = this.pathOf(bookId, chapterNumber, FILES.autosave);
     const empty: AutosaveRecoveryCheck = {
       hasNewerAutosave: false,
       autosaveText: null,
@@ -354,13 +389,13 @@ export class ManuscriptRepository {
 
     const autoText = readFileSync(autoPath, 'utf8');
     const autoHash = sha256Text(autoText);
-    const manuscript = this.get(chapterNumber);
+    const manuscript = this.get(bookId, chapterNumber);
     const manuscriptHash = manuscript === null ? null : sha256Text(manuscript);
 
-    const state = this.readEditorState(chapterNumber);
+    const state = this.readEditorState(bookId, chapterNumber);
     const autoAt = state?.savedAt ?? safeMtime(autoPath);
-    const manAt = existsSync(this.pathOf(chapterNumber, FILES.manuscript))
-      ? safeMtime(this.pathOf(chapterNumber, FILES.manuscript))
+    const manAt = existsSync(this.pathOf(bookId, chapterNumber, FILES.manuscript))
+      ? safeMtime(this.pathOf(bookId, chapterNumber, FILES.manuscript))
       : null;
 
     // 内容一致 → 没有未恢复的东西（无论时间戳如何）
@@ -380,11 +415,11 @@ export class ManuscriptRepository {
   }
 
   /** 接受自动保存：把 autosave 内容提升为正式正文（用户点「恢复」时调用） */
-  acceptAutosave(chapterNumber: number): Nullable<ManuscriptSaveResult> {
-    const rec = this.checkRecovery(chapterNumber);
+  acceptAutosave(bookId: string, chapterNumber: number): Nullable<ManuscriptSaveResult> {
+    const rec = this.checkRecovery(bookId, chapterNumber);
     if (!rec.hasNewerAutosave || rec.autosaveText === null) return null;
-    const res = this.save(chapterNumber, rec.autosaveText);
-    this.clearAutosave(chapterNumber);
+    const res = this.save(bookId, chapterNumber, rec.autosaveText);
+    this.clearAutosave(bookId, chapterNumber);
     return res;
   }
 
@@ -398,9 +433,9 @@ export class ManuscriptRepository {
    *   被当成"没有未恢复内容"而丢掉。
    *   删除则是明确的状态：文件不在 = 没有待恢复的东西。
    */
-  clearAutosave(chapterNumber: number): void {
+  clearAutosave(bookId: string, chapterNumber: number): void {
     for (const key of [FILES.autosave, FILES.editorState] as const) {
-      const p = this.pathOf(chapterNumber, key);
+      const p = this.pathOf(bookId, chapterNumber, key);
       if (existsSync(p)) rmSync(p, { force: true });
     }
     this.logger.info('自动保存副本已清除', { chapterNumber });
@@ -414,6 +449,7 @@ export class ManuscriptRepository {
    *   只比时间会给出"已保存"而实际有未落盘的字。
    */
   getSaveStatus(
+    bookId: string,
     chapterNumber: number,
     editorText?: string,
   ): {
@@ -424,12 +460,12 @@ export class ManuscriptRepository {
     dirty: boolean;
     hasPendingAutosave: boolean;
   } {
-    const p = this.pathOf(chapterNumber, FILES.manuscript);
+    const p = this.pathOf(bookId, chapterNumber, FILES.manuscript);
     const has = existsSync(p);
-    const current = this.get(chapterNumber);
+    const current = this.get(bookId, chapterNumber);
     const currentHash = current === null ? null : sha256Text(current);
     const editorHash = editorText === undefined ? currentHash : sha256Text(editorText);
-    const rec = this.checkRecovery(chapterNumber);
+    const rec = this.checkRecovery(bookId, chapterNumber);
 
     return {
       chapterNumber,
@@ -480,6 +516,7 @@ export class ManuscriptRepository {
    * @returns 新建的版本；若与最新版本内容相同则返回 null（未新建）
    */
   createVersion(input: {
+    bookId: string;
     chapterId: string;
     chapterNumber: number;
     text: string;
@@ -497,7 +534,11 @@ export class ManuscriptRepository {
 
     const seq = (latest?.seq ?? 0) + 1;
     const fileName = `v${String(seq).padStart(3, '0')}.md`;
-    const relPath = `workspace/chapter-${String(input.chapterNumber).padStart(3, '0')}/versions/${fileName}`;
+    // ⚠ 版本内容路径按书隔离（P0-1）。原先是
+    //   `workspace/chapter-NNN/versions/vNNN.md` —— 只有章号，两本书各自的
+    //   seq 都从 1 起，B 的 v001 会覆盖 A 的 v001：A 的版本列表仍列出 v001
+    //   （DB 行还在），读出来却是 B 的文本。
+    const relPath = `${workspaceRel(input.bookId, input.chapterNumber)}/versions/${fileName}`;
     const absPath = join(this.rootDir, relPath);
 
     mkdirSync(dirname(absPath), { recursive: true });
@@ -507,9 +548,10 @@ export class ManuscriptRepository {
     const createdAt = now();
     this.db.run(
       `INSERT INTO manuscript_versions
-         (id, chapter_id, chapter_number, seq, source_type, content_path, content_hash, char_count, note, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, book_id, chapter_id, chapter_number, seq, source_type, content_path, content_hash, char_count, note, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
+      input.bookId,
       input.chapterId,
       input.chapterNumber,
       seq,
@@ -531,6 +573,7 @@ export class ManuscriptRepository {
     return {
       id,
       chapterId: input.chapterId,
+      bookId: input.bookId,
       chapterNumber: input.chapterNumber,
       seq,
       sourceType: input.sourceType,
@@ -611,8 +654,19 @@ export class ManuscriptRepository {
     const text = this.readVersion(versionId);
     if (text === null) return null;
 
-    const saved = this.save(source.chapterNumber, text);
+    // ⚠ 老版本行（0018 之前）没有 book_id。回查 chapters 拿权威来源，
+    //   而不是猜一本书 —— 猜错会把正文写进别的书的工作区。
+    const bookId = source.bookId ?? this.bookIdOfChapter(source.chapterId);
+    if (bookId === null) {
+      throw new AppError(
+        ErrorCode.WORKSPACE_CORRUPTED,
+        `版本 ${versionId} 无法确定所属书（章节 ${source.chapterId} 不存在）`,
+      );
+    }
+
+    const saved = this.save(bookId, source.chapterNumber, text);
     const created = this.createVersion({
+      bookId,
       chapterId: source.chapterId,
       chapterNumber: source.chapterNumber,
       text,

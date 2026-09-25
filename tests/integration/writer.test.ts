@@ -18,6 +18,9 @@ import { PlanOutputSchema } from '@nwa/shared';
 let root: string;
 const logger = new Logger('test:writer', { level: 'error' });
 
+/** 测试用固定书 id（P0-1 起路径按书隔离，工作区必须知道自己在哪本书里） */
+const TEST_BOOK_ID = 'book_test';
+
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'nwa-writer-'));
 });
@@ -72,14 +75,14 @@ function completer(texts: string[]): {
 }
 
 const writerOf = (c: TextCompleter, n = 1) =>
-  new Writer({ complete: c, workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: n, logger }), logger });
+  new Writer({ complete: c, workspace: new ChapterWorkspace({ rootDir: root, bookId: TEST_BOOK_ID, chapterNumber: n, logger }), logger });
 
 describe('⚠ 角色设定必须真的进 prompt（P2-2）', () => {
   it('传入 characterContext → 出现在模型收到的 messages 里', async () => {
     const { fn, calls } = completer(['场景一正文']);
     const w = new Writer({
       complete: fn,
-      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      workspace: new ChapterWorkspace({ rootDir: root, bookId: TEST_BOOK_ID, chapterNumber: 1, logger }),
       logger,
       characterContext: '## 角色设定\n- 沈砚 — 主角。修表匠，左手有旧伤',
     });
@@ -99,7 +102,7 @@ describe('⚠ 角色设定必须真的进 prompt（P2-2）', () => {
     const { fn, calls } = completer(['场景一正文']);
     const w = new Writer({
       complete: fn,
-      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      workspace: new ChapterWorkspace({ rootDir: root, bookId: TEST_BOOK_ID, chapterNumber: 1, logger }),
       logger,
       characterContext: '## 角色设定\n- 沈砚',
     });
@@ -124,7 +127,7 @@ describe('⚠ 角色设定必须真的进 prompt（P2-2）', () => {
     const { fn, calls } = completer(['场景一正文']);
     const w = new Writer({
       complete: fn,
-      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      workspace: new ChapterWorkspace({ rootDir: root, bookId: TEST_BOOK_ID, chapterNumber: 1, logger }),
       logger,
       characterContext: '   \n  ',
     });
@@ -138,7 +141,7 @@ describe('⚠ 角色设定必须真的进 prompt（P2-2）', () => {
     const { fn, calls } = completer(['场景一正文']);
     const w = new Writer({
       complete: fn,
-      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      workspace: new ChapterWorkspace({ rootDir: root, bookId: TEST_BOOK_ID, chapterNumber: 1, logger }),
       logger,
       characterContext: '## 角色设定\n- 沈砚',
       worldContext: '## 世界观设定\n- [世界规则] 灵力枯竭',
@@ -157,7 +160,7 @@ describe('⚠ 角色设定必须真的进 prompt（P2-2）', () => {
     const { fn, calls } = completer(['场景一正文']);
     const w = new Writer({
       complete: fn,
-      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      workspace: new ChapterWorkspace({ rootDir: root, bookId: TEST_BOOK_ID, chapterNumber: 1, logger }),
       logger,
       worldContext: '## 世界观设定\n- [世界规则] 灵力枯竭：施法消耗寿命',
     });
@@ -178,7 +181,7 @@ describe('⚠ 角色设定必须真的进 prompt（P2-2）', () => {
     const { fn, calls } = completer(['场景一正文']);
     const w = new Writer({
       complete: fn,
-      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      workspace: new ChapterWorkspace({ rootDir: root, bookId: TEST_BOOK_ID, chapterNumber: 1, logger }),
       logger,
       worldContext: '  \n ',
     });
@@ -189,12 +192,12 @@ describe('⚠ 角色设定必须真的进 prompt（P2-2）', () => {
 });
 
 describe('⚠ Writer 只写工作区（§9.1 核心原则）', () => {
-  it('产物落在 workspace/chapter-001/draft.md', async () => {
+  it('产物落在 books/<bookId>/workspace/chapter-001/draft.md', async () => {
     const { fn } = completer(['场景一正文', '场景二正文']);
     const r = await writerOf(fn).draft(planOf());
 
     expect(r.ok).toBe(true);
-    expect(r.draft!.draftPath).toBe(join(root, 'workspace', 'chapter-001', 'draft.md'));
+    expect(r.draft!.draftPath).toBe(join(root, 'books', TEST_BOOK_ID, 'workspace', 'chapter-001', 'draft.md'));
     expect(existsSync(r.draft!.draftPath)).toBe(true);
   });
 
@@ -230,7 +233,7 @@ describe('⚠ Writer 只写工作区（§9.1 核心原则）', () => {
     expect(w['workspace'].has('plan')).toBe(true);
     expect(w['workspace'].has('scenePlan')).toBe(true);
 
-    const sp = JSON.parse(readFileSync(join(root, 'workspace', 'chapter-001', 'scene-plan.json'), 'utf8'));
+    const sp = JSON.parse(readFileSync(join(root, 'books', TEST_BOOK_ID, 'workspace', 'chapter-001', 'scene-plan.json'), 'utf8'));
     expect(sp.scenes.map((s: { sceneId: string }) => s.sceneId)).toEqual(['s1', 's2']);
     expect(sp.scenes[0].chars).toBe(1);
   });
@@ -263,7 +266,7 @@ describe('逐场景生成与衔接', () => {
     const { fn, calls } = completer([long, 'b']);
     const w = new Writer({
       complete: fn,
-      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      workspace: new ChapterWorkspace({ rootDir: root, bookId: TEST_BOOK_ID, chapterNumber: 1, logger }),
       logger,
       tailChars: 100,
     });
@@ -278,7 +281,7 @@ describe('逐场景生成与衔接', () => {
     const { fn, calls } = completer(['a', 'b']);
     const w = new Writer({
       complete: fn,
-      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      workspace: new ChapterWorkspace({ rootDir: root, bookId: TEST_BOOK_ID, chapterNumber: 1, logger }),
       logger,
       wordsPerScene: 1000,
     });
@@ -384,14 +387,14 @@ describe('失败处理', () => {
     const r = await writerOf(fn).draft(planOf());
 
     expect(r.ok).toBe(false);
-    const draft = readFileSync(join(root, 'workspace', 'chapter-001', 'draft.md'), 'utf8');
+    const draft = readFileSync(join(root, 'books', TEST_BOOK_ID, 'workspace', 'chapter-001', 'draft.md'), 'utf8');
     expect(draft).toBe('已完成的场景');
   });
 
   it('记录 run.json 标记 PARTIAL 与已完成场景', async () => {
     const { fn } = completer(['甲', '__FAIL__']);
     await writerOf(fn).draft(planOf());
-    const run = JSON.parse(readFileSync(join(root, 'workspace', 'chapter-001', 'run.json'), 'utf8'));
+    const run = JSON.parse(readFileSync(join(root, 'books', TEST_BOOK_ID, 'workspace', 'chapter-001', 'run.json'), 'utf8'));
     expect(run.status).toBe('PARTIAL');
     expect(run.completedScenes).toEqual(['s1']);
   });
@@ -401,7 +404,7 @@ describe('失败处理', () => {
     const r = await writerOf(fn).draft(planOf());
     expect(r.ok).toBe(false);
     expect(r.failedSceneIndex).toBe(0);
-    expect(existsSync(join(root, 'workspace', 'chapter-001', 'draft.md'))).toBe(false);
+    expect(existsSync(join(root, 'books', TEST_BOOK_ID, 'workspace', 'chapter-001', 'draft.md'))).toBe(false);
   });
 
   it('空场景计划被拒绝', async () => {
@@ -439,7 +442,7 @@ describe('偏离说明的提取（自报，不作判定依据）', () => {
     const { fn } = completer(['正文正文正文正文正文正文正文正文\n\n【偏离说明】改了地点', '乙']);
     const w = writerOf(fn);
     await w.draft(planOf());
-    const sp = JSON.parse(readFileSync(join(root, 'workspace', 'chapter-001', 'scene-plan.json'), 'utf8'));
+    const sp = JSON.parse(readFileSync(join(root, 'books', TEST_BOOK_ID, 'workspace', 'chapter-001', 'scene-plan.json'), 'utf8'));
     expect(sp.scenes[0].deviations).toEqual(['改了地点']);
   });
 
@@ -477,7 +480,7 @@ describe('偏离说明的提取（自报，不作判定依据）', () => {
     const w = writerOf(fn);
     await w.draft(planOf());
     const dv = JSON.parse(
-      readFileSync(join(root, 'workspace', 'chapter-001', 'deviations.json'), 'utf8'),
+      readFileSync(join(root, 'books', TEST_BOOK_ID, 'workspace', 'chapter-001', 'deviations.json'), 'utf8'),
     );
     expect(dv.total).toBe(1);
     expect(dv.scenes[0].notes).toEqual(['改了地点']);
@@ -489,7 +492,7 @@ describe('偏离说明的提取（自报，不作判定依据）', () => {
     const w = writerOf(fn);
     await w.draft(planOf());
     const dv = JSON.parse(
-      readFileSync(join(root, 'workspace', 'chapter-001', 'deviations.json'), 'utf8'),
+      readFileSync(join(root, 'books', TEST_BOOK_ID, 'workspace', 'chapter-001', 'deviations.json'), 'utf8'),
     );
     expect(dv.total).toBe(0);
     expect(dv.scenes).toEqual([]);
@@ -518,7 +521,7 @@ describe('⚠ P0-3：场景级长程记忆按**每个场景**注入', () => {
     const seen: string[] = [];
     const w = new Writer({
       complete: fn,
-      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      workspace: new ChapterWorkspace({ rootDir: root, bookId: TEST_BOOK_ID, chapterNumber: 1, logger }),
       logger,
       sceneMemory: (scene) => {
         seen.push(scene.sceneId);
@@ -536,7 +539,7 @@ describe('⚠ P0-3：场景级长程记忆按**每个场景**注入', () => {
     const { fn, calls } = completer(['a', 'b']);
     const w = new Writer({
       complete: fn,
-      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      workspace: new ChapterWorkspace({ rootDir: root, bookId: TEST_BOOK_ID, chapterNumber: 1, logger }),
       logger,
       sceneMemory: () => '第 12 章：陆明远在雨夜与沈氏对峙',
     });
@@ -551,7 +554,7 @@ describe('⚠ P0-3：场景级长程记忆按**每个场景**注入', () => {
     const { fn, calls } = completer(['a', 'b']);
     const w = new Writer({
       complete: fn,
-      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      workspace: new ChapterWorkspace({ rootDir: root, bookId: TEST_BOOK_ID, chapterNumber: 1, logger }),
       logger,
       sceneMemory: () => '',
     });
@@ -564,7 +567,7 @@ describe('⚠ P0-3：场景级长程记忆按**每个场景**注入', () => {
     const { fn } = completer(['场景一正文', '场景二正文']);
     const w = new Writer({
       complete: fn,
-      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      workspace: new ChapterWorkspace({ rootDir: root, bookId: TEST_BOOK_ID, chapterNumber: 1, logger }),
       logger,
       sceneMemory: () => {
         throw new Error('检索层炸了');
@@ -581,13 +584,13 @@ describe('⚠ P0-3：场景级长程记忆按**每个场景**注入', () => {
     const { fn } = completer(['场景一正文', '场景二正文']);
     const w = new Writer({
       complete: fn,
-      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      workspace: new ChapterWorkspace({ rootDir: root, bookId: TEST_BOOK_ID, chapterNumber: 1, logger }),
       logger,
       sceneMemory: (scene) => `旧内容-${scene.sceneId}`,
     });
     await w.draft(planOf());
 
-    const raw = readFileSync(join(root, 'workspace', 'chapter-001', 'memory-usage.json'), 'utf8');
+    const raw = readFileSync(join(root, 'books', TEST_BOOK_ID, 'workspace', 'chapter-001', 'memory-usage.json'), 'utf8');
     const rec = JSON.parse(raw) as {
       scenes: { sceneIndex: number; sceneId: string; chars: number }[];
       totalChars: number;
@@ -603,7 +606,7 @@ describe('⚠ P0-3：场景级长程记忆按**每个场景**注入', () => {
     const { fn } = completer(['a', 'b']);
     const w = new Writer({
       complete: fn,
-      workspace: new ChapterWorkspace({ rootDir: root, chapterNumber: 1, logger }),
+      workspace: new ChapterWorkspace({ rootDir: root, bookId: TEST_BOOK_ID, chapterNumber: 1, logger }),
       logger,
       sceneMemory: () => {
         throw new Error('检索层炸了');
@@ -612,7 +615,7 @@ describe('⚠ P0-3：场景级长程记忆按**每个场景**注入', () => {
     await w.draft(planOf());
 
     const rec = JSON.parse(
-      readFileSync(join(root, 'workspace', 'chapter-001', 'memory-usage.json'), 'utf8'),
+      readFileSync(join(root, 'books', TEST_BOOK_ID, 'workspace', 'chapter-001', 'memory-usage.json'), 'utf8'),
     ) as { failed: { sceneIndex: number; reason: string }[] };
     expect(rec.failed).toHaveLength(2);
     expect(rec.failed[0]!.reason).toContain('检索层炸了');

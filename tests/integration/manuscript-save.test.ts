@@ -33,7 +33,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { Logger, sha256Text } from '@nwa/core';
+import { Logger, sha256Text , workspaceRel } from '@nwa/core';
 import { ManuscriptRepository } from '@nwa/storage';
 import { WORKSPACE_FILES } from '@nwa/story';
 import { createTestProject, makeChapter, type TestProject } from './helpers.js';
@@ -63,7 +63,7 @@ function setup(text?: string) {
   t = proj;
   const chapter = makeChapter(proj, 1);
   const repo = makeRepo(proj);
-  if (text !== undefined) repo.save(1, text);
+  if (text !== undefined) repo.save(proj.bookId, 1, text);
   return { proj, chapter, repo };
 }
 
@@ -90,7 +90,7 @@ describe('① ⚠⚠ Save ≠ Commit（本阶段成立与否的判据）', () =>
     const statusBefore = proj.repos.chapters.get(chapter.id).status;
     const manifestBefore = manifestCount(proj);
 
-    repo.save(1, '第一章\n\n他把信塞进靴筒，然后推开门。');
+    repo.save(proj.bookId, 1, '第一章\n\n他把信塞进靴筒，然后推开门。');
 
     // ⚠ 三条都查**库表**，不查返回值
     expect(canonCount(proj)).toBe(canonBefore);
@@ -100,27 +100,27 @@ describe('① ⚠⚠ Save ≠ Commit（本阶段成立与否的判据）', () =>
   });
 
   it('⚠ 正文真的落盘了（不能只是"没提交"，还要"真的保存了"）', () => {
-    const { repo } = setup();
+    const { proj, repo } = setup();
     const text = '第一章\n\n雨下得很大。';
-    const res = repo.save(1, text);
+    const res = repo.save(proj.bookId, 1, text);
 
     // 只断言"没提交"会漏掉"其实什么都没干"
     expect(existsSync(res.path)).toBe(true);
     expect(readFileSync(res.path, 'utf8')).toBe(text);
-    expect(repo.get(1)).toBe(text);
+    expect(repo.get(proj.bookId, 1)).toBe(text);
   });
 
   it('⚠ save() 返回的 sourceHash === sha256Text(正文)（stale 锚点的依据）', () => {
-    const { repo } = setup();
+    const { proj, repo } = setup();
     const text = '第一章\n\n他把信塞进靴筒。';
-    const res = repo.save(1, text);
+    const res = repo.save(proj.bookId, 1, text);
     expect(res.sourceHash).toBe(sha256Text(text));
   });
 
   it('⚠ 保存改一个字的正文 → sourceHash 必须变（锚点不是常量）', () => {
-    const { repo } = setup();
-    const a = repo.save(1, '他把信塞进靴筒。');
-    const b = repo.save(1, '他把信塞进靴筒，');
+    const { proj, repo } = setup();
+    const a = repo.save(proj.bookId, 1, '他把信塞进靴筒。');
+    const b = repo.save(proj.bookId, 1, '他把信塞进靴筒，');
     expect(a.sourceHash).not.toBe(b.sourceHash);
   });
 });
@@ -128,12 +128,12 @@ describe('① ⚠⚠ Save ≠ Commit（本阶段成立与否的判据）', () =>
 // ────────────────────────────────────────────────────────────
 describe('② save() 的幂等性与 changed 语义', () => {
   it('内容相同时 changed=false，且**不重写文件**（mtime 是恢复判据之一）', async () => {
-    const { repo } = setup('第一版内容');
-    const p = join(dir, 'workspace', 'chapter-001', 'manuscript.md');
+    const { proj, repo } = setup('第一版内容');
+    const p = join(dir, workspaceRel(proj.bookId, 1), 'manuscript.md');
     const mtimeBefore = readFileSync(p, 'utf8');
 
     await new Promise((r) => setTimeout(r, 10));
-    const res = repo.save(1, '第一版内容');
+    const res = repo.save(proj.bookId, 1, '第一版内容');
 
     expect(res.changed).toBe(false);
     // 内容确实没被改动
@@ -141,28 +141,28 @@ describe('② save() 的幂等性与 changed 语义', () => {
   });
 
   it('内容变了 → changed=true', () => {
-    const { repo } = setup('第一版');
-    expect(repo.save(1, '第二版').changed).toBe(true);
+    const { proj, repo } = setup('第一版');
+    expect(repo.save(proj.bookId, 1, '第二版').changed).toBe(true);
   });
 
   it('首次保存（原本没有文件）→ changed=true', () => {
-    const { repo } = setup();
-    expect(repo.save(1, '初次').changed).toBe(true);
+    const { proj, repo } = setup();
+    expect(repo.save(proj.bookId, 1, '初次').changed).toBe(true);
   });
 });
 
 // ────────────────────────────────────────────────────────────
 describe('③ ⚠ autosave 绝不能写正式正文（否则 §十二 切章保护失去意义）', () => {
   it('⚠ autosave() 之后 manuscript.md 内容**一个字节都没变**', () => {
-    const { repo } = setup('正式正文 v1');
-    repo.autosave(1, '用户正在打字但还没保存的内容');
+    const { proj, repo } = setup('正式正文 v1');
+    repo.autosave(proj.bookId, 1, '用户正在打字但还没保存的内容');
 
-    expect(repo.get(1)).toBe('正式正文 v1');
+    expect(repo.get(proj.bookId, 1)).toBe('正式正文 v1');
   });
 
   it('autosave 落在旁路文件，不落在 manuscript.md', () => {
-    const { repo } = setup('正式正文');
-    const r = repo.autosave(1, '未保存的编辑');
+    const { proj, repo } = setup('正式正文');
+    const r = repo.autosave(proj.bookId, 1, '未保存的编辑');
     expect(r.path.endsWith('manuscript.autosave.md')).toBe(true);
     expect(r.path.endsWith('manuscript.md')).toBe(false);
   });
@@ -170,23 +170,23 @@ describe('③ ⚠ autosave 绝不能写正式正文（否则 §十二 切章保�
   it('⚠ 文件名必须与 @nwa/story 的 WORKSPACE_FILES 一致（两处声明会漂移）', () => {
     // 本仓储在 @nwa/storage 层，不能 import @nwa/story（会形成反向依赖），
     // 所以文件名是重新声明的。这条断言把两处钉在一起。
-    const { repo } = setup('x');
-    const r = repo.autosave(1, 'y');
+    const { proj, repo } = setup('x');
+    const r = repo.autosave(proj.bookId, 1, 'y');
     expect(r.path.endsWith(WORKSPACE_FILES.manuscriptAutosave)).toBe(true);
 
-    const s = repo.save(1, 'z');
+    const s = repo.save(proj.bookId, 1, 'z');
     expect(s.path.endsWith(WORKSPACE_FILES.manuscript)).toBe(true);
   });
 
   it('传了光标状态 → 一起落盘（§十一：只恢复文本等于没恢复）', () => {
-    const { repo } = setup('正文');
-    repo.autosave(1, '正文加了一个字', {
+    const { proj, repo } = setup('正文');
+    repo.autosave(proj.bookId, 1, '正文加了一个字', {
       cursor: 7,
       selectionStart: 3,
       selectionEnd: 7,
       scrollTop: 420,
     });
-    const st = repo.readEditorState(1);
+    const st = repo.readEditorState(proj.bookId, 1);
     expect(st?.cursor).toBe(7);
     expect(st?.selectionStart).toBe(3);
     expect(st?.selectionEnd).toBe(7);
@@ -196,18 +196,18 @@ describe('③ ⚠ autosave 绝不能写正式正文（否则 §十二 切章保�
   });
 
   it('编辑器状态损坏 → 返回 null 而不是抛错（不让坏数据炸掉打开流程）', () => {
-    const { repo } = setup('正文');
-    const p = join(dir, 'workspace', 'chapter-001', 'editor-state.json');
+    const { proj, repo } = setup('正文');
+    const p = join(dir, workspaceRel(proj.bookId, 1), 'editor-state.json');
     writeFileSync(p, '{ 这不是合法 JSON', 'utf8');
-    expect(repo.readEditorState(1)).toBeNull();
+    expect(repo.readEditorState(proj.bookId, 1)).toBeNull();
   });
 });
 
 // ────────────────────────────────────────────────────────────
 describe('④ ⚠ 崩溃恢复检测：不静默覆盖（§十一）', () => {
   it('⚠ 没有 autosave → 不报"有未恢复内容"', () => {
-    const { repo } = setup('正文');
-    const rec = repo.checkRecovery(1);
+    const { proj, repo } = setup('正文');
+    const rec = repo.checkRecovery(proj.bookId, 1);
     expect(rec.hasNewerAutosave).toBe(false);
     expect(rec.message).toContain('没有未恢复');
   });
@@ -216,96 +216,96 @@ describe('④ ⚠ 崩溃恢复检测：不静默覆盖（§十一）', () => {
     // 若只比时间戳，用户每次打开章节都会看到"发现未恢复的编辑内容" ——
     // 一个总是出现的提示等于没有提示，作者会条件反射点「放弃」，
     // 真正的丢失场景就救不回来了。
-    const { repo } = setup('一模一样的内容');
-    repo.autosave(1, '一模一样的内容');
-    expect(repo.checkRecovery(1).hasNewerAutosave).toBe(false);
+    const { proj, repo } = setup('一模一样的内容');
+    repo.autosave(proj.bookId, 1, '一模一样的内容');
+    expect(repo.checkRecovery(proj.bookId, 1).hasNewerAutosave).toBe(false);
   });
 
   it('⚠ autosave 内容与正文不同 → 检测到，且**不自动覆盖**', () => {
-    const { repo } = setup('正式正文');
-    repo.autosave(1, '用户改了一半还没保存的正文');
+    const { proj, repo } = setup('正式正文');
+    repo.autosave(proj.bookId, 1, '用户改了一半还没保存的正文');
 
-    const rec = repo.checkRecovery(1);
+    const rec = repo.checkRecovery(proj.bookId, 1);
     expect(rec.hasNewerAutosave).toBe(true);
     expect(rec.autosaveText).toBe('用户改了一半还没保存的正文');
     expect(rec.message).toContain('是否恢复');
 
     // ⚠ 关键：检测之后正文**仍然没变** —— 恢复必须由用户显式确认
-    expect(repo.get(1)).toBe('正式正文');
+    expect(repo.get(proj.bookId, 1)).toBe('正式正文');
   });
 
   it('⚠ open() 只检测不恢复（打开章节不得改正文）', () => {
-    const { repo } = setup('正式正文');
-    repo.autosave(1, '未保存的编辑');
+    const { proj, repo } = setup('正式正文');
+    repo.autosave(proj.bookId, 1, '未保存的编辑');
 
-    const opened = repo.open(1);
+    const opened = repo.open(proj.bookId, 1);
     expect(opened.text).toBe('正式正文');
     expect(opened.recovery.hasNewerAutosave).toBe(true);
-    expect(repo.get(1)).toBe('正式正文');
+    expect(repo.get(proj.bookId, 1)).toBe('正式正文');
   });
 
   it('⚠ 只有 autosave、没有正式正文 → 也报有未恢复内容（新建章场景）', () => {
-    const { repo } = setup();
-    repo.autosave(1, '第一章开头我写了几个字');
-    const rec = repo.checkRecovery(1);
+    const { proj, repo } = setup();
+    repo.autosave(proj.bookId, 1, '第一章开头我写了几个字');
+    const rec = repo.checkRecovery(proj.bookId, 1);
     expect(rec.hasNewerAutosave).toBe(true);
     expect(rec.message).toContain('还没有正式正文');
   });
 
   it('用户点「恢复」→ acceptAutosave 把 autosave 提升为正文，并清掉副本', () => {
-    const { repo } = setup('旧正文');
-    repo.autosave(1, '新正文');
+    const { proj, repo } = setup('旧正文');
+    repo.autosave(proj.bookId, 1, '新正文');
 
-    const res = repo.acceptAutosave(1);
+    const res = repo.acceptAutosave(proj.bookId, 1);
     expect(res?.sourceHash).toBe(sha256Text('新正文'));
-    expect(repo.get(1)).toBe('新正文');
+    expect(repo.get(proj.bookId, 1)).toBe('新正文');
     // 恢复后再检测不应重复提示
-    expect(repo.checkRecovery(1).hasNewerAutosave).toBe(false);
+    expect(repo.checkRecovery(proj.bookId, 1).hasNewerAutosave).toBe(false);
   });
 
   it('用户点「放弃」→ clearAutosave 清掉副本，正文不变', () => {
-    const { repo } = setup('正式正文');
-    repo.autosave(1, '不要的内容');
-    repo.clearAutosave(1);
+    const { proj, repo } = setup('正式正文');
+    repo.autosave(proj.bookId, 1, '不要的内容');
+    repo.clearAutosave(proj.bookId, 1);
 
-    expect(repo.get(1)).toBe('正式正文');
-    expect(repo.checkRecovery(1).hasNewerAutosave).toBe(false);
+    expect(repo.get(proj.bookId, 1)).toBe('正式正文');
+    expect(repo.checkRecovery(proj.bookId, 1).hasNewerAutosave).toBe(false);
   });
 
   it('没有 autosave 时 acceptAutosave 返回 null（不凭空造正文）', () => {
-    const { repo } = setup('正文');
-    expect(repo.acceptAutosave(1)).toBeNull();
+    const { proj, repo } = setup('正文');
+    expect(repo.acceptAutosave(proj.bookId, 1)).toBeNull();
   });
 });
 
 // ────────────────────────────────────────────────────────────
 describe('⑤ 保存状态查询（§九 / §三十五）', () => {
   it('编辑器文本与磁盘一致 → dirty=false', () => {
-    const { repo } = setup('正文内容');
-    expect(repo.getSaveStatus(1, '正文内容').dirty).toBe(false);
+    const { proj, repo } = setup('正文内容');
+    expect(repo.getSaveStatus(proj.bookId, 1, '正文内容').dirty).toBe(false);
   });
 
   it('⚠ 编辑器文本与磁盘不同 → dirty=true（用内容比对，不是比时间）', () => {
-    const { repo } = setup('正文内容');
-    expect(repo.getSaveStatus(1, '正文内容改过了').dirty).toBe(true);
+    const { proj, repo } = setup('正文内容');
+    expect(repo.getSaveStatus(proj.bookId, 1, '正文内容改过了').dirty).toBe(true);
   });
 
   it('⚠ 没保存过但编辑器有内容 → 也算 dirty（新建章场景）', () => {
-    const { repo } = setup();
-    const st = repo.getSaveStatus(1, '刚写的开头');
+    const { proj, repo } = setup();
+    const st = repo.getSaveStatus(proj.bookId, 1, '刚写的开头');
     expect(st.hasManuscript).toBe(false);
     expect(st.dirty).toBe(true);
   });
 
   it('存在未处理的 autosave → hasPendingAutosave=true（UI 要能提示）', () => {
-    const { repo } = setup('正式');
-    repo.autosave(1, '未保存的');
-    expect(repo.getSaveStatus(1, '正式').hasPendingAutosave).toBe(true);
+    const { proj, repo } = setup('正式');
+    repo.autosave(proj.bookId, 1, '未保存的');
+    expect(repo.getSaveStatus(proj.bookId, 1, '正式').hasPendingAutosave).toBe(true);
   });
 
   it('sourceHash 与正文一致（供 UI 展示/校验）', () => {
-    const { repo } = setup('正文');
-    expect(repo.getSaveStatus(1).sourceHash).toBe(sha256Text('正文'));
+    const { proj, repo } = setup('正文');
+    expect(repo.getSaveStatus(proj.bookId, 1).sourceHash).toBe(sha256Text('正文'));
   });
 });
 
@@ -326,14 +326,14 @@ describe('⑥ ⚠ 与 Canon 的隔离：本仓储对 chapters 只读', () => {
 
   it('⚠ 全流程（save + autosave + 恢复 + 放弃）后 Canon 与 manifest 仍为 0', () => {
     const { proj, chapter, repo } = setup();
-    repo.save(1, 'v1');
-    repo.autosave(1, 'v2', { cursor: 1, selectionStart: 1, selectionEnd: 1, scrollTop: 0 });
-    repo.checkRecovery(1);
-    repo.acceptAutosave(1);
-    repo.save(1, 'v3');
-    repo.autosave(1, 'v4');
-    repo.clearAutosave(1);
-    repo.getSaveStatus(1, 'v5');
+    repo.save(proj.bookId, 1, 'v1');
+    repo.autosave(proj.bookId, 1, 'v2', { cursor: 1, selectionStart: 1, selectionEnd: 1, scrollTop: 0 });
+    repo.checkRecovery(proj.bookId, 1);
+    repo.acceptAutosave(proj.bookId, 1);
+    repo.save(proj.bookId, 1, 'v3');
+    repo.autosave(proj.bookId, 1, 'v4');
+    repo.clearAutosave(proj.bookId, 1);
+    repo.getSaveStatus(proj.bookId, 1, 'v5');
     repo.isCommitted('c-不存在');
 
     expect(canonCount(proj)).toBe(0);
@@ -351,13 +351,13 @@ describe('⑦ 多书 / 多章隔离', () => {
     makeChapter(proj, 2);
     const repo = makeRepo(proj);
 
-    repo.save(1, '第一章正文');
-    repo.save(2, '第二章正文');
+    repo.save(proj.bookId, 1, '第一章正文');
+    repo.save(proj.bookId, 2, '第二章正文');
 
-    expect(repo.get(1)).toBe('第一章正文');
-    expect(repo.get(2)).toBe('第二章正文');
+    expect(repo.get(proj.bookId, 1)).toBe('第一章正文');
+    expect(repo.get(proj.bookId, 2)).toBe('第二章正文');
     // 哈希不同（不共享状态）
-    expect(repo.getSaveStatus(1).sourceHash).not.toBe(repo.getSaveStatus(2).sourceHash);
+    expect(repo.getSaveStatus(proj.bookId, 1).sourceHash).not.toBe(repo.getSaveStatus(proj.bookId, 2).sourceHash);
   });
 
   it('⚠ 第 1 章的 autosave 不会被第 2 章的检测命中', () => {
@@ -367,16 +367,16 @@ describe('⑦ 多书 / 多章隔离', () => {
     makeChapter(proj, 2);
     const repo = makeRepo(proj);
 
-    repo.save(2, '第二章正文');
-    repo.autosave(1, '第一章未保存的内容');
+    repo.save(proj.bookId, 2, '第二章正文');
+    repo.autosave(proj.bookId, 1, '第一章未保存的内容');
 
-    expect(repo.checkRecovery(2).hasNewerAutosave).toBe(false);
-    expect(repo.checkRecovery(1).hasNewerAutosave).toBe(true);
+    expect(repo.checkRecovery(proj.bookId, 2).hasNewerAutosave).toBe(false);
+    expect(repo.checkRecovery(proj.bookId, 1).hasNewerAutosave).toBe(true);
   });
 
   it('⚠ 章号非法（0 / 负数 / 小数）→ 抛错，不写出目录', () => {
-    const { repo } = setup();
-    expect(() => repo.save(0, 'x')).toThrow(/正整数/);
+    const { proj, repo } = setup();
+    expect(() => repo.save(proj.bookId, 0, 'x')).toThrow(/正整数/);
     expect(() => repo.save(-1, 'x')).toThrow(/正整数/);
     expect(() => repo.save(1.5, 'x')).toThrow(/正整数/);
   });
@@ -391,23 +391,23 @@ describe('⑧ ⚠ 工作区目录不存在时能自建（首次编辑的场景�
     const repo = makeRepo(proj);
 
     // 确认目录确实不存在
-    expect(existsSync(join(dir, 'workspace', 'chapter-007'))).toBe(false);
+    expect(existsSync(join(dir, workspaceRel(proj.bookId, 7)))).toBe(false);
 
-    const res = repo.save(7, '第七章');
+    const res = repo.save(proj.bookId, 7, '第七章');
     expect(res.chapterNumber).toBe(7);
     expect(existsSync(res.path)).toBe(true);
-    expect(repo.get(7)).toBe('第七章');
+    expect(repo.get(proj.bookId, 7)).toBe('第七章');
   });
 
   it('目录已存在但有其他产物 → save 不破坏它们', () => {
     const proj = createTestProject({ rootDir: dir });
     t = proj;
     makeChapter(proj, 1);
-    const wsDir = join(dir, 'workspace', 'chapter-001');
+    const wsDir = join(dir, workspaceRel(proj.bookId, 1));
     mkdirSync(wsDir, { recursive: true });
     writeFileSync(join(wsDir, 'draft.md'), 'AI 初稿', 'utf8');
 
-    makeRepo(proj).save(1, '用户改的');
+    makeRepo(proj).save(proj.bookId, 1, '用户改的');
 
     // ⚠ draft 必须原样保留 —— 它是"AI 到底写了什么"的唯一记录，
     //   被 Save 覆盖会让"用户改了什么"无法回答。

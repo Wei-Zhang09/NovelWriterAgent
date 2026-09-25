@@ -158,12 +158,14 @@ app.whenReady().then(async () => {
     });
 
     // 直接放一个正文文件（模拟已提交章节的 Markdown 真源）
-    const chaptersDir = join(projDir, 'chapters');
+    // ⚠ 按书隔离（P0-1）：正文在 books/<bookId>/chapters/
+    const bookRel = `books/${bookId}`;
+    const chaptersDir = join(projDir, bookRel, 'chapters');
     mkdirSync(chaptersDir, { recursive: true });
     writeFileSync(join(chaptersDir, '001.md'), '第一章正文：他在江边认出了那块铜牌。', 'utf8');
 
     // workspace 放一个中间产物 —— 它**不该**出现在导出物里
-    const wsDir = join(projDir, 'workspace', 'chapter-001');
+    const wsDir = join(projDir, bookRel, 'workspace', 'chapter-001');
     mkdirSync(wsDir, { recursive: true });
     writeFileSync(join(wsDir, 'draft.md'), '未验证草稿', 'utf8');
 
@@ -180,16 +182,20 @@ app.whenReady().then(async () => {
     console.log(`  导出到 ${outDir}｜${exp.data.files} 个文件｜${exp.data.bytes} 字节`);
     rec('导出项目', exp.data.files > 0, `${exp.data.files} 个文件`);
 
-    // §58 的布局
-    const layout = ['project.db', 'manifest.json', 'chapters'];
+    // §58 的布局（P0-1 起按书隔离）
+    const layout = ['project.db', 'manifest.json', `books/${bookId}/chapters`];
     const missing = layout.filter((f) => !existsSync(join(outDir, f)));
-    rec('§58 布局完整（project.db / manifest.json / chapters/）', missing.length === 0, missing.join('、') || '齐全');
+    rec(
+      '§58 布局完整（project.db / manifest.json / books/<bookId>/chapters/）',
+      missing.length === 0,
+      missing.join('、') || '齐全',
+    );
 
-    // ⚠ workspace 不该被导出
+    // ⚠ workspace 不该被导出（新布局下它在 books/<bookId>/ 里）
     rec(
       '⚠ 未导出 workspace（未验证的中间产物）',
-      !existsSync(join(outDir, 'workspace')),
-      existsSync(join(outDir, 'workspace')) ? '❌ 被导出了' : '已排除',
+      !existsSync(join(outDir, bookRel, 'workspace')),
+      existsSync(join(outDir, bookRel, 'workspace')) ? '❌ 被导出了' : '已排除',
     );
     // 如实声明排除了什么
     const excluded = exp.data.excluded ?? [];
@@ -213,7 +219,7 @@ app.whenReady().then(async () => {
     const { cpSync } = await import('node:fs');
     cpSync(outDir, badDir, { recursive: true });
     // 篡改**真源**文件（chapters 下的正文）—— 它一定在导出物里
-    appendFileSync(join(badDir, 'chapters', '001.md'), '（被篡改）', 'utf8');
+    appendFileSync(join(badDir, bookRel, 'chapters', '001.md'), '（被篡改）', 'utf8');
 
     const badVer = await call('backup.verify', { dir: badDir });
     rec(
@@ -235,7 +241,7 @@ app.whenReady().then(async () => {
       `${badRestore.data?.error?.code}：${badRestore.data?.error?.message?.slice(0, 70)}`,
     );
     // 原数据必须完好
-    const origText = readFileSync(join(projDir, 'chapters', '001.md'), 'utf8');
+    const origText = readFileSync(join(projDir, bookRel, 'chapters', '001.md'), 'utf8');
     rec(
       '⚠ 拒绝后原数据完好（没被坏备份覆盖）',
       origText.includes('铜牌') && !origText.includes('被篡改'),
@@ -287,7 +293,7 @@ app.whenReady().then(async () => {
       restored.data?.previousMovedTo === null,
       String(restored.data?.previousMovedTo),
     );
-    const afterText = readFileSync(join(restoreDir, 'chapters', '001.md'), 'utf8');
+    const afterText = readFileSync(join(restoreDir, bookRel, 'chapters', '001.md'), 'utf8');
     rec('⚠ 正文已还原', afterText.includes('铜牌'), `${afterText.length} 字节`);
     rec(
       '⚠ FTS 已重建（§59：索引不是唯一事实源）',
@@ -306,9 +312,10 @@ app.whenReady().then(async () => {
     //   （Windows 不允许移动被打开的项目目录）。
     console.log('\n──── 覆盖恢复不丢未提交正文 ────\n');
     const owTarget = join(sandbox, 'overwrite-target');
-    mkdirSync(join(owTarget, 'chapters'), { recursive: true });
-    writeFileSync(join(owTarget, 'chapters', '001.md'), '旧正文：会被备份覆盖', 'utf8');
-    const owWs = join(owTarget, 'workspace', 'chapter-001');
+    // ⚠ 按书隔离（P0-1）：正文与工作区都在 books/<bookId>/ 下
+    mkdirSync(join(owTarget, bookRel, 'chapters'), { recursive: true });
+    writeFileSync(join(owTarget, bookRel, 'chapters', '001.md'), '旧正文：会被备份覆盖', 'utf8');
+    const owWs = join(owTarget, bookRel, 'workspace', 'chapter-001');
     mkdirSync(join(owWs, 'versions'), { recursive: true });
     writeFileSync(join(owWs, 'manuscript.md'), '用户正在写的正文：铜牌的反面刻着一个日期。', 'utf8');
     writeFileSync(join(owWs, 'manuscript.autosave.md'), '自动保存副本', 'utf8');
@@ -322,10 +329,10 @@ app.whenReady().then(async () => {
     rec('覆盖恢复执行', ow.data?.ok === true, ow.data?.error?.message ?? '成功');
     rec(
       '覆盖恢复确实换了正文（证明恢复真的发生了）',
-      existsSync(join(owTarget, 'chapters', '001.md')) &&
-        readFileSync(join(owTarget, 'chapters', '001.md'), 'utf8').includes('铜牌') &&
-        !readFileSync(join(owTarget, 'chapters', '001.md'), 'utf8').includes('会被备份覆盖'),
-      'chapters/001.md 已换成备份内容',
+      existsSync(join(owTarget, bookRel, 'chapters', '001.md')) &&
+        readFileSync(join(owTarget, bookRel, 'chapters', '001.md'), 'utf8').includes('铜牌') &&
+        !readFileSync(join(owTarget, bookRel, 'chapters', '001.md'), 'utf8').includes('会被备份覆盖'),
+      'books/<bookId>/chapters/001.md 已换成备份内容',
     );
 
     // ⚠ 核心断言：未提交正文必须还在

@@ -25,7 +25,7 @@
  *   （InkOS 把两者都排除在事务外，导致"文件已提交、索引重建前崩溃 →
  *    检索看到旧数据"，且该不一致不可被检测）
  */
-import { Logger, AppError, ErrorCode, type Nullable } from '@nwa/core';
+import { Logger, AppError, ErrorCode, chapterRel, summaryRel, type Nullable } from '@nwa/core';
 import type { Repositories, Database } from '@nwa/storage';
 import { AtomicFileSet, hashOfFile, sha256 } from './atomic-file-set.js';
 import { CommitLock, type LockHandle } from './commit-lock.js';
@@ -216,8 +216,15 @@ export class CommitEngine {
   private runCommit(req: CommitRequest, _handle: LockHandle): CommitReport {
     // ═══ PREPARE ═══════════════════════════════════════════
     const manifestId = `cm_${req.chapterId}_${Date.now()}`;
-    const chapterPath = `chapters/${String(req.chapterNumber).padStart(3, '0')}.md`;
-    const summaryPath = `summaries/${String(req.chapterNumber).padStart(3, '0')}.md`;
+    // ⚠⚠ 落盘路径必须**按书隔离**（P0-1）。
+    //
+    //   原先是 `chapters/${chapterNumber}.md` —— 只由章号决定。而 DB 是
+    //   `UNIQUE(book_id, chapter_number)`，允许两本书各有第 1 章，于是
+    //   两书同章号映射到同一个文件：提交 B 书第 1 章会**覆盖** A 书正文，
+    //   而 A 书的行仍是 COMMITTED、body_path 仍指向该文件（不报错）。
+    //   实测：两行 body_path 相同，A 的正文已不在。
+    const chapterPath = chapterRel(req.bookId, req.chapterNumber);
+    const summaryPath = summaryRel(req.bookId, req.chapterNumber);
     const indexPath = 'artifacts/index.json';
 
     const bodyHash = sha256(req.body);
@@ -305,7 +312,7 @@ export class CommitEngine {
       this.maybeKill('after-file-apply');
 
       // 索引（导航结构，进事务）
-      const indexContent = buildIndex(req.chapterNumber, bodyHash);
+      const indexContent = buildIndex(req.bookId, req.chapterNumber, bodyHash);
       this.files.stage({
         target: indexPath,
         expectedSha256: hashOfFile(this.files.absolute(indexPath)),
@@ -501,11 +508,11 @@ function iso(): string {
   return new Date().toISOString();
 }
 
-function buildIndex(chapterNumber: number, bodyHash: string): string {
+function buildIndex(bookId: string, chapterNumber: number, bodyHash: string): string {
   return JSON.stringify(
     {
       updatedAt: iso(),
-      chapters: [{ chapterNumber, path: `chapters/${String(chapterNumber).padStart(3, '0')}.md`, hash: bodyHash }],
+      chapters: [{ chapterNumber, path: chapterRel(bookId, chapterNumber), hash: bodyHash }],
     },
     null,
     2,

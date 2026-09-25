@@ -98,13 +98,25 @@ export {
   scaffoldProjectDir,
   readProjectMeta,
   projectPaths,
+  projectLevelPaths,
   ensureChapterWorkspace,
+  ensureBookDirs,
   PROJECT_DIRS,
+  LEGACY_BOOK_DIRS,
   PROJECT_DB_FILE,
   PROJECT_META_FILE,
   WORKSPACE_FILES,
 } from './project-layout.js';
 export type { ProjectMeta, WorkspaceFile } from './project-layout.js';
+// 旧布局 → 按书布局的迁移（审查报告 P0-1 的配套）
+export {
+  migrateLegacyLayout,
+  needsLayoutMigration,
+  readLayoutMigrationReport,
+  LAYOUT_MARKER_FILE,
+  LEGACY_BACKUP_DIR,
+} from './layout-migration.js';
+export type { LayoutMigrationReport } from './layout-migration.js';
 
 // ── FTS 检索索引（补缺口：ADR-0004 落地） ──────────────────
 export { FtsIndex } from './fts/index.js';

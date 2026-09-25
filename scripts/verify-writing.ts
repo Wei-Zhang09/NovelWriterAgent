@@ -242,7 +242,7 @@ try {
     );
 
     // 3) 写作
-    const ws = new ChapterWorkspace({ rootDir: outDir, chapterNumber: n, logger });
+    const ws = new ChapterWorkspace({ rootDir: outDir, bookId, chapterNumber: n, logger });
     ws.ensure();
     const draftRes = await new Writer({
       complete: async (req) => {

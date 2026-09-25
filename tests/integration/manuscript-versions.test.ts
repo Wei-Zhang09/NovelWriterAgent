@@ -27,7 +27,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { rmSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { Logger } from '@nwa/core';
+import { Logger , workspaceRel } from '@nwa/core';
 import { ManuscriptRepository } from '@nwa/storage';
 import { createTestProject, makeChapter } from './helpers.js';
 
@@ -43,7 +43,7 @@ function setup() {
   const t = createTestProject();
   const chapter = makeChapter(t, 1);
   const repo = new ManuscriptRepository({ db: t.db, rootDir: t.dir, logger });
-  return { t, repo, chapterId: chapter.id, chapterNumber: 1 };
+  return { t, repo, bookId: t.bookId, chapterId: chapter.id, chapterNumber: 1 };
 }
 
 describe('⑤ 版本节点（M6 / §十三 §十四）', () => {
@@ -57,6 +57,7 @@ describe('⑤ 版本节点（M6 / §十三 §十四）', () => {
 
   const v = (text: string, sourceType: 'AI_DRAFT' | 'AI_REVISION' | 'USER_EDIT' | 'RESTORED_AUTOSAVE') =>
     ctx.repo.createVersion({
+      bookId: ctx.bookId,
       chapterId: ctx.chapterId,
       chapterNumber: ctx.chapterNumber,
       text,
@@ -121,7 +122,7 @@ describe('⑤ 版本节点（M6 / §十三 §十四）', () => {
       // autosave 与版本是两条**完全独立**的路径：
       // autosave 写旁路副本，版本由 save() 触发。
       for (let i = 0; i < 5; i++) {
-        ctx.repo.autosave(ctx.chapterNumber, `自动保存第 ${i + 1} 次。`, {
+        ctx.repo.autosave(ctx.bookId, ctx.chapterNumber, `自动保存第 ${i + 1} 次。`, {
           cursor: 0,
           selectionStart: 0,
           selectionEnd: 0,
@@ -133,10 +134,10 @@ describe('⑤ 版本节点（M6 / §十三 §十四）', () => {
 
     it('⚠ 手动保存 1 次 + 连打 5 次 autosave → 版本数仍为 1', () => {
       // 这是施工计划 M6 指定的证伪用例
-      ctx.repo.save(ctx.chapterNumber, '用户手动保存的内容。');
+      ctx.repo.save(ctx.bookId, ctx.chapterNumber, '用户手动保存的内容。');
       v('用户手动保存的内容。', 'USER_EDIT');
       for (let i = 0; i < 5; i++) {
-        ctx.repo.autosave(ctx.chapterNumber, `自动保存 ${i}。`, {
+        ctx.repo.autosave(ctx.bookId, ctx.chapterNumber, `自动保存 ${i}。`, {
           cursor: 0,
           selectionStart: 0,
           selectionEnd: 0,
@@ -148,10 +149,10 @@ describe('⑤ 版本节点（M6 / §十三 §十四）', () => {
 
     it('⚠ 反复按 Ctrl+S（内容不变）只产生 1 个节点', () => {
       const text = '内容没变。';
-      ctx.repo.save(ctx.chapterNumber, text);
+      ctx.repo.save(ctx.bookId, ctx.chapterNumber, text);
       v(text, 'USER_EDIT');
       for (let i = 0; i < 4; i++) {
-        ctx.repo.save(ctx.chapterNumber, text); // changed=false
+        ctx.repo.save(ctx.bookId, ctx.chapterNumber, text); // changed=false
         v(text, 'USER_EDIT'); // 应当返回 null
       }
       expect(ctx.repo.listVersions(ctx.chapterId)).toHaveLength(1);
@@ -175,7 +176,8 @@ describe('⑤ 版本节点（M6 / §十三 §十四）', () => {
 
     it('版本文件路径在工作区的 versions/ 目录下', () => {
       const ver = v('内容。', 'USER_EDIT')!;
-      expect(ver.contentPath).toBe('workspace/chapter-001/versions/v001.md');
+      expect(ver.contentPath).toBe(`${workspaceRel(ctx.bookId, 1)}/versions/v001.md`);
+      expect(ver.contentPath).toContain(ctx.bookId);
     });
 
     it('seq 递增时文件名跟着变（v001 / v002）', () => {
@@ -247,15 +249,15 @@ describe('⑤ 版本节点（M6 / §十三 §十四）', () => {
   describe('⑤ 恢复历史版本（§十三）', () => {
     it('⚠ 恢复同时做两件事：改正文 + 建新节点', () => {
       const first = v('第一版正文。', 'AI_DRAFT')!;
-      ctx.repo.save(ctx.chapterNumber, '第一版正文。');
+      ctx.repo.save(ctx.bookId, ctx.chapterNumber, '第一版正文。');
       v('第二版正文。', 'USER_EDIT');
-      ctx.repo.save(ctx.chapterNumber, '第二版正文。');
+      ctx.repo.save(ctx.bookId, ctx.chapterNumber, '第二版正文。');
 
       const r = ctx.repo.restoreVersion(first.id);
       expect(r).not.toBeNull();
 
       // ① 正文确实变成第一版
-      expect(ctx.repo.get(ctx.chapterNumber)).toBe('第一版正文。');
+      expect(ctx.repo.get(ctx.bookId, ctx.chapterNumber)).toBe('第一版正文。');
       // ② 建了新节点记录这次恢复
       const list = ctx.repo.listVersions(ctx.chapterId);
       expect(list[0]!.sourceType).toBe('RESTORED_AUTOSAVE');
@@ -309,11 +311,11 @@ describe('⑤ 版本节点（M6 / §十三 §十四）', () => {
     });
 
     it('恢复到当前内容 → 正文不变，不产生重复节点', () => {
-      ctx.repo.save(ctx.chapterNumber, '当前内容。');
+      ctx.repo.save(ctx.bookId, ctx.chapterNumber, '当前内容。');
       const ver = v('当前内容。', 'USER_EDIT')!;
       const r = ctx.repo.restoreVersion(ver.id);
       expect(r).not.toBeNull();
-      expect(ctx.repo.get(ctx.chapterNumber)).toBe('当前内容。');
+      expect(ctx.repo.get(ctx.bookId, ctx.chapterNumber)).toBe('当前内容。');
       // 内容与最新版本相同 → createVersion 返回 null，不新增节点
       expect(ctx.repo.listVersions(ctx.chapterId)).toHaveLength(1);
     });
@@ -324,11 +326,11 @@ describe('⑤ 版本节点（M6 / §十三 §十四）', () => {
 
     it('版本文件缺失 → 返回 null，正文不变', () => {
       const ver = v('内容。', 'USER_EDIT')!;
-      ctx.repo.save(ctx.chapterNumber, '当前正文。');
+      ctx.repo.save(ctx.bookId, ctx.chapterNumber, '当前正文。');
       rmSync(join(ctx.t.dir, ver.contentPath), { force: true });
 
       expect(ctx.repo.restoreVersion(ver.id)).toBeNull();
-      expect(ctx.repo.get(ctx.chapterNumber)).toBe('当前正文。');
+      expect(ctx.repo.get(ctx.bookId, ctx.chapterNumber)).toBe('当前正文。');
     });
   });
 
@@ -337,6 +339,7 @@ describe('⑤ 版本节点（M6 / §十三 §十四）', () => {
       const ch2 = makeChapter(ctx.t, 2);
       v('第一章内容。', 'USER_EDIT');
       ctx.repo.createVersion({
+        bookId: ctx.bookId,
         chapterId: ch2.id,
         chapterNumber: 2,
         text: '第二章内容。',
@@ -346,6 +349,7 @@ describe('⑤ 版本节点（M6 / §十三 §十四）', () => {
       expect(ctx.repo.listVersions(ctx.chapterId)).toHaveLength(1);
       expect(ctx.repo.listVersions(ch2.id)).toHaveLength(1);
       expect(ctx.repo.listVersions(ctx.chapterId)[0]!.contentPath).toContain('chapter-001');
+      expect(ctx.repo.listVersions(ctx.chapterId)[0]!.contentPath).toContain(ctx.bookId);
       expect(ctx.repo.listVersions(ch2.id)[0]!.contentPath).toContain('chapter-002');
     });
 
@@ -354,6 +358,7 @@ describe('⑤ 版本节点（M6 / §十三 §十四）', () => {
       v('一章一。', 'AI_DRAFT');
       v('一章二。', 'USER_EDIT');
       const c2 = ctx.repo.createVersion({
+        bookId: ctx.bookId,
         chapterId: ch2.id,
         chapterNumber: 2,
         text: '二章一。',
@@ -368,6 +373,7 @@ describe('⑤ 版本节点（M6 / §十三 §十四）', () => {
       const ch2 = makeChapter(ctx.t, 2);
       const a = v('第一章。', 'AI_DRAFT')!;
       const b = ctx.repo.createVersion({
+        bookId: ctx.bookId,
         chapterId: ch2.id,
         chapterNumber: 2,
         text: '第二章。',
@@ -381,29 +387,29 @@ describe('⑤ 版本节点（M6 / §十三 §十四）', () => {
 
   describe('⑦ 与既有能力的边界', () => {
     it('⚠ 建版本不改变正文（版本是快照，不是写入）', () => {
-      ctx.repo.save(ctx.chapterNumber, '当前正文。');
+      ctx.repo.save(ctx.bookId, ctx.chapterNumber, '当前正文。');
       v('一个完全不同的历史版本。', 'AI_DRAFT');
-      expect(ctx.repo.get(ctx.chapterNumber)).toBe('当前正文。');
+      expect(ctx.repo.get(ctx.bookId, ctx.chapterNumber)).toBe('当前正文。');
     });
 
     it('⚠ 建版本不改变保存状态', () => {
-      ctx.repo.save(ctx.chapterNumber, '正文。');
-      const before = ctx.repo.getSaveStatus(ctx.chapterNumber, '正文。');
+      ctx.repo.save(ctx.bookId, ctx.chapterNumber, '正文。');
+      const before = ctx.repo.getSaveStatus(ctx.bookId, ctx.chapterNumber, '正文。');
       v('正文。', 'USER_EDIT');
-      const after = ctx.repo.getSaveStatus(ctx.chapterNumber, '正文。');
+      const after = ctx.repo.getSaveStatus(ctx.bookId, ctx.chapterNumber, '正文。');
       expect(after).toEqual(before);
     });
 
     it('⚠ 建版本不影响 autosave 恢复检测', () => {
-      ctx.repo.autosave(ctx.chapterNumber, '自动保存的内容。', {
+      ctx.repo.autosave(ctx.bookId, ctx.chapterNumber, '自动保存的内容。', {
         cursor: 0,
         selectionStart: 0,
         selectionEnd: 0,
         scrollTop: 0,
       });
-      const before = ctx.repo.checkRecovery(ctx.chapterNumber);
+      const before = ctx.repo.checkRecovery(ctx.bookId, ctx.chapterNumber);
       v('某个版本。', 'AI_DRAFT');
-      const after = ctx.repo.checkRecovery(ctx.chapterNumber);
+      const after = ctx.repo.checkRecovery(ctx.bookId, ctx.chapterNumber);
       expect(after.hasNewerAutosave).toBe(before.hasNewerAutosave);
       expect(after.autosaveText).toBe(before.autosaveText);
     });

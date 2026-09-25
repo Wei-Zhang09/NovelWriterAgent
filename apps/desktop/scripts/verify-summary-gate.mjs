@@ -201,7 +201,14 @@ app.whenReady().then(async () => {
       if (!chapterId) return null;
 
       // 工作区草稿（commit 要求有正文）
-      const wsDir = join(projDir, 'workspace', `chapter-${String(n).padStart(3, '0')}`);
+      // ⚠ 按书隔离（P0-1）：工作区在 books/<bookId>/workspace/chapter-NNN
+      const wsDir = join(
+        projDir,
+        'books',
+        bookId,
+        'workspace',
+        `chapter-${String(n).padStart(3, '0')}`,
+      );
       mkdirSync(wsDir, { recursive: true });
       writeFileSync(join(wsDir, 'draft.md'), DRAFT_TEXT(n), 'utf8');
 

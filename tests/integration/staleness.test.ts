@@ -464,26 +464,26 @@ describe('⑧ ⚠ 检查对象必须等于提交对象（共用同一解析器�
   it('pickCommitSource 优先级链：manuscript ?? revision ?? draft', () => {
     const files: Record<string, string | null> = {};
     const deps = {
-      readWorkspaceText: (_n: number, name: string) => files[name] ?? null,
+      readWorkspaceText: (_b: string, _n: number, name: string) => files[name] ?? null,
     };
 
     // 三份都在 → 用户正文优先
     files['manuscript'] = '用户改的';
     files['revision'] = 'AI 修订';
     files['draft'] = 'AI 初稿';
-    expect(pickCommitSource(deps as never, 1).body).toBe('用户改的');
+    expect(pickCommitSource(deps as never, 'book_x', 1).body).toBe('用户改的');
 
     // 没有 manuscript → 退回 revision（不破坏引入用户稿前的行为）
     files['manuscript'] = null;
-    expect(pickCommitSource(deps as never, 1).body).toBe('AI 修订');
+    expect(pickCommitSource(deps as never, 'book_x', 1).body).toBe('AI 修订');
 
     // 只有 draft → draft
     files['revision'] = null;
-    expect(pickCommitSource(deps as never, 1).body).toBe('AI 初稿');
+    expect(pickCommitSource(deps as never, 'book_x', 1).body).toBe('AI 初稿');
 
     // 都没有 → null（调用方决定怎么报错）
     files['draft'] = null;
-    expect(pickCommitSource(deps as never, 1).body).toBeNull();
+    expect(pickCommitSource(deps as never, 'book_x', 1).body).toBeNull();
   });
 
   it('⚠ 解析器由 @nwa/harness 导出（app 层三处检查与提交必须共用它）', () => {
@@ -500,8 +500,8 @@ describe('⑧ ⚠ 检查对象必须等于提交对象（共用同一解析器�
       revision: 'AI 修订',
       draft: 'AI 初稿',
     };
-    const deps = { readWorkspaceText: (_n: number, name: string) => files[name] ?? null };
-    const picked = pickCommitSource(deps as never, 1);
+    const deps = { readWorkspaceText: (_b: string, _n: number, name: string) => files[name] ?? null };
+    const picked = pickCommitSource(deps as never, 'book_x', 1);
     expect(picked.body).toBe('');
     expect(picked.source).toBe('manuscript.md');
   });

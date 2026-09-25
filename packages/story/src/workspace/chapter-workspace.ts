@@ -26,7 +26,16 @@
  */
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, renameSync } from 'node:fs';
 import { join, resolve, relative, isAbsolute, dirname } from 'node:path';
-import { AppError, ErrorCode, Logger, type Nullable } from '@nwa/core';
+import {
+  AppError,
+  ErrorCode,
+  Logger,
+  assertSafeBookId,
+  bookRootRel,
+  bookWorkspaceDirRel,
+  workspaceRel,
+  type Nullable,
+} from '@nwa/core';
 
 /** 工作区中的标准文件名（§9 图示） */
 export const WORKSPACE_FILES = {
@@ -93,6 +102,16 @@ export type WorkspaceFileKey = keyof typeof WORKSPACE_FILES;
 export interface ChapterWorkspaceOptions {
   /** 项目根目录（工作区必须在其内，见 ADR-0002） */
   readonly rootDir: string;
+  /**
+   * 章节所属的书（多书隔离）。
+   *
+   * ⚠ **必填**。工作区路径原先是 `workspace/chapter-NNN`，只由章号决定；
+   *   而 DB 允许两本书各有第 1 章（`UNIQUE(book_id, chapter_number)`），
+   *   于是两书同章号共用同一个目录 —— 写 B 书的工作区会覆盖 A 书未提交的
+   *   中间产物（draft/review/manuscript/plan），且不报错。
+   *   设为必填而非可选，让"忘记传书"在编译期暴露。
+   */
+  readonly bookId: string;
   readonly chapterNumber: number;
   readonly logger: Logger;
   /** 允许写入的工作区文件白名单；默认全部（§9 图示） */
@@ -112,13 +131,17 @@ export interface WorkspaceSnapshot {
 
 export class ChapterWorkspace {
   readonly dir: string;
+  /** 本书在项目内的根目录：<root>/books/<bookId>（工作区路径按书隔离） */
+  readonly bookDir: string;
   private readonly rootDir: string;
+  private readonly bookId: string;
   private readonly chapterNumber: number;
   private readonly logger: Logger;
   private readonly allowed: readonly WorkspaceFileKey[];
 
   constructor(opts: ChapterWorkspaceOptions) {
     this.rootDir = resolve(opts.rootDir);
+    this.bookId = opts.bookId;
     this.chapterNumber = opts.chapterNumber;
     this.logger = opts.logger;
     this.allowed = opts.allowedFiles ?? (Object.keys(WORKSPACE_FILES) as WorkspaceFileKey[]);
@@ -131,9 +154,11 @@ export class ChapterWorkspace {
       );
     }
 
-    this.dir = this.assertInsideRoot(
-      join(this.rootDir, 'workspace', `chapter-${String(opts.chapterNumber).padStart(3, '0')}`),
-    );
+    // ⚠ 路径来自 @nwa/core 的 paths.ts（**唯一来源**），不在这里拼字符串。
+    //   两处各拼一份必然漂移，表现为"写到 A 处、读从 B 处"，不报错只是对不上。
+    assertSafeBookId(opts.bookId);
+    this.bookDir = this.assertInsideRoot(join(this.rootDir, bookRootRel(opts.bookId)));
+    this.dir = this.assertInsideRoot(join(this.rootDir, workspaceRel(opts.bookId, opts.chapterNumber)));
   }
 
   /**
@@ -236,8 +261,10 @@ export class ChapterWorkspace {
    */
   clear(): void {
     const guarded = this.assertInsideRoot(this.dir);
-    // 双保险：必须确实位于 `<root>/workspace/` 之下
-    const expectedParent = this.assertInsideRoot(join(this.rootDir, 'workspace'));
+    // 双保险：必须确实位于 `<root>/books/<bookId>/workspace/` 之下
+    const expectedParent = this.assertInsideRoot(
+      join(this.rootDir, bookWorkspaceDirRel(this.bookId)),
+    );
     if (dirname(guarded) !== expectedParent) {
       throw new AppError(ErrorCode.TOOL_VALIDATION_ERROR, `拒绝清理非工作区目录：${guarded}`, {
         details: { expectedParent, actualParent: dirname(guarded) },

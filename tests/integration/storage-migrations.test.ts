@@ -65,6 +65,7 @@ describe('迁移', () => {
       '0015_commit_manifest_source',
       '0016_state_proposal_source_hash',
       '0017_manuscript_versions',
+      '0018_manuscript_versions_book',
     ]);
   });
 
@@ -160,6 +161,7 @@ describe('迁移', () => {
       '0015_commit_manifest_source',
       '0016_state_proposal_source_hash',
       '0017_manuscript_versions',
+      '0018_manuscript_versions_book',
     ]);
   });
 

@@ -53,7 +53,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { Logger } from '@nwa/core';
+import { Logger , workspaceRel } from '@nwa/core';
 import { createCommitTools } from '@nwa/harness';
 import type { CommitSourceKey } from '@nwa/harness';
 import { COMMIT_SOURCE_FILE } from '@nwa/harness';
@@ -77,8 +77,13 @@ afterEach(() => {
   }
 });
 
-function writeWorkspace(chapterNumber: number, file: string, text: string): void {
-  const d = join(dir, 'workspace', `chapter-${String(chapterNumber).padStart(3, '0')}`);
+function writeWorkspace(
+  bookId: string,
+  chapterNumber: number,
+  file: string,
+  text: string,
+): void {
+  const d = join(dir, workspaceRel(bookId, chapterNumber));
   mkdirSync(d, { recursive: true });
   writeFileSync(join(d, file), text, 'utf8');
 }
@@ -102,8 +107,8 @@ function toolsOf(proj: TestProject) {
     repos: proj.repos,
     rootDir: dir,
     logger,
-    readWorkspaceText: (chapterNumber: number, name: CommitSourceKey) => {
-      const d = join(dir, 'workspace', `chapter-${String(chapterNumber).padStart(3, '0')}`);
+    readWorkspaceText: (bookId: string, chapterNumber: number, name: CommitSourceKey) => {
+      const d = join(dir, workspaceRel(bookId, chapterNumber));
       const p = join(d, COMMIT_SOURCE_FILE[name]);
       return existsSync(p) ? readFileSync(p, 'utf8') : null;
     },
@@ -144,8 +149,8 @@ describe('⚠ 多书隔离：提交路径的 FTS book_id 归属', () => {
     passReview(proj, chapterA.id);
     passReview(proj, chapterB.id);
 
-    writeWorkspace(1, 'draft.md', 'B 书的正文。');
-    writeWorkspace(2, 'draft.md', 'A 书第 2 章的正文。');
+    writeWorkspace(bookB.id, 1, 'draft.md', 'B 书的正文。');
+    writeWorkspace(proj.bookId, 2, 'draft.md', 'A 书第 2 章的正文。');
 
     const { tools, indexed } = toolsOf(proj);
     const commit = tools.find((x) => x.name === 'workspace.commit')!;
@@ -187,9 +192,11 @@ describe('⚠ 多书隔离：提交路径的 FTS book_id 归属', () => {
     passReview(proj, chapterA.id);
     passReview(proj, chapterB.id);
 
-    // ⚠ 两章的章号相同（各书第 1 章）→ 工作区路径会撞。
-    //   这正是"按章号定位正文"的真实情形，也顺带验证索引按 chapterId 区分。
-    writeWorkspace(1, 'draft.md', '共同的第 1 章正文。');
+    // ⚠ 两章的章号相同（各书第 1 章）。P0-1 修复前它们共用同一个工作区
+    //   路径 —— 写第二份会覆盖第一份，提交 A 书时读到的其实是 B 书的草稿。
+    //   现在按书隔离，两份草稿各自独立，因此这里必须分别写入。
+    writeWorkspace(proj.bookId, 1, 'draft.md', 'A 书的第 1 章正文。');
+    writeWorkspace(bookB.id, 1, 'draft.md', 'B 书的第 1 章正文。');
 
     const { tools, indexed } = toolsOf(proj);
     const commit = tools.find((x) => x.name === 'workspace.commit')!;
@@ -208,7 +215,7 @@ describe('⚠ 多书隔离：提交路径的 FTS book_id 归属', () => {
     t = proj;
     const chapter = makeChapter(proj, 1);
     passReview(proj, chapter.id);
-    writeWorkspace(1, 'draft.md', '正文。');
+    writeWorkspace(proj.bookId, 1, 'draft.md', '正文。');
 
     const { tools, indexed } = toolsOf(proj);
     const commit = tools.find((x) => x.name === 'workspace.commit')!;
@@ -237,8 +244,8 @@ describe('⚠ 多书隔离：提交路径的 FTS book_id 归属', () => {
     });
     passReview(proj, chapterA.id);
     passReview(proj, chapterB.id);
-    writeWorkspace(1, 'draft.md', 'A 书正文。');
-    writeWorkspace(2, 'draft.md', 'B 书正文。');
+    writeWorkspace(proj.bookId, 1, 'draft.md', 'A 书正文。');
+    writeWorkspace(bookB.id, 2, 'draft.md', 'B 书正文。');
 
     const { tools, indexed } = toolsOf(proj);
     const commit = tools.find((x) => x.name === 'workspace.commit')!;
@@ -257,15 +264,15 @@ describe('⚠ 多书隔离：提交路径的 FTS book_id 归属', () => {
     t = proj;
     const chapter = makeChapter(proj, 1);
     passReview(proj, chapter.id);
-    writeWorkspace(1, 'draft.md', '正文。');
+    writeWorkspace(proj.bookId, 1, 'draft.md', '正文。');
 
     const tools = createCommitTools({
       db: proj.db,
       repos: proj.repos,
       rootDir: dir,
       logger,
-      readWorkspaceText: (chapterNumber: number, name: CommitSourceKey) => {
-        const d = join(dir, 'workspace', `chapter-${String(chapterNumber).padStart(3, '0')}`);
+      readWorkspaceText: (bookId: string, chapterNumber: number, name: CommitSourceKey) => {
+        const d = join(dir, workspaceRel(bookId, chapterNumber));
         const p = join(d, COMMIT_SOURCE_FILE[name]);
         return existsSync(p) ? readFileSync(p, 'utf8') : null;
       },

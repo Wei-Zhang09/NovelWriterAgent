@@ -51,16 +51,17 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
 } from 'node:fs';
-import { join, sep } from 'node:path';
-import { Logger } from '@nwa/core';
+import { dirname, join, relative, sep } from 'node:path';
+import { Logger, summaryRel } from '@nwa/core';
 import {
   Database,
   FtsIndex,
   MIGRATIONS,
   PROJECT_DB_FILE,
   PROJECT_DIRS,
-  projectPaths,
+  projectLevelPaths,
   type IndexChapterInput,
   type IndexMemoryInput,
   type Tokenizer,
@@ -103,14 +104,50 @@ const PRE_RESTORE_PREFIX = '.pre-restore-';
 const WORKSPACE_STASH_PREFIX = '.pre-restore-workspace-';
 
 interface WorkspaceStash {
-  /** 原始位置（目标项目下的 workspace/） */
-  readonly original: string;
-  /** 暂存位置（挪到一旁时用；未挪动过为 null） */
-  readonly stashedAt: string | null;
+  /**
+   * 需要保护的工作区目录列表（`from` 是恢复前的真实位置）。
+   *
+   * ⚠ 是**列表**而不是单个路径：P0-1 起工作区按书隔离，
+   *   一个项目可能有多本书、每本各有一个 `workspace/`。
+   *   只保护一个会让其余书的未提交正文在恢复时消失。
+   */
+  readonly items: readonly { readonly from: string; readonly to: string }[];
+  /** 暂存根目录（挪到一旁时用；未挪动过为 null） */
+  readonly stashedRoot: string | null;
 }
 
 /**
- * 把目标项目的 `workspace/`（用户未提交正文的保命线）从"整体移走"里排除。
+ * 找出目标项目里全部"装着未提交正文的工作区目录"。
+ *
+ * ⚠ 扫磁盘而不是查 DB：此刻马上就要把整个 targetDir 改名，
+ *   开一个数据库连接去读它只会增加失败面（且 Windows 上
+ *   被占用的目录 rename 会 EPERM）。我们需要的只是"哪些目录存在"。
+ *
+ * 覆盖两种布局：
+ *   - 新：`books/<bookId>/workspace/`（P0-1 之后）
+ *   - 旧：`workspace/`（项目根，尚未迁移的老项目）
+ */
+function findWorkspaceDirs(targetDir: string): string[] {
+  const out: string[] = [];
+
+  // 新布局：逐书
+  const booksDir = join(targetDir, PROJECT_DIRS.books);
+  if (existsSync(booksDir)) {
+    for (const entry of readdirSync(booksDir)) {
+      const ws = join(booksDir, entry, PROJECT_DIRS.workspace);
+      if (existsSync(ws)) out.push(ws);
+    }
+  }
+
+  // 旧布局：项目根
+  const legacy = join(targetDir, PROJECT_DIRS.workspace);
+  if (existsSync(legacy)) out.push(legacy);
+
+  return out;
+}
+
+/**
+ * 把目标项目里各个 `workspace/`（用户未提交正文的保命线）从"整体移走"里排除。
  *
  * 返回句柄，复制完备份后用 `restoreWorkspace()` 挪回原位。
  *
@@ -118,46 +155,84 @@ interface WorkspaceStash {
  *   静默继续的后果是用户正文消失且无人知晓。
  */
 function preserveWorkspace(targetDir: string, logger: Logger, warnings: string[]): WorkspaceStash {
-  const original = join(targetDir, PROJECT_DIRS.workspace);
-  if (!existsSync(original)) return { original, stashedAt: null };
+  const dirs = findWorkspaceDirs(targetDir);
+  if (dirs.length === 0) return { items: [], stashedRoot: null };
 
-  const stashedAt = `${targetDir}${WORKSPACE_STASH_PREFIX}${stamp()}`;
-  try {
-    renameSync(original, stashedAt);
-    logger.info('已暂存目标项目的 workspace/（未提交正文，恢复后挪回）', { stashedAt });
-    return { original, stashedAt };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    warnings.push(
-      `无法暂存目标项目的 ${PROJECT_DIRS.workspace}/（${msg}）：` +
-        '它里面有**未提交的正文**，而备份不含这部分。' +
-        '请先关闭该项目后重试，否则恢复会让这些内容消失。',
-    );
-    return { original, stashedAt: null };
+  const stashedRoot = `${targetDir}${WORKSPACE_STASH_PREFIX}${stamp()}`;
+  const items: { from: string; to: string }[] = [];
+
+  for (const from of dirs) {
+    // 在暂存区里保留原来的相对位置，挪回时才能精确还原
+    const rel = relative(targetDir, from);
+    const to = join(stashedRoot, rel);
+    try {
+      mkdirSync(dirname(to), { recursive: true });
+      renameSync(from, to);
+      items.push({ from, to });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      warnings.push(
+        `无法暂存 ${rel}（${msg}）：` +
+          '它里面有**未提交的正文**，而备份不含这部分。' +
+          '请先关闭该项目后重试，否则恢复会让这些内容消失。',
+      );
+    }
+  }
+
+  if (items.length > 0) {
+    logger.info('已暂存未提交正文的工作区（恢复后挪回）', {
+      count: items.length,
+      stashedRoot,
+    });
+  }
+  return { items, stashedRoot };
+}
+
+/** 把 `preserveWorkspace()` 挪走的各个 workspace/ 放回原位 */
+function restoreWorkspace(stash: WorkspaceStash, logger: Logger, warnings: string[]): void {
+  if (stash.stashedRoot === null) return;
+
+  for (const { from, to } of stash.items) {
+    // 备份里理论不含 workspace/，但若真的含了，挪回会覆盖 —— 如实报告。
+    if (existsSync(from)) {
+      warnings.push(
+        `${relative(stash.stashedRoot, to)} 在恢复过程中被创建，暂存的未提交正文**未**挪回。` +
+          `内容保留在：${to}`,
+      );
+      continue;
+    }
+    try {
+      mkdirSync(dirname(from), { recursive: true });
+      renameSync(to, from);
+      logger.info('已把未提交正文挪回', { to: from });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      warnings.push(
+        `未提交正文**未能**挪回原位（${msg}）。内容保留在：${to}，请手动移回。`,
+      );
+    }
+  }
+
+  // 全部挪回后清掉空的暂存目录（残留会让用户以为还有东西没恢复）
+  if (stash.items.length > 0 && existsSync(stash.stashedRoot)) {
+    try {
+      const leftovers = collectFilesUnder(stash.stashedRoot);
+      if (leftovers === 0) rmSync(stash.stashedRoot, { recursive: true, force: true });
+    } catch {
+      /* 清理失败不影响正确性 */
+    }
   }
 }
 
-/** 把 `preserveWorkspace()` 挪走的 workspace/ 放回原位 */
-function restoreWorkspace(stash: WorkspaceStash, logger: Logger, warnings: string[]): void {
-  if (stash.stashedAt === null) return;
-
-  // 备份里理论不含 workspace/，但若真的含了，挪回会覆盖 —— 如实报告。
-  if (existsSync(stash.original)) {
-    warnings.push(
-      `${PROJECT_DIRS.workspace}/ 在恢复过程中被创建，暂存的未提交正文**未**挪回。` +
-        `内容保留在：${stash.stashedAt}`,
-    );
-    return;
+/** 统计目录下的文件数（用于判断暂存区是否已空） */
+function collectFilesUnder(dir: string): number {
+  let n = 0;
+  for (const entry of readdirSync(dir)) {
+    const abs = join(dir, entry);
+    if (statSync(abs).isDirectory()) n += collectFilesUnder(abs);
+    else n++;
   }
-  try {
-    renameSync(stash.stashedAt, stash.original);
-    logger.info('已把未提交正文挪回', { to: stash.original });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    warnings.push(
-      `未提交正文**未能**挪回原位（${msg}）。内容保留在：${stash.stashedAt}，请手动移回。`,
-    );
-  }
+  return n;
 }
 
 export function restoreBackup(opts: RestoreOptions): RestoreResult {
@@ -193,7 +268,7 @@ export function restoreBackup(opts: RestoreOptions): RestoreResult {
 
   // ── 2. 目标已存在 → 检查是否允许覆盖，并先把现状移走 ──
   let previousMovedTo: string | null = null;
-  let stash: WorkspaceStash = { original: join(targetDir, PROJECT_DIRS.workspace), stashedAt: null };
+  let stash: WorkspaceStash = { items: [], stashedRoot: null };
   const targetExists = existsSync(targetDir) && readdirSync(targetDir).length > 0;
   if (targetExists) {
     if (opts.overwrite !== true) {
@@ -334,7 +409,7 @@ export function rebuildFts(
   tokenizer: Tokenizer,
   logger: Logger,
 ): { readonly chapters: number; readonly memories: number } {
-  const paths = projectPaths(rootDir);
+  const paths = projectLevelPaths(rootDir);
   const db = new Database({ path: paths.db, migrations: MIGRATIONS });
 
   try {
@@ -379,7 +454,7 @@ export function rebuildFts(
         itemId: `summary_${r.id}`,
         bookId: r.book_id,
         itemType: 'SUMMARY',
-        sourceRef: `summaries/${String(r.chapter_number).padStart(3, '0')}.md`,
+        sourceRef: summaryRel(r.book_id, r.chapter_number),
         text: r.summary ?? '',
       }));
 

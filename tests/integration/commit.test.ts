@@ -24,7 +24,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { CommitEngine, AtomicFileSet, CommitLock, RepairEngine, sha256, findAliases } from '@nwa/harness';
 import type { KillSwitch } from '@nwa/harness';
-import { Logger } from '@nwa/core';
+import { Logger , chapterRel, summaryRel } from '@nwa/core';
 import { createTestProject, makeChapter, type TestProject } from './helpers.js';
 
 const logger = new Logger('test:commit', { level: 'error' });
@@ -66,15 +66,17 @@ function engineOf(proj: TestProject, kill?: readonly KillSwitch['at'][number][])
   });
 }
 
-const req = (chapterId: string) => ({
+const req = (bookId: string, chapterId: string) => ({
+  bookId,
   chapterId,
   chapterNumber: 1,
   body: '张三推开门走了进来。\n他看了一眼窗外。',
   summary: '张三进城。',
 });
 
-const chapterFile = () => join(dir, 'chapters', '001.md');
-const summaryFile = () => join(dir, 'summaries', '001.md');
+// ⚠ 路径按书隔离（P0-1），必须带 bookId
+const chapterFile = (bookId: string) => join(dir, chapterRel(bookId, 1));
+const summaryFile = (bookId: string) => join(dir, summaryRel(bookId, 1));
 const indexFile = () => join(dir, 'artifacts', 'index.json');
 
 // ══════════════════════════════════════════════════════════
@@ -84,45 +86,47 @@ const indexFile = () => join(dir, 'artifacts', 'index.json');
 describe('正常提交（PREPARE → APPLY → VERIFY）', () => {
   it('全绿：文件落盘、状态 COMMITTED、manifest COMMITTED', () => {
     const { proj, chapter } = setup();
-    const r = engineOf(proj).commit(req(chapter.id));
+    const r = engineOf(proj).commit(req(proj.bookId, chapter.id));
 
     expect(r.ok).toBe(true);
     expect(r.status).toBe('COMMITTED');
     expect(r.phase).toBe('committed');
-    expect(existsSync(chapterFile())).toBe(true);
-    expect(readFileSync(chapterFile(), 'utf8')).toContain('张三推开门');
+    expect(existsSync(chapterFile(proj.bookId))).toBe(true);
+    expect(readFileSync(chapterFile(proj.bookId), 'utf8')).toContain('张三推开门');
     expect(proj.repos.chapters.get(chapter.id).status).toBe('COMMITTED');
   });
 
   it('body_path 被正确写入（这是「正文已验证」的物理标记）', () => {
     const { proj, chapter } = setup();
-    engineOf(proj).commit(req(chapter.id));
-    expect(proj.repos.chapters.get(chapter.id).body_path).toBe('chapters/001.md');
+    engineOf(proj).commit(req(proj.bookId, chapter.id));
+    expect(proj.repos.chapters.get(chapter.id).body_path).toBe(
+      chapterRel(proj.bookId, 1),
+    );
   });
 
   it('摘要文件与 artifacts/index.json 一并写入', () => {
     const { proj, chapter } = setup();
-    engineOf(proj).commit(req(chapter.id));
-    expect(existsSync(summaryFile())).toBe(true);
+    engineOf(proj).commit(req(proj.bookId, chapter.id));
+    expect(existsSync(summaryFile(proj.bookId))).toBe(true);
     expect(existsSync(indexFile())).toBe(true);
   });
 
   it('提交后清理 .next / .previous 残留', () => {
     const { proj, chapter } = setup();
-    engineOf(proj).commit(req(chapter.id));
-    expect(existsSync(chapterFile() + '.next')).toBe(false);
-    expect(existsSync(chapterFile() + '.previous')).toBe(false);
+    engineOf(proj).commit(req(proj.bookId, chapter.id));
+    expect(existsSync(chapterFile(proj.bookId) + '.next')).toBe(false);
+    expect(existsSync(chapterFile(proj.bookId) + '.previous')).toBe(false);
   });
 
   it('提交后释放锁（不留下 .commit.lock）', () => {
     const { proj, chapter } = setup();
-    engineOf(proj).commit(req(chapter.id));
+    engineOf(proj).commit(req(proj.bookId, chapter.id));
     expect(existsSync(join(dir, '.commit.lock'))).toBe(false);
   });
 
   it('applied_count 反映实际写入的产物数', () => {
     const { proj, chapter } = setup();
-    const r = engineOf(proj).commit(req(chapter.id));
+    const r = engineOf(proj).commit(req(proj.bookId, chapter.id));
     expect(r.appliedCount).toBeGreaterThanOrEqual(3); // chapter + summary + index
   });
 });
@@ -134,7 +138,7 @@ describe('正常提交（PREPARE → APPLY → VERIFY）', () => {
 describe('⚠ §52 Test D：4 个 kill 注入点全覆盖', () => {
   it('① PREPARE 后中断 → Repair 判定为「未开始 APPLY」→ 回滚', () => {
     const { proj, chapter } = setup();
-    expect(() => engineOf(proj, ['after-prepare']).commit(req(chapter.id))).toThrow();
+    expect(() => engineOf(proj, ['after-prepare']).commit(req(proj.bookId, chapter.id))).toThrow();
 
     const repair = engineOf(proj).recoverOnStartup();
     expect(repair.repaired).toHaveLength(1);
@@ -142,13 +146,13 @@ describe('⚠ §52 Test D：4 个 kill 注入点全覆盖', () => {
     expect(repair.repaired[0]!.resultingStatus).toBe('ROLLED_BACK');
 
     // 确定性判定：文件没被写
-    expect(existsSync(chapterFile())).toBe(false);
+    expect(existsSync(chapterFile(proj.bookId))).toBe(false);
     expect(proj.repos.chapters.get(chapter.id).status).toBe('DRAFT_READY');
   });
 
   it('② APPLY 文件写完（rename 后）中断 → 回滚，不留孤儿文件', () => {
     const { proj, chapter } = setup();
-    expect(() => engineOf(proj, ['after-file-apply']).commit(req(chapter.id))).toThrow();
+    expect(() => engineOf(proj, ['after-file-apply']).commit(req(proj.bookId, chapter.id))).toThrow();
 
     const repair = engineOf(proj).recoverOnStartup();
     expect(repair.repaired).toHaveLength(1);
@@ -156,12 +160,12 @@ describe('⚠ §52 Test D：4 个 kill 注入点全覆盖', () => {
 
     // ⚠ 关键：不回状态就提交 = 孤儿章节文件
     expect(proj.repos.chapters.get(chapter.id).status).toBe('DRAFT_READY');
-    expect(existsSync(chapterFile() + '.next')).toBe(false);
+    expect(existsSync(chapterFile(proj.bookId) + '.next')).toBe(false);
   });
 
   it('③ APPLY DB 提交前中断 → 回滚', () => {
     const { proj, chapter } = setup();
-    expect(() => engineOf(proj, ['before-db-commit']).commit(req(chapter.id))).toThrow();
+    expect(() => engineOf(proj, ['before-db-commit']).commit(req(proj.bookId, chapter.id))).toThrow();
 
     const repair = engineOf(proj).recoverOnStartup();
     expect(repair.repaired).toHaveLength(1);
@@ -173,7 +177,7 @@ describe('⚠ §52 Test D：4 个 kill 注入点全覆盖', () => {
 
   it('④ VERIFY 中中断 → manifest 为 APPLIED、DB 已提交 → 判定为已完成', () => {
     const { proj, chapter } = setup();
-    expect(() => engineOf(proj, ['during-verify']).commit(req(chapter.id))).toThrow();
+    expect(() => engineOf(proj, ['during-verify']).commit(req(proj.bookId, chapter.id))).toThrow();
 
     // DB 事务 B 已提交，所以章节已是 COMMITTED
     expect(proj.repos.chapters.get(chapter.id).status).toBe('COMMITTED');
@@ -211,7 +215,7 @@ describe('⚠ §52 Test D：4 个 kill 注入点全覆盖', () => {
           logger,
           killSwitch: { at: [p] },
         });
-        expect(() => eng.commit({ ...req(chapter.id) })).toThrow();
+        expect(() => eng.commit({ ...req(proj.bookId, chapter.id) })).toThrow();
 
         const repair = new RepairEngine({
           db: proj.db,
@@ -234,18 +238,18 @@ describe('⚠ §52 Test D：4 个 kill 注入点全覆盖', () => {
 
   it('⚠ 中断后重试提交能成功（不因残留而卡死）', () => {
     const { proj, chapter } = setup();
-    expect(() => engineOf(proj, ['after-file-apply']).commit(req(chapter.id))).toThrow();
+    expect(() => engineOf(proj, ['after-file-apply']).commit(req(proj.bookId, chapter.id))).toThrow();
     engineOf(proj).recoverOnStartup();
 
     // 第二次提交应当正常完成
-    const r = engineOf(proj).commit(req(chapter.id));
+    const r = engineOf(proj).commit(req(proj.bookId, chapter.id));
     expect(r.ok).toBe(true);
     expect(proj.repos.chapters.get(chapter.id).status).toBe('COMMITTED');
   });
 
   it('已完成的事务不会被重复修复（幂等）', () => {
     const { proj, chapter } = setup();
-    engineOf(proj).commit(req(chapter.id));
+    engineOf(proj).commit(req(proj.bookId, chapter.id));
 
     const repair = engineOf(proj).recoverOnStartup();
     expect(repair.scanned).toBe(0); // COMMITTED 的不进扫描范围
@@ -264,7 +268,7 @@ describe('⚠ 约束：Repair 只能删 manifest 列出的路径（绝不扫目�
     // 用户手工放的文件 —— 不在任何 manifest 里
     writeFileSync(join(dir, 'chapters', '999-手工笔记.md'), '这是我自己写的，别删', 'utf8');
 
-    expect(() => engineOf(proj, ['after-file-apply']).commit(req(chapter.id))).toThrow();
+    expect(() => engineOf(proj, ['after-file-apply']).commit(req(proj.bookId, chapter.id))).toThrow();
     engineOf(proj).recoverOnStartup();
 
     // ⚠ 如果 Repair 扫目录，这个文件就会被当孤儿删掉
@@ -278,7 +282,7 @@ describe('⚠ 约束：Repair 只能删 manifest 列出的路径（绝不扫目�
     mkdirSync(otherWs, { recursive: true });
     writeFileSync(join(otherWs, 'draft.md'), '第二章草稿', 'utf8');
 
-    expect(() => engineOf(proj, ['after-prepare']).commit(req(chapter.id))).toThrow();
+    expect(() => engineOf(proj, ['after-prepare']).commit(req(proj.bookId, chapter.id))).toThrow();
     engineOf(proj).recoverOnStartup();
 
     expect(readFileSync(join(otherWs, 'draft.md'), 'utf8')).toBe('第二章草稿');
@@ -288,14 +292,14 @@ describe('⚠ 约束：Repair 只能删 manifest 列出的路径（绝不扫目�
 describe('⚠ 约束：文件写入经 .next + rename（读者永不见半截文件）', () => {
   it('提交过程中正式文件的内容要么是旧版、要么是完整新版', () => {
     const { proj, chapter } = setup();
-    writeFileSync(chapterFile().replace(/chapters.*/, 'x'), '', 'utf8'); // 无关
+    writeFileSync(chapterFile(proj.bookId).replace(/chapters.*/, 'x'), '', 'utf8'); // 无关
     mkdirSync(join(dir, 'chapters'), { recursive: true });
-    writeFileSync(chapterFile(), '旧内容', 'utf8');
+    writeFileSync(chapterFile(proj.bookId), '旧内容', 'utf8');
 
-    engineOf(proj).commit(req(chapter.id));
+    engineOf(proj).commit(req(proj.bookId, chapter.id));
     // rename 是原子的：最终内容必须完整
-    expect(readFileSync(chapterFile(), 'utf8')).toContain('张三推开门');
-    expect(readFileSync(chapterFile(), 'utf8')).not.toBe('旧内容');
+    expect(readFileSync(chapterFile(proj.bookId), 'utf8')).toContain('张三推开门');
+    expect(readFileSync(chapterFile(proj.bookId), 'utf8')).not.toBe('旧内容');
   });
 
   it('stage 会备份原文件为 .previous', () => {
@@ -321,7 +325,7 @@ describe('⚠ 约束：CAS 冲突不得自动覆盖', () => {
   it('目标文件被外部修改 → 中止并报 COMMIT_CONFLICT', () => {
     const { proj, chapter } = setup();
     mkdirSync(join(dir, 'chapters'), { recursive: true });
-    writeFileSync(chapterFile(), '外部修改前', 'utf8');
+    writeFileSync(chapterFile(proj.bookId), '外部修改前', 'utf8');
 
     const files = new AtomicFileSet(dir);
     // 模拟：PREPARE 时记录的哈希已过期（用户随后手工改了文件）
@@ -334,7 +338,7 @@ describe('⚠ 约束：CAS 冲突不得自动覆盖', () => {
     ).toThrow(/CAS 冲突/);
 
     // ⚠ 用户的手工修改必须原封不动
-    expect(readFileSync(chapterFile(), 'utf8')).toBe('外部修改前');
+    expect(readFileSync(chapterFile(proj.bookId), 'utf8')).toBe('外部修改前');
     void proj;
     void chapter;
   });
@@ -510,7 +514,7 @@ describe('Repair 的可审计性（§55 Rule 8）', () => {
       new Date().toISOString(),
     );
 
-    expect(() => engineOf(proj, ['after-prepare']).commit(req(chapter.id))).toThrow();
+    expect(() => engineOf(proj, ['after-prepare']).commit(req(proj.bookId, chapter.id))).toThrow();
     engineOf(proj).recoverOnStartup();
 
     // ⚠ 列名是 event_type（不是 type）
@@ -522,7 +526,7 @@ describe('Repair 的可审计性（§55 Rule 8）', () => {
 
   it('重复执行 Repair 不会重复处理已收尾的事务', () => {
     const { proj, chapter } = setup();
-    expect(() => engineOf(proj, ['after-prepare']).commit(req(chapter.id))).toThrow();
+    expect(() => engineOf(proj, ['after-prepare']).commit(req(proj.bookId, chapter.id))).toThrow();
 
     const first = engineOf(proj).recoverOnStartup();
     const second = engineOf(proj).recoverOnStartup();
@@ -533,7 +537,7 @@ describe('Repair 的可审计性（§55 Rule 8）', () => {
 
   it('manifest 损坏时拒绝自动修复（保留现场）', () => {
     const { proj, chapter } = setup();
-    expect(() => engineOf(proj, ['after-prepare']).commit(req(chapter.id))).toThrow();
+    expect(() => engineOf(proj, ['after-prepare']).commit(req(proj.bookId, chapter.id))).toThrow();
 
     // 破坏 artifact JSON
     proj.db.run(

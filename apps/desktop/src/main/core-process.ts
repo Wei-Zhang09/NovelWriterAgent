@@ -24,6 +24,7 @@ import {
   hashSettings,
   measureText,
   sha256Text,
+  chapterRel,
   type ErrorCodeValue,
 } from '@nwa/core';
 import {
@@ -33,7 +34,10 @@ import {
   canProcess,
   confirmBookSettings,
   createRepositories,
+  ensureBookDirs,
   filterSkillsByGenre,
+  migrateLegacyLayout,
+  needsLayoutMigration,
   normalizeGenre,
   type Repositories,
 } from '@nwa/storage';
@@ -884,6 +888,33 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const dbPath = join(dir, 'project.db');
 
     const db = new Database({ path: dbPath, migrations: MIGRATIONS });
+
+    // ⚠ 老项目迁移：旧布局（chapters/001.md，不含书）→ 新布局
+    //   （books/<bookId>/chapters/001.md）。
+    //
+    //   不做这一步的后果不是报错，而是**旧正文突然"消失"**：
+    //   读取路径换了，而 DB 里 body_path 仍写着 'chapters/001.md'
+    //   → 章节列表显示已提交、点开是空的。用户会以为数据丢了。
+    //
+    //   ⚠ 必须在 `createRepositories` **之前**做：迁移要用 DB 里的
+    //     chapters.book_id 判定归属，而 DB 本身不受布局影响。
+    //     迁移是幂等的（有标记文件即跳过），因此每次打开都调。
+    try {
+      if (needsLayoutMigration(dir)) {
+        const report = migrateLegacyLayout(dir, db, logger.child('layout'));
+        logger.info('旧布局迁移完成', {
+          movedFiles: report.movedFiles,
+          books: report.byBook.length,
+          unresolved: report.unresolved.length,
+        });
+      }
+    } catch (e) {
+      // ⚠ 迁移失败**不阻断打开项目**：用户仍能打开、看到章节列表；
+      //   失败只影响旧文件的可见性，而阻断打开会让整个项目不可用。
+      //   但必须留下明确日志，不能静默。
+      logger.error('旧布局迁移失败（项目仍可打开，但旧正文可能不可见）', e, { dir });
+    }
+
     const repos = createRepositories(db);
     const tools = new ToolRegistry(logger.child('tools'));
     // FTS 索引器（补缺口：检索可用）
@@ -912,9 +943,12 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
           },
         },
         // 工作区读取由 app 层注入，避免 @nwa/harness 依赖 @nwa/story
-        readWorkspaceText: (chapterNumber, name) => {
+        // ⚠ 第一个参数是 bookId（工作区按书隔离，P0-1）。
+        //   提交引擎手里有 `req.bookId`（来自 chapters.book_id），传下来即可。
+        readWorkspaceText: (bookId, chapterNumber, name) => {
           const ws = new ChapterWorkspace({
             rootDir: dir,
+            bookId,
             chapterNumber,
             logger: logger.child('workspace'),
           });
@@ -1006,6 +1040,10 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       projectId: params.projectId,
       title: params.title.trim(),
     });
+    // ⚠ 建这本书的三个目录（P0-1 起路径按书隔离）。
+    //   不建的话第一章的工作区父目录不存在，而 `scaffoldProjectDir`
+    //   只建"项目自带的初始书"那一本。
+    ensureBookDirs(p.dir, row.id);
     logger.info('书目已创建', { bookId: row.id, title: row.title });
     return { id: row.id, projectId: row.project_id, title: row.title, currentChapter: row.current_chapter };
   },
@@ -1189,7 +1227,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
         slots.topMemory!.push({
           id: `summary_${c.chapter_number}`,
           sourceType: 'SUMMARY',
-          sourceRef: c.body_path ?? `chapters/${c.chapter_number}.md`,
+          sourceRef: c.body_path ?? chapterRel(bookId, c.chapter_number),
           content: `第 ${c.chapter_number} 章摘要：${c.summary}`,
           priority: c.chapter_number,
         });
@@ -1267,6 +1305,8 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const chapter = p.repos.chapters.get(params.chapterId);
     const ws = new ChapterWorkspace({
       rootDir: p.dir,
+      // ⚠ 按书隔离（P0-1）：用章节行自己的 book_id，不用"当前书"
+      bookId: chapter.book_id,
       chapterNumber: chapter.chapter_number,
       logger: logger.child('workspace'),
     });
@@ -1301,6 +1341,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
 
     const workspace = new ChapterWorkspace({
       rootDir: p.dir,
+      bookId: chapter.book_id,
       chapterNumber: chapter.chapter_number,
       logger: logger.child('workspace'),
     });
@@ -1421,6 +1462,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     //   draft.md 逐字相同，否则"版本"与"产物"是两个东西。
     try {
       manuscriptRepo().createVersion({
+        bookId: chapter.book_id,
         chapterId: chapter.id,
         chapterNumber: chapter.chapter_number,
         text: workspace.readText('draft') ?? d.text,
@@ -1470,6 +1512,8 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
 
     const ws = new ChapterWorkspace({
       rootDir: p.dir,
+      // ⚠ 按书隔离（P0-1）：用章节行自己的 book_id，不用"当前书"
+      bookId: chapter.book_id,
       chapterNumber: chapter.chapter_number,
       logger: logger.child('workspace'),
     });
@@ -1524,6 +1568,8 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const bookId = chapter.book_id;
     const ws = new ChapterWorkspace({
       rootDir: p.dir,
+      // ⚠ 按书隔离（P0-1）：用章节行自己的 book_id，不用"当前书"
+      bookId: chapter.book_id,
       chapterNumber: chapter.chapter_number,
       logger: logger.child('workspace'),
     });
@@ -1640,6 +1686,8 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
 
     const ws = new ChapterWorkspace({
       rootDir: p.dir,
+      // ⚠ 按书隔离（P0-1）：用章节行自己的 book_id，不用"当前书"
+      bookId: chapter.book_id,
       chapterNumber: chapter.chapter_number,
       logger: logger.child('workspace'),
     });
@@ -1715,6 +1763,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     //   §15 要求 AI 修订不得自动覆盖用户正文，所以 revision 只是候选版本。
     try {
       manuscriptRepo().createVersion({
+        bookId: chapter.book_id,
         chapterId: chapter.id,
         chapterNumber: chapter.chapter_number,
         text: ws.readText('revision') ?? '',
@@ -1788,7 +1837,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const p = requireProject();
     const chapter = p.repos.chapters.get(params.chapterId);
     const repo = manuscriptRepo();
-    const opened = repo.open(chapter.chapter_number);
+    const opened = repo.open(chapter.book_id, chapter.chapter_number);
     return {
       chapterId: chapter.id,
       chapterNumber: chapter.chapter_number,
@@ -1806,7 +1855,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const p = requireProject();
     const chapter = p.repos.chapters.get(params.chapterId);
     const repo = manuscriptRepo();
-    const text = repo.get(chapter.chapter_number);
+    const text = repo.get(chapter.book_id, chapter.chapter_number);
     return {
       chapterId: chapter.id,
       chapterNumber: chapter.chapter_number,
@@ -1826,10 +1875,10 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const p = requireProject();
     const chapter = p.repos.chapters.get(params.chapterId);
     const repo = manuscriptRepo();
-    const res = repo.save(chapter.chapter_number, params.text);
+    const res = repo.save(chapter.book_id, chapter.chapter_number, params.text);
     // ⚠ 保存成功后清掉待恢复的 autosave —— 用户已经显式保存了，
     //   再留着副本会让下次打开又提示"发现未恢复的编辑内容"。
-    if (res.changed) repo.clearAutosave(chapter.chapter_number);
+    if (res.changed) repo.clearAutosave(chapter.book_id, chapter.chapter_number);
 
     // ── M6：手动保存建 USER_EDIT 版本节点（ADR-0008 §6）──
     //
@@ -1844,6 +1893,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     if (res.changed) {
       try {
         version = repo.createVersion({
+          bookId: chapter.book_id,
           chapterId: chapter.id,
           chapterNumber: chapter.chapter_number,
           text: params.text,
@@ -1904,6 +1954,8 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
 
     const ws = new ChapterWorkspace({
       rootDir: p.dir,
+      // ⚠ 按书隔离（P0-1）：用章节行自己的 book_id，不用"当前书"
+      bookId: chapter.book_id,
       chapterNumber: chapter.chapter_number,
       logger: logger.child('workspace'),
     });
@@ -1979,7 +2031,18 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       version: r.version,
       // ⚠ 恢复只改正文，**不碰 Canon**（§二 SAVE != COMMIT 同样适用）
       saved: r.saved,
-      text: manuscriptRepo().get(r.restoredFrom.chapterNumber),
+      // ⚠ 按书读正文（P0-1）。优先用版本行自己的 bookId；老版本行没有
+      //   该字段时退回 restoredFrom（同一个版本的另一种视图）。
+      text: (() => {
+        const bid = r.version.bookId ?? r.restoredFrom.bookId;
+        if (bid === null) {
+          throw new AppError(
+            ErrorCode.WORKSPACE_CORRUPTED,
+            `版本 ${params.versionId} 无法确定所属书，拒绝猜测`,
+          );
+        }
+        return manuscriptRepo().get(bid, r.restoredFrom.chapterNumber);
+      })(),
     };
   },
 
@@ -2006,6 +2069,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       params.selectionStart !== undefined ||
       params.scrollTop !== undefined;
     const res = repo.autosave(
+      chapter.book_id,
       chapter.chapter_number,
       params.text,
       hasState
@@ -2025,7 +2089,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const p = requireProject();
     const chapter = p.repos.chapters.get(params.chapterId);
     const repo = manuscriptRepo();
-    const st = repo.getSaveStatus(chapter.chapter_number, params.editorText);
+    const st = repo.getSaveStatus(chapter.book_id, chapter.chapter_number, params.editorText);
     return { chapterId: chapter.id, ...st };
   },
 
@@ -2037,7 +2101,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     return {
       chapterId: chapter.id,
       chapterNumber: chapter.chapter_number,
-      ...repo.checkRecovery(chapter.chapter_number),
+      ...repo.checkRecovery(chapter.book_id, chapter.chapter_number),
     };
   },
 
@@ -2049,7 +2113,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const p = requireProject();
     const chapter = p.repos.chapters.get(params.chapterId);
     const repo = manuscriptRepo();
-    const res = repo.acceptAutosave(chapter.chapter_number);
+    const res = repo.acceptAutosave(chapter.book_id, chapter.chapter_number);
     if (res === null) {
       return { chapterId: chapter.id, recovered: false, reason: '没有待恢复的编辑内容' };
     }
@@ -2060,7 +2124,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
   'manuscript.discardAutosave': (params: { chapterId: string }) => {
     const p = requireProject();
     const chapter = p.repos.chapters.get(params.chapterId);
-    manuscriptRepo().clearAutosave(chapter.chapter_number);
+    manuscriptRepo().clearAutosave(chapter.book_id, chapter.chapter_number);
     return { chapterId: chapter.id, discarded: true };
   },
 
@@ -2078,7 +2142,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
   'manuscript.metrics': (params: { chapterId: string; text?: string }) => {
     const p = requireProject();
     const chapter = p.repos.chapters.get(params.chapterId);
-    const body = params.text ?? manuscriptRepo().get(chapter.chapter_number) ?? '';
+    const body = params.text ?? manuscriptRepo().get(chapter.book_id, chapter.chapter_number) ?? '';
     return { chapterId: chapter.id, ...measureText(body) };
   },
 
@@ -2092,7 +2156,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const chapter = p.repos.chapters.get(params.chapterId);
     return {
       chapterId: chapter.id,
-      state: manuscriptRepo().readEditorState(chapter.chapter_number),
+      state: manuscriptRepo().readEditorState(chapter.book_id, chapter.chapter_number),
     };
   },
 
@@ -2146,7 +2210,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
         memoryEntries.push({
           id: `summary_${c.chapter_number}`,
           sourceType: 'SUMMARY',
-          sourceRef: c.body_path ?? `chapters/${c.chapter_number}.md`,
+          sourceRef: c.body_path ?? chapterRel(bookId, c.chapter_number),
           content: `第 ${c.chapter_number} 章摘要：${c.summary}`,
           priority: c.chapter_number, // 越新越优先
         });
@@ -2248,6 +2312,8 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const chapter = p.repos.chapters.get(params.chapterId);
     const ws = new ChapterWorkspace({
       rootDir: p.dir,
+      // ⚠ 按书隔离（P0-1）：用章节行自己的 book_id，不用"当前书"
+      bookId: chapter.book_id,
       chapterNumber: chapter.chapter_number,
       logger: logger.child('workspace'),
     });
@@ -2277,6 +2343,8 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const bookId = chapter.book_id;
     const ws = new ChapterWorkspace({
       rootDir: p.dir,
+      // ⚠ 按书隔离（P0-1）：用章节行自己的 book_id，不用"当前书"
+      bookId: chapter.book_id,
       chapterNumber: chapter.chapter_number,
       logger: logger.child('workspace'),
     });
@@ -2364,6 +2432,8 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const bookId = chapter.book_id;
     const ws = new ChapterWorkspace({
       rootDir: p.dir,
+      // ⚠ 按书隔离（P0-1）：用章节行自己的 book_id，不用"当前书"
+      bookId: chapter.book_id,
       chapterNumber: chapter.chapter_number,
       logger: logger.child('workspace'),
     });
@@ -2383,7 +2453,7 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     });
     const report = promoter.promote(saved.facts, {
       draftText: draft,
-      sourceRef: `chapters/${String(chapter.chapter_number).padStart(3, '0')}.md`,
+      sourceRef: chapterRel(chapter.book_id, chapter.chapter_number),
     });
 
     return {
@@ -3389,6 +3459,8 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     // 取正文：优先 revision，退回 draft
     const ws = new ChapterWorkspace({
       rootDir: p.dir,
+      // ⚠ 按书隔离（P0-1）：用章节行自己的 book_id，不用"当前书"
+      bookId: chapter.book_id,
       chapterNumber: chapter.chapter_number,
       logger: logger.child('workspace'),
     });

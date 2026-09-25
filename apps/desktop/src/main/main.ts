@@ -370,7 +370,30 @@ function createWindow(): void {
         //   按同一环境变量约定自行解析 —— 验证脚本已注入 NWA_PROJECTS_ROOT。
         const projectsRoot = process.env['NWA_PROJECTS_ROOT']
           ?? join(homedir(), 'NovelWriterProjects');
-        const wsChapterDir = join(projectsRoot, 'workspace', 'chapter-001');
+
+        // ⚠ 按书隔离（P0-1）：工作区在 books/<bookId>/workspace/chapter-001。
+        //   不扫项目根的 workspace/（那是旧布局，新项目下恒为空 ——
+        //   会让"探针读到文件"这条恒假，而它正是防空转通过的守卫）。
+        //   书 id 不硬编码：遍历 books/ 取第一本即可（验证项目里只有一本）。
+        // ⚠ 必须**延迟解析**：这段代码在流程跑之前执行，而工作区目录
+        //   是流程中间才创建的。提前解析会缓存一个不存在的路径，
+        //   导致流程结束后仍读空目录 —— 守卫恒假。
+        const resolveWsChapterDir = (): string => {
+          const booksDir = join(projectsRoot, 'books');
+          if (existsSync(booksDir)) {
+            for (const b of readdirSync(booksDir)) {
+              const d = join(booksDir, b, 'workspace', 'chapter-001');
+              if (existsSync(d)) return d;
+            }
+          }
+          // 兼容尚未迁移的旧布局（项目根）
+          const legacy = join(projectsRoot, 'workspace', 'chapter-001');
+          if (existsSync(legacy)) return legacy;
+          // 还没有任何工作区 → 返回一个不存在的路径，files 为空，
+          // 守卫会如实报 FAIL（而不是静默通过）
+          return join(projectsRoot, 'books', '__none__', 'workspace', 'chapter-001');
+        };
+        const wsChapterDir = resolveWsChapterDir();
         const wsFiles = existsSync(wsChapterDir) ? readdirSync(wsChapterDir) : [];
 
         try {
@@ -1463,7 +1486,9 @@ function createWindow(): void {
           {
             const done = res.pipelineDone ?? [];
             const labels = res.pipelineLabels ?? [];
-            const dir = join(wsChapterDir, '..', '..', 'workspace', 'chapter-001');
+            // ⚠ 在这里**重新解析**：wsChapterDir 是流程前算的，而工作区
+            //   目录由流程中间创建 —— 用旧值会读空目录，比对变成空转。
+            const dir = resolveWsChapterDir();
             const files = existsSync(dir) ? readdirSync(dir) : [];
             const fileFor: Record<string, string> = {
               Planning: 'plan.json', Writing: 'draft.md', Review: 'review.json',

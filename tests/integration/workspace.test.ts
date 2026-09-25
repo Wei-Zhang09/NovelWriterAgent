@@ -15,6 +15,9 @@ import { Logger, ErrorCode } from '@nwa/core';
 let root: string;
 const logger = new Logger('test:workspace', { level: 'error' });
 
+/** 测试用固定书 id（P0-1 起路径按书隔离，工作区必须知道自己在哪本书里） */
+const TEST_BOOK_ID = 'book_test';
+
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'nwa-ws-'));
 });
@@ -25,16 +28,43 @@ afterEach(() => {
 const ws = (n: number, allowed?: readonly (keyof typeof WORKSPACE_FILES)[]) =>
   new ChapterWorkspace({
     rootDir: root,
+    bookId: TEST_BOOK_ID,
     chapterNumber: n,
     logger,
     ...(allowed ? { allowedFiles: allowed } : {}),
   });
 
 describe('目录结构（§9 图示）', () => {
-  it('目录为 workspace/chapter-NNN（三位补零）', () => {
-    expect(ws(31).dir).toBe(join(root, 'workspace', 'chapter-031'));
-    expect(ws(1).dir).toBe(join(root, 'workspace', 'chapter-001'));
-    expect(ws(1234).dir).toBe(join(root, 'workspace', 'chapter-1234'));
+  it('目录为 books/<bookId>/workspace/chapter-NNN（三位补零，按书隔离）', () => {
+    expect(ws(31).dir).toBe(join(root, 'books', TEST_BOOK_ID, 'workspace', 'chapter-031'));
+    expect(ws(1).dir).toBe(join(root, 'books', TEST_BOOK_ID, 'workspace', 'chapter-001'));
+    expect(ws(1234).dir).toBe(join(root, 'books', TEST_BOOK_ID, 'workspace', 'chapter-1234'));
+  });
+
+  it('⚠ 不同书的同章号工作区互不重叠（P0-1 回归守卫）', () => {
+    // 原缺陷：路径只由章号拼成，而 DB 是 UNIQUE(book_id, chapter_number)，
+    // 允许两本书各有第 1 章 → 同一个目录 → 写 B 覆盖 A 未提交的中间产物。
+    const a = new ChapterWorkspace({
+      rootDir: root,
+      bookId: 'book_aaa',
+      chapterNumber: 1,
+      logger,
+    });
+    const b = new ChapterWorkspace({
+      rootDir: root,
+      bookId: 'book_bbb',
+      chapterNumber: 1,
+      logger,
+    });
+    expect(a.dir).not.toBe(b.dir);
+
+    // 行为级：A 写 draft 后 B 写 draft，A 的内容必须还在
+    a.ensure();
+    b.ensure();
+    a.writeText('draft', '【A 书的第 1 章草稿】');
+    b.writeText('draft', '【B 书的第 1 章草稿】');
+    expect(a.readText('draft')).toBe('【A 书的第 1 章草稿】');
+    expect(b.readText('draft')).toBe('【B 书的第 1 章草稿】');
   });
 
   it('ensure 幂等创建', () => {
