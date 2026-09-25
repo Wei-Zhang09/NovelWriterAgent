@@ -13,6 +13,7 @@ import { renderSkillPanel, renderBackupPanel } from './panels.js';
 import { renderCorpusPanel } from './corpus-panel.js';
 import { renderWorkflowPanel } from './workflow-panel.js';
 import { renderManuscriptEditor } from './manuscript-editor.js';
+import { renderPipeline } from './pipeline.js';
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => {
@@ -1299,6 +1300,9 @@ function renderChapterDetail(c) {
   ctr.replaceChildren();
   ctr.append(el('h2', null, `第 ${c.chapterNumber} 章`));
   if (c.title) ctr.append(el('p', 'hint', c.title));
+
+  // §43：顶部显示流水线进度（Planning ✓ Writing ✓ … Commit ○）
+  ctr.append(renderPipeline({ el, invoke: call, chapter: c }));
 
   const meta = el('div', 'kv');
   meta.append(kv('章节 ID', c.id));

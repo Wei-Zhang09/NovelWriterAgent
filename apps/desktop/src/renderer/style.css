@@ -474,6 +474,48 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+/* ═══════════════════════════════════════════════════════════
+   §43 章节流水线进度条
+   ⚠ 状态用**颜色 + 字符双编码**（研究报告 §3.1 决策 6）：
+     只靠颜色的话，色觉障碍用户与灰度截图里就分不出完成了没有。
+   ⚠ 全部走主题令牌 —— 硬编码色在浅色主题下会变成深底深字。
+   ═══════════════════════════════════════════════════════════ */
+.pipeline {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+  margin: 4px 0 14px; padding: 10px 12px;
+  background: var(--pane-2); border: 1px solid var(--border); border-radius: 7px;
+}
+.pipeline__loading, .pipeline__err { font-size: 12px; color: var(--muted); }
+.pipeline__err { color: var(--err); }
+.pipeline__arrow { color: var(--border); font-size: 11px; padding: 0 3px; }
+
+.pipeline__step {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 10px; font-size: 11.5px; border-radius: 20px;
+  border: 1px solid var(--border); background: var(--pane); color: var(--muted);
+}
+.pipeline__mark { font-size: 10px; font-weight: 700; }
+
+/* 已完成：绿系 */
+.pipeline__step--done {
+  border-color: var(--chip-ok-bd); background: var(--chip-ok-bg); color: var(--ok);
+  font-weight: 600;
+}
+/* 进行中：强调色实心（填充用 --accent-fill 以保证白字对比度） */
+.pipeline__step--current {
+  border-color: var(--accent-fill); background: var(--accent-fill);
+  color: var(--accent-fg); font-weight: 600;
+}
+.pipeline__step--current .pipeline__mark { opacity: .8; }
+/* 未开始：低对比但**仍可读** */
+.pipeline__step--todo { color: var(--muted); }
+
+.pipeline__sum {
+  margin-left: auto; font-size: 11px; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.pipeline__sum--ok { color: var(--ok); font-weight: 600; }
+
 /* ⚠ §三十：保存与提交到正史必须明显区分。
    .btn--commit 与 .btn--danger 共用危险色系，但提交**不是破坏性操作**——
    它只是不可逆地推进状态。所以用实心强调 + 上浮，而非 danger 的边框样式，

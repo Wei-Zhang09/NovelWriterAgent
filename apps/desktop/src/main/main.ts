@@ -20,7 +20,7 @@ import {
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { Logger } from '@nwa/core';
 import { FileSecretStore, defaultCredentialsPath } from '@nwa/harness';
 import { IPC } from '../shared/ipc.js';
@@ -362,6 +362,17 @@ function createWindow(): void {
           logger.info(`flow: ${name} ${ok ? 'OK' : 'FAIL'}`, { detail });
         };
 
+        // ⚠ renderer 读不到磁盘，而 §43 进度条的判据**就是工作区文件是否存在**。
+        //   所以把文件清单注入页面，让断言能独立验算「后端报的步骤」
+        //   与「磁盘上真实有的产物」是否一致 —— 只查 DOM 文字
+        //   等于只验证了后端自己说的话。
+        // ⚠ main.ts 拿不到 core-process 的 PROJECTS_ROOT（两个进程），
+        //   按同一环境变量约定自行解析 —— 验证脚本已注入 NWA_PROJECTS_ROOT。
+        const projectsRoot = process.env['NWA_PROJECTS_ROOT']
+          ?? join(homedir(), 'NovelWriterProjects');
+        const wsChapterDir = join(projectsRoot, 'workspace', 'chapter-001');
+        const wsFiles = existsSync(wsChapterDir) ? readdirSync(wsChapterDir) : [];
+
         try {
           const flow = `(async () => {
             const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -374,6 +385,9 @@ function createWindow(): void {
             };
             const steps = [];
             const rec = (name, ok, detail) => steps.push({ name, ok, detail });
+            // §43 进度条自报的已完成步骤（带出页面，交给主进程与磁盘比对）
+            let pipelineDone = [];
+            let pipelineLabels = [];
 
             // 等首屏渲染完成
             for (let i = 0; i < 40 && !document.querySelector('.form'); i++) await sleep(250);
@@ -1241,6 +1255,68 @@ function createWindow(): void {
                   Boolean(restoreBtn?.disabled));
             }
 
+            // 6e) §43 章节流水线进度条
+            //     ⚠ 本区块内禁止出现反引号（工程约定 1）。
+            //     ⚠ 断言查**下游终点**：不只看 DOM 里有没有这个元素，
+            //       要查步骤文字与后端判据是否一致。
+            {
+              // ⚠ 前面的区块点过「左栏能点回书目」→ 中栏已切到书目视图，
+              //   而进度条只在**章节详情**里。不先切回去就会查不到元素
+              //   （实测踩到：报"进度条已渲染"FAIL，而代码其实是对的）。
+              chapterItems[0]?.click();
+              await sleep(900);
+              const bar = document.querySelector('.pipeline');
+              rec('§43 进度条已渲染在章节详情顶部', Boolean(bar));
+
+              const stepNodes = [...(bar?.querySelectorAll('.pipeline__step') ?? [])];
+              const labels = stepNodes.map(n => (n.querySelector('.pipeline__label')?.textContent ?? ''));
+              rec('§43 六个步骤齐全（Planning…Commit）',
+                  labels.join(',') === 'Planning,Writing,Review,Revision,Continuity,Commit',
+                  labels.join(' '));
+
+              // ⚠ 判据来自产物文件：这一章刚写完正文（draft.md 存在），
+              //   但没跑过审阅/连续性 → 必须显示 Writing 已完成、Review 是当前步
+              const stateOf = (name) => {
+                const n = stepNodes.find(x => (x.querySelector('.pipeline__label')?.textContent ?? '') === name);
+                if (!n) return '缺失';
+                const c = n.className;
+                if (c.includes('--done')) return 'done';
+                if (c.includes('--current')) return 'current';
+                if (c.includes('--todo')) return 'todo';
+                return '未知';
+              };
+              // ⚠ 关键：**用磁盘上的真实产物独立验算**进度条报的步骤。
+              //   只断言"Writing 是 done"是硬编码预期 —— 模型没配好时
+              //   压根没有 draft.md，那条断言查的是环境而不是代码。
+              //   这里改成"后端报的 done 集合 == 文件推出的 done 集合"，
+              //   无论环境怎样都必须成立（实测：本环境 0/6，因为只存过正文）。
+              const actualDone = labels.filter(l => stateOf(l) === 'done');
+
+              rec('⚠ Commit 未完成（本章未提交，§三十 SAVE != COMMIT）',
+                  stateOf('Commit') !== 'done', 'Commit=' + stateOf('Commit'));
+
+              // ⚠ 与磁盘真实产物的独立验算放在**页面外**做（见 res.pipelineDone）——
+              //   注入时机在流程开始前，那时 workspace 还没被创建，
+              //   在这里比对会拿空列表比空列表，**空转通过**（实测踩到）。
+              pipelineDone = actualDone;
+              pipelineLabels = labels;
+
+              // ⚠ 最多只能有一个「进行中」—— 同时出现多个 ● 会让作者
+              //   不知道现在该做什么（反向验证 A 组就是这个缺陷）
+              const currents = labels.filter(l => stateOf(l) === 'current');
+              rec('⚠ 至多一个「进行中」步骤（不会同时多个 ●）',
+                  currents.length <= 1, 'current=' + currents.join('、'));
+
+              // ⚠ 双编码：图标字符必须在（色觉障碍/灰度截图也要能分辨）
+              const marks = stepNodes.map(n => (n.querySelector('.pipeline__mark')?.textContent ?? ''));
+              rec('⚠ 状态是字符 + 颜色双编码（✓ ● ○）',
+                  marks.every(m => ['✓', '●', '○'].includes(m)), marks.join(''));
+
+              // ⚠ 未提交时必须明确写出来（作者要一眼看出这不是正史）
+              const sum = bar?.querySelector('.pipeline__sum')?.textContent ?? '';
+              rec('⚠ 未提交状态明确标出', sum.includes('未提交'), sum.slice(0, 40));
+            }
+
             // 6d) 主题切换 + 偏好持久化（浅/暗主题、当前书）
             //     ⚠ 本区块内禁止出现反引号（工程约定 1）。
             //     ⚠ 断言必须查**下游终点**：不能只看按钮文字变了，
@@ -1282,13 +1358,50 @@ function createWindow(): void {
               if (after === 'light') { btn?.click(); await new Promise((r) => setTimeout(r, 300)); }
             }
 
-            return { steps };
+            return { steps, pipelineDone, pipelineLabels };
           })()`;
 
-          const res = (await win?.webContents.executeJavaScript(flow)) as {
+          const flowWithFiles = `const __wsFiles = ${JSON.stringify(wsFiles)};\n` + flow;
+          const res = (await win?.webContents.executeJavaScript(flowWithFiles)) as {
             steps: { name: string; ok: boolean; detail?: string }[];
+            pipelineDone?: string[];
+            pipelineLabels?: string[];
           };
           for (const s of res.steps) record(s.name, s.ok, s.detail);
+
+          // ── §43 独立验算：拿**流程结束后**的磁盘真实产物，与进度条自报的比对 ──
+          // ⚠ 必须在流程跑完后读：流程中间才会写出 manuscript.md / versions/，
+          //   注入时读会得到空目录，比对就变成"空 vs 空"的空转通过。
+          {
+            const done = res.pipelineDone ?? [];
+            const labels = res.pipelineLabels ?? [];
+            const dir = join(wsChapterDir, '..', '..', 'workspace', 'chapter-001');
+            const files = existsSync(dir) ? readdirSync(dir) : [];
+            const fileFor: Record<string, string> = {
+              Planning: 'plan.json', Writing: 'draft.md', Review: 'review.json',
+              Revision: 'revision.md', Continuity: 'continuity.json',
+            };
+            const expect = Object.entries(fileFor)
+              .filter(([, f]) => files.includes(f))
+              .map(([n]) => n);
+
+            // ⚠ 先证明探针真的看到了文件 —— 否则下面的比对毫无意义（空转通过）
+            record(
+              '⚠ 探针确实读到工作区文件（防"空 vs 空"空转通过）',
+              files.length > 0,
+              `files=[${files.join('、')}]`,
+            );
+            record(
+              '⚠ 进度条与磁盘真实产物一致（独立验算，不硬编码预期）',
+              expect.join(',') === done.join(','),
+              `文件推出=[${expect.join(' ')}] 进度条报=[${done.join(' ')}]`,
+            );
+            record(
+              '⚠ 六个步骤标签齐全',
+              labels.join(',') === 'Planning,Writing,Review,Revision,Continuity,Commit',
+              labels.join(' '),
+            );
+          }
 
           const pass = steps.length > 0 && steps.every((s) => s.ok);
           writeFileSync(

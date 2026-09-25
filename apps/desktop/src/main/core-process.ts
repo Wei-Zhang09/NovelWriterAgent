@@ -1876,6 +1876,79 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     };
   },
 
+  /**
+   * §43 章节流水线进度：`Planning ✓ Writing ✓ Review ✓ Revision ● Continuity ○ Commit ○`
+   *
+   * ## ⚠ 数据来源必须是**产物事实**，不是任何"任务进度"字段
+   *
+   * 研究报告 §3.1 决策 1：状态由产物驱动，不由任务状态驱动。
+   * 所以这里逐项检查**工作区里那个产物文件在不在**，以及章节行自己的状态。
+   * 不看 workflows 表 —— 那会把"工作流跑到哪一步"当成"这一章写到哪一步"，
+   * 两者不是一回事（用逐步按钮写出来的章节根本没有工作流记录）。
+   *
+   * | 显示步 | 判据 |
+   * |---|---|
+   * | Planning   | workspace/plan.json 存在 |
+   * | Writing    | workspace/draft.md 存在 |
+   * | Review     | workspace/review.json 存在 |
+   * | Revision   | workspace/revision.md 存在 |
+   * | Continuity | workspace/continuity.json 存在 |
+   * | Commit     | chapters.status === 'COMMITTED' |
+   *
+   * ⚠ 缺文件与"有文件但坏了"要区分：产物文件解析失败会让整条流水线
+   *   看起来"没做过"，所以这里用 `has()` 判存在性，不解析内容。
+   */
+  'manuscript.pipeline': (params: { chapterId: string }) => {
+    const p = requireProject();
+    const chapter = p.repos.chapters.get(params.chapterId);
+
+    const ws = new ChapterWorkspace({
+      rootDir: p.dir,
+      chapterNumber: chapter.chapter_number,
+      logger: logger.child('workspace'),
+    });
+
+    // 顺序即 §43 的显示顺序
+    const steps = [
+      { id: 'planning', label: 'Planning', file: 'plan' as const },
+      { id: 'writing', label: 'Writing', file: 'draft' as const },
+      { id: 'review', label: 'Review', file: 'review' as const },
+      { id: 'revision', label: 'Revision', file: 'revision' as const },
+      { id: 'continuity', label: 'Continuity', file: 'continuity' as const },
+    ];
+
+    const committed = chapter.status === 'COMMITTED';
+
+    // 第一个未完成的步骤 = 当前所处阶段（§43 用 ● 表示）
+    const currentIndex = steps.findIndex((s) => !ws.has(s.file));
+
+    const list = steps.map((s, i) => ({
+      id: s.id,
+      label: s.label,
+      done: ws.has(s.file),
+      // ⚠ 只有"前面的都完成了、它自己还没完成"的那一步才是 ●
+      //   —— 否则中间缺一步会让后面每一步都显示成"进行中"
+      current: !committed && currentIndex === i,
+    }));
+    list.push({
+      id: 'commit',
+      label: 'Commit',
+      done: committed,
+      current: !committed && currentIndex === -1,
+    });
+
+    return {
+      chapterId: chapter.id,
+      chapterNumber: chapter.chapter_number,
+      status: chapter.status,
+      committed,
+      steps: list,
+      /** 完成了几个（含 Commit）—— 给调用方做进度概览 */
+      doneCount: list.filter((s) => s.done).length,
+      total: list.length,
+    };
+  },
+
   /** 读某个版本的正文（用户点开某一版时调用） */
   'manuscript.readVersion': (params: { versionId: string }) => {
     requireProject();
