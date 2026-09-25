@@ -16,7 +16,7 @@ import { createCharacterTools } from './character-tools.js';
 import { createWorldTools } from './world-tools.js';
 import { createTimelineTools } from './timeline-tools.js';
 import { createBookTools } from './book-tools.js';
-import { createCommitTools } from './commit-tools.js';
+import { createCommitTools, type CommitSourceKey } from './commit-tools.js';
 import {
   ChapterSchema,
   CreateChapterInputSchema,
@@ -210,7 +210,7 @@ export function createAllTools(
       readonly rootDir: string;
       readonly readWorkspaceText: (
         chapterNumber: number,
-        name: 'draft' | 'revision',
+        name: CommitSourceKey,
       ) => string | null;
       readonly assertGateOpen?: (chapterId: string) => void;
       readonly indexer?: {

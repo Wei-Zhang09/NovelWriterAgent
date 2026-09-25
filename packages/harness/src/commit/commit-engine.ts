@@ -67,6 +67,14 @@ export interface CommitRequest {
   readonly factIds?: readonly string[];
   /** 待推进状态的伏笔 id 列表 */
   readonly foreshadowingIds?: readonly string[];
+  /**
+   * 正文取自哪份稿（ADR-0008 / 迁移 0015）。
+   *
+   * ⚠ 记录它的理由不是可观测性，而是**可验证性**：施工单 §15 要求
+   *   "AI Revision 不允许直接覆盖用户正文"，验证这条规则是否被遵守，
+   *   唯一办法就是看提交记录里写的是哪份。没有它，规则只能靠读代码相信。
+   */
+  readonly source?: string;
 }
 
 export interface CommitReport {
@@ -231,8 +239,8 @@ export class CommitEngine {
         `INSERT INTO commit_manifests
            (id, chapter_id, status, phase, applied_count, commit_mode,
             artifact_manifest_json, indexes_pending_json, fact_ids_json,
-            foreshadowing_ids_json, quality_debt_count, created_at)
-         VALUES (?, ?, 'PREPARING', 'prepared', 0, ?, ?, NULL, ?, ?, ?, ?)`,
+            foreshadowing_ids_json, quality_debt_count, created_at, source)
+         VALUES (?, ?, 'PREPARING', 'prepared', 0, ?, ?, NULL, ?, ?, ?, ?, ?)`,
         manifestId,
         req.chapterId,
         req.commitMode ?? 'clean',
@@ -241,6 +249,10 @@ export class CommitEngine {
         JSON.stringify(req.foreshadowingIds ?? []),
         req.qualityDebtCount ?? 0,
         iso(),
+        // ⚠ 缺省写 NULL 而不是 'draft.md'：NULL 表示"这份记录没有该信息"（0015 之前
+        //   的旧记录），填一个猜测值会让"未知"伪装成"确定"，
+        //   而这两者在排查"用户改动是否被丢弃"时含义完全相反。
+        req.source ?? null,
       );
       // 章节状态推进到 COMMITTING
       this.db.run("UPDATE chapters SET status = 'COMMITTING', updated_at = ? WHERE id = ?", iso(), req.chapterId);

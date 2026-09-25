@@ -18,6 +18,57 @@ import type { AnyToolDefinition, ToolDefinition } from '@nwa/shared';
 import type { Repositories, Database } from '@nwa/storage';
 import { CommitEngine } from '../commit/commit-engine.js';
 
+/**
+ * 提交源优先级链（ADR-0008）。
+ *
+ * ⚠ 顺序不可调换：manuscript 是**用户当前正文**，必须优先于
+ *   revision（AI 修订建议）与 draft（AI 初稿）。
+ *
+ * 在此之前的提交源是 `revision ?? draft` —— **从不读用户正文**，
+ * 用户改完点提交会被静默丢弃，且不报错（revision 总能取到值）。
+ * 这是"看起来全绿、实际丢数据"，比直接失败危险得多。
+ */
+export const COMMIT_SOURCE_ORDER = ['manuscript', 'revision', 'draft'] as const;
+
+/** 提交源的候选键 */
+export type CommitSourceKey = (typeof COMMIT_SOURCE_ORDER)[number];
+
+/** 提交源对应的文件名（写入 manifest.source，可追溯"这次提交的是哪份稿"） */
+export const COMMIT_SOURCE_FILE: Readonly<Record<CommitSourceKey, string>> = {
+  manuscript: 'manuscript.md',
+  revision: 'revision.md',
+  draft: 'draft.md',
+};
+
+/**
+ * 按优先级链取本次要提交的正文（ADR-0008）。
+ *
+ * 顺序：manuscript ?? revision ?? draft
+ *
+ * ⚠ 抽成单一实现而非在两处各写一遍 —— 两处（dryRun 预览与真实提交）
+ *   必须给出**同一个**答案，否则"预览说提交 A、实际提交 B"是最难查的 bug。
+ */
+function pickCommitSource(
+  deps: {
+    readonly readWorkspaceText: (
+      chapterNumber: number,
+      name: CommitSourceKey,
+    ) => string | null;
+  },
+  chapterNumber: number,
+): { body: string | null; source: string } {
+  for (const key of COMMIT_SOURCE_ORDER) {
+    const text = deps.readWorkspaceText(chapterNumber, key);
+    if (text !== null) {
+      return { body: text, source: COMMIT_SOURCE_FILE[key] };
+    }
+  }
+  // 三份都不存在：body=null 由调用方决定怎么报错（dryRun 报 blocker，
+  // 真实提交抛 AppError）。source 回落到 draft.md 只是为了类型完整，
+  // 此时它没有语义 —— 调用方必须在 body===null 时忽略 source。
+  return { body: null, source: COMMIT_SOURCE_FILE.draft };
+}
+
 export function createCommitTools(
   deps: {
     readonly db: Database;
@@ -25,7 +76,10 @@ export function createCommitTools(
     readonly rootDir: string;
     readonly logger: import('@nwa/core').Logger;
     /** 读取工作区正文（由调用方注入，避免 harness 依赖 story） */
-    readonly readWorkspaceText: (chapterNumber: number, name: 'draft' | 'revision') => string | null;
+    readonly readWorkspaceText: (
+      chapterNumber: number,
+      name: CommitSourceKey,
+    ) => string | null;
     /** 门禁检查（由调用方注入 TransitionGate 的结果） */
     readonly assertGateOpen?: (chapterId: string) => void;
     /**
@@ -74,11 +128,13 @@ export function createCommitTools(
       const chapter = deps.repos.chapters.get(chapterId);
       const n = String(chapter.chapter_number).padStart(3, '0');
 
-      // 源优先取 revision（修订稿），退回 draft
-      const revision = deps.readWorkspaceText(chapter.chapter_number, 'revision');
-      const draft = deps.readWorkspaceText(chapter.chapter_number, 'draft');
-      const body = revision ?? draft;
-      const source = revision !== null ? 'revision.md' : 'draft.md';
+      // 源优先级链（ADR-0008）：manuscript ?? revision ?? draft
+      //
+      // ⚠ 用户正文优先。此前是 `revision ?? draft`，**从不读用户正文**，
+      //   用户改完点提交会被静默丢弃且不报错 —— 见 COMMIT_SOURCE_ORDER 注释。
+      const picked = pickCommitSource(deps, chapter.chapter_number);
+      const body = picked.body;
+      const source = picked.source;
 
       const blockers: string[] = [];
       if (body === null) blockers.push('工作区没有正文可提交（revision.md / draft.md 都不存在）');
@@ -174,9 +230,8 @@ export function createCommitTools(
         );
       }
 
-      const revision = deps.readWorkspaceText(chapter.chapter_number, 'revision');
-      const draft = deps.readWorkspaceText(chapter.chapter_number, 'draft');
-      const body = revision ?? draft;
+      const picked = pickCommitSource(deps, chapter.chapter_number);
+      const body = picked.body;
       if (body === null) {
         throw new AppError(
           ErrorCode.TOOL_VALIDATION_ERROR,
@@ -273,6 +328,9 @@ export function createCommitTools(
         //   于是"没有记忆"是可见且可解释的。
         summary: hasSummary ? summary : '',
         commitMode: input.commitMode ?? 'clean',
+        // 记录正文取自哪份稿（ADR-0008）：验证「AI 不覆盖用户正文」
+        // 是否被遵守，唯一办法就是看提交记录里写的是哪份。
+        source: picked.source,
       });
 
       return {

@@ -52,6 +52,26 @@ export const WORKSPACE_FILES = {
   draft: 'draft.md',
   review: 'review.json',
   revision: 'revision.md',
+  /**
+   * 用户当前正在编辑的正文（M0，第二阶段施工单 §四）。
+   *
+   * ⚠ 与 draft / revision 的语义**必须分开**：
+   *   draft      = Writer 的原始产出（AI 初稿）
+   *   revision   = Agent 的修订建议（AI 修订）
+   *   manuscript = 用户当前正文（**人的产出**）
+   *
+   * 混用会导致施工单 §15「AI Revision 不得覆盖用户正文」无法表达 ——
+   * 能否覆盖取决于"谁最后写的"，同一个文件区分不了这一点。
+   *
+   * ⚠ 提交优先级：manuscript ?? revision ?? draft（ADR-0008）。
+   *   在此之前的提交源是 `revision ?? draft`，**从不读用户正文** ——
+   *   用户改完点提交会被静默丢弃（不报错，因为 revision 总能取到值）。
+   */
+  manuscript: 'manuscript.md',
+  /** 编辑器自动保存的旁路副本（M5，§十一）。崩溃恢复用，不是正式正文 */
+  manuscriptAutosave: 'manuscript.autosave.md',
+  /** 编辑器状态（光标/选区/滚动位置，M5，§十一） */
+  editorState: 'editor-state.json',
   continuity: 'continuity.json',
   proposedState: 'proposed_state.json',
   proposedFacts: 'proposed_facts.json',
@@ -86,6 +106,8 @@ export interface WorkspaceSnapshot {
   readonly files: readonly { name: string; bytes: number }[];
   readonly hasDraft: boolean;
   readonly hasRevision: boolean;
+  /** 用户是否已开始编辑正文（M0）。false = 只有 AI 稿，还没有人手改过 */
+  readonly hasManuscript: boolean;
 }
 
 export class ChapterWorkspace {
@@ -202,6 +224,7 @@ export class ChapterWorkspace {
       files,
       hasDraft: this.has('draft'),
       hasRevision: this.has('revision'),
+      hasManuscript: this.has('manuscript'),
     };
   }
 

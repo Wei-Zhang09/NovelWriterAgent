@@ -32,7 +32,12 @@ export { createWorldTools, WORLD_TYPES } from './tools/world-tools.js';
 export { createTimelineTools } from './tools/timeline-tools.js';
 export type { TimelineToolOptions } from './tools/timeline-tools.js';
 export { createBookTools } from './tools/book-tools.js';
-export { createCommitTools } from './tools/commit-tools.js';
+export {
+  createCommitTools,
+  COMMIT_SOURCE_ORDER,
+  COMMIT_SOURCE_FILE,
+} from './tools/commit-tools.js';
+export type { CommitSourceKey } from './tools/commit-tools.js';
 export type { AnyToolDefinition } from '@nwa/shared';
 
 // ── Model Gateway（STEP 3） ──────────────────────────────────

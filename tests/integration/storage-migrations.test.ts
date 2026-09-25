@@ -62,6 +62,7 @@ describe('迁移', () => {
       '0012_commit_force_audit',
       '0013_book_word_target',
       '0014_settings_gate',
+      '0015_commit_manifest_source',
     ]);
   });
 
@@ -121,12 +122,13 @@ describe('迁移', () => {
       "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'",
     );
     // 索引 47 → 49（0012 新增 commit_overrides 的 2 个）
+    // 索引 49 → 50（0015 新增 commit_manifests.source 的 1 个）
     //
     // ⚠ 注意 commit_manifests 的重建对索引总数是**净零**的：
     //   DROP TABLE 会连带删掉它的 2 个索引，重建表后必须手工再建回来。
     //   漏掉那一步总数会变成 47，而"少了索引"在功能上不会立刻报错 ——
     //   只是提交相关的按状态查询退化成全表扫描。
-    expect(indexes.length).toBe(49);
+    expect(indexes.length).toBe(50);
   });
 
   it('⚠ 全部迁移都已应用（构建产物不遗漏 SQL）', () => {
@@ -151,6 +153,7 @@ describe('迁移', () => {
       '0012_commit_force_audit',
       '0013_book_word_target',
       '0014_settings_gate',
+      '0015_commit_manifest_source',
     ]);
   });
 
