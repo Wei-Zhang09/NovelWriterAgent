@@ -22,6 +22,7 @@ import {
   perSceneWords,
   evaluateSettingsGate,
   hashSettings,
+  sha256Text,
   type ErrorCodeValue,
 } from '@nwa/core';
 import {
@@ -96,7 +97,7 @@ import {
   segmentScenes,
 } from '@nwa/distillation';
 import type { CorpusSceneRow, SkillRow } from '@nwa/storage';
-import { FtsIndex } from '@nwa/storage';
+import { FtsIndex, ManuscriptRepository } from '@nwa/storage';
 import { bigramTokenizer, Retriever, buildMatchExpression } from '@nwa/retrieval';
 import type { ReviewIssue } from '@nwa/shared';
 import { TransitionGate, RetrievalService } from '@nwa/harness';
@@ -412,6 +413,22 @@ function requireProject(): OpenProject {
     throw new AppError(ErrorCode.WORKSPACE_CORRUPTED, '尚未打开项目');
   }
   return opened;
+}
+
+/**
+ * 用户正文仓储（M3）。
+ *
+ * ⚠ 每次现建而不是缓存：`rootDir` 随项目切换而变，缓存会让切项目后
+ *   正文写到**上一个项目**的目录里 —— 那正是"多书隔离"最怕的形态。
+ *   构造开销只是存两个引用，不值得为省这点开销引入跨书污染的风险。
+ */
+function manuscriptRepo(): ManuscriptRepository {
+  const p = requireProject();
+  return new ManuscriptRepository({
+    db: p.db,
+    rootDir: p.dir,
+    logger: logger.child('manuscript'),
+  });
 }
 
 /**
@@ -1604,6 +1621,161 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       reviewStatus: chapter.review_status ?? null,
       hasBlocking: p.repos.chapters.hasBlockingReview(params.chapterId),
       canCommit: !p.repos.chapters.hasBlockingReview(params.chapterId),
+    };
+  },
+
+  // ────────── M3：Manuscript 创作工作台（§三十四 / §三十五）──────────
+  //
+  // ⚠ Renderer **不直接读磁盘**（§三十四）。所有正文读写都经这里 ——
+  //   这不是"多一层"，而是让"UI 里看到的那份正文"与"提交时会用的那份"
+  //   由**同一个仓储**产出，两者不可能分叉。
+  //
+  // ⚠ `manuscript.*` 系列**绝不触碰 Canon**（§二 SAVE != COMMIT）。
+  //   边界由 `ManuscriptRepository` 的代码结构保证，并由
+  //   `tests/integration/manuscript-save.test.ts` 的证伪测试固化。
+
+  /** 打开章节：正文 + 自动保存恢复检测（**只检测不恢复**，§十一） */
+  'manuscript.open': (params: { chapterId: string }) => {
+    const p = requireProject();
+    const chapter = p.repos.chapters.get(params.chapterId);
+    const repo = manuscriptRepo();
+    const opened = repo.open(chapter.chapter_number);
+    return {
+      chapterId: chapter.id,
+      chapterNumber: chapter.chapter_number,
+      title: chapter.title,
+      text: opened.text,
+      sourceHash: opened.sourceHash,
+      recovery: opened.recovery,
+      // §三十：UI 必须能一眼看出"这份正文是不是已经是正史"
+      committed: repo.isCommitted(chapter.id),
+    };
+  },
+
+  /** 读正文（不带恢复检测，供刷新/轮询用） */
+  'manuscript.get': (params: { chapterId: string }) => {
+    const p = requireProject();
+    const chapter = p.repos.chapters.get(params.chapterId);
+    const repo = manuscriptRepo();
+    const text = repo.get(chapter.chapter_number);
+    return {
+      chapterId: chapter.id,
+      chapterNumber: chapter.chapter_number,
+      text,
+      sourceHash: text === null ? null : sha256Text(text),
+      committed: repo.isCommitted(chapter.id),
+    };
+  },
+
+  /**
+   * 保存正文（§十：Ctrl+S 与「保存」按钮都走这里）。
+   *
+   * ⚠ 只写 manuscript.md。**不触发 Commit、不写 Canon、不改章节状态。**
+   *   §二 是本阶段最重要的原则，这条边界由证伪测试固化。
+   */
+  'manuscript.save': (params: { chapterId: string; text: string }) => {
+    const p = requireProject();
+    const chapter = p.repos.chapters.get(params.chapterId);
+    const repo = manuscriptRepo();
+    const res = repo.save(chapter.chapter_number, params.text);
+    // ⚠ 保存成功后清掉待恢复的 autosave —— 用户已经显式保存了，
+    //   再留着副本会让下次打开又提示"发现未恢复的编辑内容"。
+    if (res.changed) repo.clearAutosave(chapter.chapter_number);
+    return { ...res, chapterId: chapter.id };
+  },
+
+  /**
+   * 自动保存（§八：由 main 进程 debounce 落盘）。
+   *
+   * ⚠ 写的是**旁路副本**，正式正文一个字节都不动（§十二 切章保护的前提）。
+   *   autosave 由 main 而非 renderer 负责，是因为 renderer 崩溃
+   *   （OOM / 页面异常）恰是最常见的丢失场景 —— 由它发起就救不了自己。
+   */
+  'manuscript.autosave': (params: {
+    chapterId: string;
+    text: string;
+    cursor?: number;
+    selectionStart?: number;
+    selectionEnd?: number;
+    scrollTop?: number;
+  }) => {
+    const p = requireProject();
+    const chapter = p.repos.chapters.get(params.chapterId);
+    const repo = manuscriptRepo();
+    const hasState =
+      params.cursor !== undefined ||
+      params.selectionStart !== undefined ||
+      params.scrollTop !== undefined;
+    const res = repo.autosave(
+      chapter.chapter_number,
+      params.text,
+      hasState
+        ? {
+            cursor: params.cursor ?? 0,
+            selectionStart: params.selectionStart ?? params.cursor ?? 0,
+            selectionEnd: params.selectionEnd ?? params.cursor ?? 0,
+            scrollTop: params.scrollTop ?? 0,
+          }
+        : undefined,
+    );
+    return { chapterId: chapter.id, chapterNumber: chapter.chapter_number, ...res };
+  },
+
+  /** 保存状态（§九）：dirty / 最后保存时间 / 是否有待恢复的 autosave */
+  'manuscript.getSaveStatus': (params: { chapterId: string; editorText?: string }) => {
+    const p = requireProject();
+    const chapter = p.repos.chapters.get(params.chapterId);
+    const repo = manuscriptRepo();
+    const st = repo.getSaveStatus(chapter.chapter_number, params.editorText);
+    return { chapterId: chapter.id, ...st };
+  },
+
+  /** 检测未恢复的编辑内容（§十一）。⚠ 只检测，不改任何东西 */
+  'manuscript.checkRecovery': (params: { chapterId: string }) => {
+    const p = requireProject();
+    const chapter = p.repos.chapters.get(params.chapterId);
+    const repo = manuscriptRepo();
+    return {
+      chapterId: chapter.id,
+      chapterNumber: chapter.chapter_number,
+      ...repo.checkRecovery(chapter.chapter_number),
+    };
+  },
+
+  /**
+   * 恢复自动保存（用户点「恢复」）。
+   * ⚠ 必须由用户显式触发 —— §十一 明令"不要直接静默覆盖"。
+   */
+  'manuscript.recoverAutosave': (params: { chapterId: string }) => {
+    const p = requireProject();
+    const chapter = p.repos.chapters.get(params.chapterId);
+    const repo = manuscriptRepo();
+    const res = repo.acceptAutosave(chapter.chapter_number);
+    if (res === null) {
+      return { chapterId: chapter.id, recovered: false, reason: '没有待恢复的编辑内容' };
+    }
+    return { ...res, chapterId: chapter.id, recovered: true };
+  },
+
+  /** 放弃自动保存（用户点「放弃」） */
+  'manuscript.discardAutosave': (params: { chapterId: string }) => {
+    const p = requireProject();
+    const chapter = p.repos.chapters.get(params.chapterId);
+    manuscriptRepo().clearAutosave(chapter.chapter_number);
+    return { chapterId: chapter.id, discarded: true };
+  },
+
+  /**
+   * 编辑器状态（光标 / 选区 / 滚动位置，§十一）。
+   * 单独一个入口而不是塞进 autosave 的返回值：恢复时要**先拿到状态再渲染**，
+   * 而 autosave 的返回值只在"刚保存完"那一刻有意义。
+   */
+  'manuscript.getEditorState': (params: { chapterId: string }) => {
+    const p = requireProject();
+    const chapter = p.repos.chapters.get(params.chapterId);
+    return {
+      chapterId: chapter.id,
+      state: manuscriptRepo().readEditorState(chapter.chapter_number),
     };
   },
 

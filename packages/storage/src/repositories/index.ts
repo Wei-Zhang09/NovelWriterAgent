@@ -85,6 +85,16 @@ export { CorpusRepository, canProcess, PROCESSABLE_USAGE, CORPUS_SOURCE_TYPES, C
 export { TimelineRepository } from './timeline.js';
 export { CommitOverrideRepository } from './commit-overrides.js';
 export { WorldRepository, confirmBookSettings } from './world.js';
+// M3：用户正文仓储（§四/§十/§三十五）。
+// ⚠ 独立于 `createRepositories(db)` —— 它需要 rootDir（工作区在项目目录下），
+//   而其余仓储只依赖 db。硬塞进统一工厂会让所有调用方都要多传一个参数。
+export { ManuscriptRepository } from './manuscript.js';
+export type {
+  ManuscriptSaveResult,
+  EditorState,
+  AutosaveSnapshot,
+  AutosaveRecoveryCheck,
+} from './manuscript.js';
 export type { WorldEntityRow, CreateWorldEntityInput } from './world.js';
 export type { CommitOverrideRow, OverriddenCheck } from './commit-overrides.js';
 export type { CreateTimelineEventInput, TimelineQuery } from './timeline.js';

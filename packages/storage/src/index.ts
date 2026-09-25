@@ -19,6 +19,14 @@ export type { WorldEntityRow, CreateWorldEntityInput } from './repositories/worl
 export { TimelineRepository, toComparableHours } from './repositories/timeline.js';
 export type { CreateTimelineEventInput, TimelineQuery, TimelineEventRow } from './repositories/timeline.js';
 export type { Repositories } from './repositories/index.js';
+// M3：用户正文仓储（§四/§十/§三十五）
+export { ManuscriptRepository } from './repositories/manuscript.js';
+export type {
+  ManuscriptSaveResult,
+  EditorState,
+  AutosaveSnapshot,
+  AutosaveRecoveryCheck,
+} from './repositories/manuscript.js';
 
 export {
   ProjectRepository,
