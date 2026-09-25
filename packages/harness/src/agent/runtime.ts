@@ -51,13 +51,17 @@ interface ActiveRun {
   lastCompletedStage: string | null;
 }
 
-/** Agent 类型 → 模型槽位（§54 的 4 槽位） */
+/**
+ * Agent 类型 → 模型槽位（§54 的 4 槽位）。
+ *
+ * ⚠ 与 AGENT_TYPES 一一对应。`editor` 已移除（§24：不要为 Editor 建 Agent）——
+ *   两张表不同步会让"类型合法但查不到槽位"，静默回落到 utility。
+ */
 const SLOT_FOR_AGENT: Record<string, ModelSlot> = {
   planner: 'architect',
   writer: 'writer',
   reviewer: 'reviewer',
   continuity: 'reviewer',
-  editor: 'writer',
 };
 
 export class AgentRuntime {

@@ -4,8 +4,17 @@
 import type { ToolPermissionSchema } from '@nwa/shared';
 import type { z } from 'zod';
 
-/** Agent 类型（施工文档 §7，MVP 实现 4 个） */
-export const AGENT_TYPES = ['planner', 'writer', 'reviewer', 'continuity', 'editor'] as const;
+/**
+ * Agent 类型（施工文档 §7，MVP 实现 4 个）。
+ *
+ * ⚠ 这里**没有** `editor`，是刻意的：
+ *   第二阶段施工单 §24 明确写着 ——
+ *     "Editor 是 Workflow 里的『人工协作界面』，而不是另一个 Agent。
+ *      不要为 Editor 创建 Agent。"
+ *   留着它会误导后来者把编辑器做成一个 Agent（正好撞上那条禁令），
+ *   而它此前全仓零使用 —— 是个死配置。
+ */
+export const AGENT_TYPES = ['planner', 'writer', 'reviewer', 'continuity'] as const;
 export type AgentType = (typeof AGENT_TYPES)[number];
 
 /**
@@ -21,7 +30,6 @@ export const AGENT_PERMISSIONS: Record<AgentType, z.infer<typeof ToolPermissionS
   writer: 'PROPOSE_WRITE', // 只产出草稿到 workspace，不写正式文件
   reviewer: 'READ',        // 只读：只报问题，不改稿
   continuity: 'READ',      // 只读：只报一致性问题
-  editor: 'PROPOSE_WRITE', // 产出修订稿到 workspace
 };
 
 export interface AgentRunInput {

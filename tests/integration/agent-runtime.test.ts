@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { z } from 'zod';
-import { AgentRuntime, AGENT_PERMISSIONS, EventBus } from '@nwa/harness';
+import { AgentRuntime, AGENT_PERMISSIONS, AGENT_TYPES, EventBus } from '@nwa/harness';
 import { ModelGateway } from '@nwa/harness';
 import { ToolRegistry, createAllTools } from '@nwa/harness';
 import { InMemorySecretStore } from '@nwa/harness';
@@ -91,6 +91,22 @@ describe('⚠ 权限按 Agent 类型下发（调用方无法提权）', () => {
     expect(AGENT_PERMISSIONS.continuity).toBe('READ');
     expect(AGENT_PERMISSIONS.writer).toBe('PROPOSE_WRITE');
     expect(AGENT_PERMISSIONS.planner).toBe('WRITE');
+  });
+
+  it('⚠ 权限表覆盖全部 Agent 类型（漏一个 → 运行时 undefined 权限）', () => {
+    // 用 AGENT_TYPES 驱动断言，而不是逐个手写：
+    // 新增类型时这条会失败，而手写列表会静默漏掉。
+    for (const a of AGENT_TYPES) {
+      expect(AGENT_PERMISSIONS[a]).toBeDefined();
+    }
+    expect(Object.keys(AGENT_PERMISSIONS).sort()).toEqual([...AGENT_TYPES].sort());
+  });
+
+  it('⚠⚠ 不存在 editor Agent（§24：不要为 Editor 创建 Agent）', () => {
+    // Editor 是 Workflow 里的"人工协作界面"，不是另一个 Agent。
+    // 留着这个类型，后来者会把编辑器做成一个 Agent —— 正好撞上那条禁令。
+    expect([...AGENT_TYPES]).not.toContain('editor');
+    expect(Object.keys(AGENT_PERMISSIONS)).not.toContain('editor');
   });
 
   it('⚠ 审查类 Agent 不能执行写工具（即使它主动尝试）', async () => {
