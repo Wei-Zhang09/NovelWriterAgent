@@ -19,6 +19,7 @@ import { TimelineRepository } from './timeline.js';
 import { CommitOverrideRepository } from './commit-overrides.js';
 import { WorldRepository } from './world.js';
 import { BlueprintRepository } from './blueprint.js';
+import { VolumeRepository } from './volumes.js';
 
 export interface Repositories {
   readonly projects: ProjectRepository;
@@ -65,6 +66,14 @@ export interface Repositories {
    *   全仓 grep `大纲`/`outline` 只命中两处注释。
    */
   readonly blueprint: BlueprintRepository;
+  /**
+   * 卷级大纲（开书向导 Phase 3）。
+   *
+   * ⚠ 与角色不同，卷**只能整体替换**：`chapter_start`/`chapter_end` 必须
+   *   从 1 开始、首尾相接、不重叠 —— 这是全局不变量，逐卷合并会破坏它
+   *   （保留旧第 2 卷 + 用新第 3 卷 → 范围重叠，而每卷单独看都合法）。
+   */
+  readonly volumes: VolumeRepository;
 }
 
 export function createRepositories(db: Database): Repositories {
@@ -82,6 +91,7 @@ export function createRepositories(db: Database): Repositories {
     commitOverrides: new CommitOverrideRepository(db),
     world: new WorldRepository(db),
     blueprint: new BlueprintRepository(db),
+    volumes: new VolumeRepository(db),
   };
 }
 
@@ -103,6 +113,8 @@ export {
   assertBlueprintStep,
 } from './blueprint.js';
 export type { BlueprintStepRow, BookBlueprintRow } from './blueprint.js';
+export { VolumeRepository } from './volumes.js';
+export type { VolumeRow } from './volumes.js';
 // M3：用户正文仓储（§四/§十/§三十五）。
 // ⚠ 独立于 `createRepositories(db)` —— 它需要 rootDir（工作区在项目目录下），
 //   而其余仓储只依赖 db。硬塞进统一工厂会让所有调用方都要多传一个参数。

@@ -22,6 +22,8 @@ export {
   assertBlueprintStep,
 } from './repositories/blueprint.js';
 export type { BlueprintStepRow, BookBlueprintRow } from './repositories/blueprint.js';
+export { VolumeRepository } from './repositories/volumes.js';
+export type { VolumeRow } from './repositories/volumes.js';
 export type { WorldEntityRow, CreateWorldEntityInput } from './repositories/world.js';
 export { TimelineRepository, toComparableHours } from './repositories/timeline.js';
 export type { CreateTimelineEventInput, TimelineQuery, TimelineEventRow } from './repositories/timeline.js';

@@ -348,3 +348,198 @@ export function validateSettingsSemantics(output: SettingsOutput): string[] {
 
   return issues;
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Phase 3：卷级大纲
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * 阶段（对应 oh-story 的"开篇期/发展期/高潮期/收尾期"）。
+ *
+ * ⚠ 用英文枚举而不是中文：与 `WORLD_TYPES` / `ChapterStatus` 等既有枚举
+ *   保持一致。中文标签由渲染层映射 —— 枚举值混中文会让比对、
+ *   迁移、跨包传递都变脆（同一个阶段出现"高潮期"与"高潮"两种写法）。
+ */
+export const VOLUME_STAGES = ['OPENING', 'RISING', 'CLIMAX', 'RESOLUTION'] as const;
+export type VolumeStage = (typeof VOLUME_STAGES)[number];
+
+export const VOLUME_STAGE_LABELS: Readonly<Record<VolumeStage, string>> = {
+  OPENING: '开篇期',
+  RISING: '发展期',
+  CLIMAX: '高潮期',
+  RESOLUTION: '收尾期',
+};
+
+/**
+ * 单卷。
+ *
+ * ⚠ 章号范围用**绝对坐标**（chapterStart/chapterEnd），不存"本卷多少章"。
+ *   绝对坐标让"第 40 章属于哪一卷"是常数级查询，且不可能算错；
+ *   相对章数则每次都要累加前几卷，累加逻辑写错一处就会静默错位。
+ */
+export const VolumeProposalSchema = z.object({
+  name: z.string().min(1, '卷名不得为空').max(100),
+  /** 这一卷在全书里干什么 */
+  function: z.string().min(2, '卷功能不得为空').max(300),
+  stage: z.enum(VOLUME_STAGES),
+  /** 卷契约：本卷承诺给读者的快感/高光（可空，短篇里与全书卖点重复） */
+  contract: z.string().max(400).nullable().default(null),
+  /** 核心事件（一句话） */
+  coreEvent: z.string().min(5, '核心事件不得为空').max(400),
+  /** 起始状态（主角从什么状态开始） */
+  startState: z.string().max(300).nullable().default(null),
+  /** 结束状态（主角变成什么状态） */
+  endState: z.string().max(300).nullable().default(null),
+  /** 章节范围（绝对坐标，从 1 起） */
+  chapterStart: z.number().int().min(1),
+  chapterEnd: z.number().int().min(1),
+  /** 可选的分卷字数预算 */
+  wordTarget: z.number().int().min(1000).max(2000000).nullable().default(null),
+});
+
+export type VolumeProposal = z.infer<typeof VolumeProposalSchema>;
+
+/**
+ * Phase 3 输出：全书卷级大纲。
+ *
+ * ⚠ 上限 12 卷：长篇常见 3-8 卷，12 已是很长的篇幅。
+ *   放开上限会让模型为了"显得完整"硬拆出十几卷，
+ *   每卷只有几十章 —— 而卷的功能是"一个完整的情绪段落"，
+ *   太碎就失去了分卷的意义。
+ */
+export const OutlineOutputSchema = z.object({
+  /** 全书总章节数（与各卷范围必须自洽，见 validateOutlineSemantics） */
+  totalChapters: z.number().int().min(10).max(5000),
+  /** 全书情绪曲线（一句话） */
+  emotionCurve: z.string().min(5).max(600),
+  volumes: z.array(VolumeProposalSchema).min(1).max(12),
+});
+
+export type OutlineOutput = z.infer<typeof OutlineOutputSchema>;
+
+/** 给模型看的形状提示 */
+export const OUTLINE_SHAPE_HINT = `{
+  "totalChapters": 200,
+  "emotionCurve": "压抑期待 → 加压反转 → 爽感震撼 → 余韵圆满",
+  "volumes": [
+    {
+      "name": "拳馆",
+      "function": "立人设与世界观，埋下徒弟这条主线",
+      "stage": "OPENING",
+      "contract": "读者看到主角的过去，开始关心他能不能走出来",
+      "coreEvent": "主角盘下废弃拳馆，发现徒弟在打黑拳",
+      "startState": "退役后自我放逐，拒绝一切与拳台有关的事",
+      "endState": "重新站上拳台边缘，为了徒弟",
+      "chapterStart": 1,
+      "chapterEnd": 30,
+      "wordTarget": 75000
+    }
+  ]
+}`;
+
+/**
+ * 校验卷纲的**业务约束**。
+ *
+ * ## ⚠⚠ 这里是本阶段最容易出静默错误的地方
+ *
+ * 卷的章号范围必须满足三个**全局不变量**：
+ *   ① 从第 1 章开始（不能从第 5 章开始 —— 前面 4 章无人负责）
+ *   ② 首尾相接、不重叠（第 1-30 卷之后必须是 31-xx，不能是 25-50）
+ *   ③ 最后一卷必须覆盖到 totalChapters（不能写到 180 就停，而声称 200 章）
+ *
+ * 这三个不变量**逐卷校验查不出来**（每一卷单独看都合法），
+ * 只有整体看才不成立。而它们一旦不成立，后果是静默的：
+ *   细纲（W5）按章号查"我在哪一卷"，查不到的章会被当成"不属于任何卷"，
+ *   于是那一章的规划失去卷级约束 —— 不报错，只是写得跑偏。
+ *
+ * 所以本函数**先按 chapterStart 排序再检查**，而不是信任模型给的顺序。
+ */
+export function validateOutlineSemantics(output: OutlineOutput): string[] {
+  const issues: string[] = [];
+
+  // 1. 占位符检测
+  const PLACEHOLDERS = ['待确认', '待定', 'TODO', 'todo', '例如…', '（此处填写）'];
+  for (const [i, v] of output.volumes.entries()) {
+    for (const [k, val] of Object.entries(v)) {
+      if (typeof val !== 'string') continue;
+      for (const p of PLACEHOLDERS) {
+        if (val.includes(p)) issues.push(`volumes[${i}].${k} 含占位文本「${p}」`);
+      }
+    }
+  }
+  for (const p of PLACEHOLDERS) {
+    if (output.emotionCurve.includes(p)) issues.push(`emotionCurve 含占位文本「${p}」`);
+  }
+
+  // 2. 单卷范围自洽
+  for (const [i, v] of output.volumes.entries()) {
+    if (v.chapterEnd < v.chapterStart) {
+      issues.push(
+        `volumes[${i}]（${v.name}）的章节范围倒置：${v.chapterStart}-${v.chapterEnd}`,
+      );
+    }
+  }
+  if (issues.length > 0) return issues; // 范围都倒置了，后面的整体检查没有意义
+
+  // 3. ⚠ 整体不变量：排序后检查连续覆盖
+  const sorted = [...output.volumes].sort((a, b) => a.chapterStart - b.chapterStart);
+
+  if (sorted[0]!.chapterStart !== 1) {
+    issues.push(
+      `卷纲未从第 1 章开始（第一卷从第 ${sorted[0]!.chapterStart} 章起）—— ` +
+        '前面的章不属于任何一卷，将失去卷级约束',
+    );
+  }
+
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1]!;
+    const cur = sorted[i]!;
+    if (cur.chapterStart !== prev.chapterEnd + 1) {
+      const gap = cur.chapterStart - prev.chapterEnd - 1;
+      if (gap > 0) {
+        issues.push(
+          `「${prev.name}」结束于第 ${prev.chapterEnd} 章，但「${cur.name}」从第 ` +
+            `${cur.chapterStart} 章开始 —— 中间 ${gap} 章不属于任何一卷`,
+        );
+      } else {
+        issues.push(
+          `「${prev.name}」（至第 ${prev.chapterEnd} 章）与「${cur.name}」` +
+            `（自第 ${cur.chapterStart} 章）章号重叠`,
+        );
+      }
+    }
+  }
+
+  const last = sorted[sorted.length - 1]!;
+  if (last.chapterEnd !== output.totalChapters) {
+    issues.push(
+      `最后一卷「${last.name}」结束于第 ${last.chapterEnd} 章，` +
+        `但全书声称 ${output.totalChapters} 章 —— 末尾的章不属于任何一卷`,
+    );
+  }
+
+  // 4. 卷名不得重复（作者在界面上按卷名辨认，重名会混淆）
+  const names = output.volumes.map((v) => v.name.trim());
+  const dup = names.filter((n, i) => names.indexOf(n) !== i);
+  if (dup.length > 0) {
+    issues.push(`卷名重复：${[...new Set(dup)].join('、')}`);
+  }
+
+  // 5. ⚠ 阶段必须按顺序出现，不得回退。
+  //
+  //    高潮期之后又出现开篇期，说明模型没理解"阶段"是全书的时间轴位置，
+  //    而是当成了某种标签。这会让节奏设计失去意义。
+  const stageOrder = new Map(VOLUME_STAGES.map((s, i) => [s, i]));
+  for (let i = 1; i < sorted.length; i++) {
+    const prevRank = stageOrder.get(sorted[i - 1]!.stage)!;
+    const curRank = stageOrder.get(sorted[i]!.stage)!;
+    if (curRank < prevRank) {
+      issues.push(
+        `卷「${sorted[i]!.name}」的阶段（${VOLUME_STAGE_LABELS[sorted[i]!.stage]}）` +
+          `早于前一卷（${VOLUME_STAGE_LABELS[sorted[i - 1]!.stage]}）—— 阶段不得回退`,
+      );
+    }
+  }
+
+  return issues;
+}

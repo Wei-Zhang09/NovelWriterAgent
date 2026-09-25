@@ -97,3 +97,12 @@ export type {
   MaterializeResult,
   ConflictDecision,
 } from './blueprint/materialize-settings.js';
+
+// ── 开书向导 Phase 3：卷级大纲 ──────────────────────────────
+export { OutlineGenerator, renderOutlineRequest, volumeStageLabel } from './blueprint/outline-generator.js';
+export type {
+  OutlineGeneratorOptions,
+  OutlineRequest,
+  OutlineResult,
+  OutlineStructuredCaller,
+} from './blueprint/outline-generator.js';
