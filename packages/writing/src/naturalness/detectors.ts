@@ -7,6 +7,7 @@
  *   3. severity 映射：critical→BLOCKING / high→MAJOR / medium→MINOR
  */
 import type { ReviewSeverity } from '@nwa/shared';
+import { splitParagraphs } from '@nwa/core';
 
 export type ProseCode =
   | 'prose_negative_flip'
@@ -199,10 +200,20 @@ const DOCUMENT_RULES = [
   },
 ];
 
-/** 段落切分：以空行分隔，过滤纯空白 */
-export function splitParagraphs(text: string): string[] {
-  return text.split(/\n\s*\n/).map((p) => p.trim()).filter((p) => p.length > 0);
-}
+/**
+ * 段落切分：以空行分隔，过滤纯空白。
+ *
+ * ⚠ M4 起改为**复用** `@nwa/core` 的 `splitParagraphs()`（本模块只 re-export）。
+ *   原实现与它逐字相同，但两份实现并存意味着：
+ *   编辑器用 core 的段落号、Review 用这里的段落号 ——
+ *   一旦任一处调整（比如把"连续两个空行"也算分段），
+ *   表现就是"点问题跳到错误的段落"，只在特定空行排布下复现。
+ *   单一实现后不存在"两处不一致"这个状态。
+ *
+ * ⚠ 仍然从本模块导出：既有调用方与测试都按 `@nwa/writing` 的路径引用，
+ *   改路径是无谓的破坏。
+ */
+export { splitParagraphs };
 
 /**
  * 运行全部确定性检测器。

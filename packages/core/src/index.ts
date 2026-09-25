@@ -16,3 +16,4 @@ export * from './word-target.js';
 export * from './settings-gate.js';
 export * from './world-rule-conflict.js';
 export * from './staleness.js';
+export * from './editor-metrics.js';

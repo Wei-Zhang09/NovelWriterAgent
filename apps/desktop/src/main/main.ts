@@ -306,6 +306,87 @@ function createWindow(): void {
             rec('章节详情可打开', detailText.includes('第 1 章'), '');
             rec('未提交章节无正式正文', detailText.includes('未提交的章节不产生正式正文'), '');
 
+            // 6b) M4：Manuscript 编辑器（§六 §九 §二十七 §二十八 §三十）
+            //     ⚠ 本区块内禁止出现反引号（工程约定 1）—— 外层是模板字面量。
+            await sleep(900);
+            const editor = document.querySelector('.editor');
+            rec('编辑器已挂载', !!editor, '');
+            if (editor) {
+              const area = editor.querySelector('.editor__area');
+              rec('编辑器有文本区', !!area, '');
+              rec('文本区初值为空（未提交章节尚无正文）',
+                  (area?.value ?? 'x') === '', 'value=' + JSON.stringify(area?.value ?? ''));
+
+              const saveStatus = editor.querySelector('.save-status');
+              rec('显示保存状态（五态之一）',
+                  !!saveStatus && /已保存|未保存|保存中|保存失败|未恢复/.test(saveStatus.textContent),
+                  saveStatus?.textContent ?? '');
+              rec('初始状态为已保存',
+                  (saveStatus?.textContent ?? '').includes('已保存'), saveStatus?.textContent ?? '');
+
+              const stats = [...editor.querySelectorAll('.editor__stat')].map(n => n.textContent);
+              rec('显示字数与段落数', stats.some(t => /\\d+ 字/.test(t)) && stats.some(t => /\\d+ 段/.test(t)),
+                  stats.join(' | '));
+
+              const bar = editor.querySelector('.editor__bar');
+              const barBtns = bar ? [...bar.querySelectorAll('button')].map(b => b.textContent.trim()) : [];
+              rec('工具栏含保存/预览', barBtns.includes('保存') && barBtns.includes('预览'), barBtns.join('/'));
+
+              // §三十：保存与提交到正史必须明显区分（文案 + 样式类）
+              const commitBtn = bar ? [...bar.querySelectorAll('button')].find(b => b.textContent.includes('提交到正史')) : null;
+              const saveBtn = bar ? [...bar.querySelectorAll('button')].find(b => b.textContent.trim() === '保存') : null;
+              rec('有「提交到正史」按钮且文案写明走检查',
+                  !!commitBtn && commitBtn.textContent.includes('走检查'), commitBtn?.textContent ?? '');
+              rec('保存与提交样式类不同（§三十）',
+                  !!saveBtn && !!commitBtn && saveBtn.className !== commitBtn.className,
+                  (saveBtn?.className ?? '') + ' vs ' + (commitBtn?.className ?? ''));
+
+              // 真实操作：输入 → 字数变化 → 保存 → 状态回到已保存
+              const setArea = (v) => {
+                area.value = v;
+                area.dispatchEvent(new Event('input', { bubbles: true }));
+              };
+              setArea('雨落在青石板上。\\n\\n他没有回头。');
+              await sleep(700);
+              const statsAfter = [...editor.querySelectorAll('.editor__stat')].map(n => n.textContent);
+              rec('输入后字数已更新', statsAfter.some(t => t.includes('字') && !t.startsWith('0 字') && !t.startsWith('—')),
+                  statsAfter.join(' | '));
+              rec('输入后段落数为 2', statsAfter.some(t => t === '2 段'), statsAfter.join(' | '));
+
+              const stDirty = editor.querySelector('.save-status');
+              rec('输入后状态变为未保存',
+                  (stDirty?.textContent ?? '').includes('未保存'), stDirty?.textContent ?? '');
+
+              // 视图切换（§六：单一文本源 + 视图切换）
+              const viewBtn = bar ? [...bar.querySelectorAll('button')].find(b => b.textContent.trim() === '预览') : null;
+              viewBtn?.click();
+              await sleep(400);
+              const preview = editor.querySelector('.editor__preview');
+              rec('预览显示 2 个段落',
+                  !!preview && !preview.hidden && preview.querySelectorAll('.editor__para').length === 2,
+                  'paras=' + (preview?.querySelectorAll('.editor__para').length ?? -1));
+              const backBtn = bar ? [...bar.querySelectorAll('button')].find(b => b.textContent.trim() === '编辑') : null;
+              backBtn?.click();
+              await sleep(300);
+
+              // 保存（§二：保存不得进入 Canon）
+              saveBtn?.click();
+              await sleep(1200);
+              const stSaved = editor.querySelector('.save-status');
+              rec('保存后状态回到已保存',
+                  (stSaved?.textContent ?? '').includes('已保存'), stSaved?.textContent ?? '');
+              const saveMsg = editor.querySelector('.form-msg')?.textContent ?? '';
+              rec('保存提示明确说明未提交', saveMsg.includes('未提交') || saveMsg.includes('不影响正史'), saveMsg);
+              rec('⚠ 保存提示不出现 undefined（字数须来自 metrics 口径）', !saveMsg.includes('undefined'), saveMsg);
+
+              // ⚠ §二 的下游终点断言：保存后章节状态仍是草稿、仍无正式正文
+              const chapterChip = document.querySelector('.nav-item--chapter .chip')?.textContent ?? '';
+              rec('⚠ 保存后章节状态仍为草稿（SAVE != COMMIT）', chapterChip === '草稿', 'chip=' + chapterChip);
+              const detailAfter = $('center')?.textContent ?? '';
+              rec('⚠ 保存后仍无正式正文（未进 Canon）',
+                  detailAfter.includes('未提交的章节不产生正式正文'), '');
+            }
+
             // 7) 模型设置面板（STEP 3）—— 常驻右栏，故在章节详情打开后仍应存在
             const modelForm = [...document.querySelectorAll('.form')]
               .find(f => f.querySelector('h3')?.textContent.includes('模型设置'));

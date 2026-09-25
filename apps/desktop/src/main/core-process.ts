@@ -22,6 +22,7 @@ import {
   perSceneWords,
   evaluateSettingsGate,
   hashSettings,
+  measureText,
   sha256Text,
   type ErrorCodeValue,
 } from '@nwa/core';
@@ -1763,6 +1764,24 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const chapter = p.repos.chapters.get(params.chapterId);
     manuscriptRepo().clearAutosave(chapter.chapter_number);
     return { chapterId: chapter.id, discarded: true };
+  },
+
+  /**
+   * 文本度量（§二十八 / §二十九）。
+   *
+   * ⚠ 度量**必须**由这里算（core 的 `measureText`），不能在 renderer 里
+   *   再写一遍计数。在 renderer 里数就是"第二套口径"——
+   *   编辑器显示 4,328 字、章节目标判定 3,912 字，两个数字都"对"，
+   *   但没人能解释差在哪。这类争议无解，因为它不是算法错。
+   *
+   * `text` 可选：传了就算传入的文本（编辑器里还没保存的当前内容），
+   * 不传就算磁盘上的正文。
+   */
+  'manuscript.metrics': (params: { chapterId: string; text?: string }) => {
+    const p = requireProject();
+    const chapter = p.repos.chapters.get(params.chapterId);
+    const body = params.text ?? manuscriptRepo().get(chapter.chapter_number) ?? '';
+    return { chapterId: chapter.id, ...measureText(body) };
   },
 
   /**

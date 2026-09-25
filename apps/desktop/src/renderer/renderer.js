@@ -12,6 +12,7 @@
 import { renderSkillPanel, renderBackupPanel } from './panels.js';
 import { renderCorpusPanel } from './corpus-panel.js';
 import { renderWorkflowPanel } from './workflow-panel.js';
+import { renderManuscriptEditor } from './manuscript-editor.js';
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => {
@@ -1269,6 +1270,20 @@ function renderChapterDetail(c) {
     renderAgent();
   });
   ctr.append(back);
+
+  // ── M4：正文创作工作台（§六 §七 §二十七 §二十八 §二十九 §三十）──
+  //
+  // ⚠ 编辑器放在**章节详情下方**而不是替换详情：章节元信息（ID / 状态 /
+  //   正文路径）是排错时要看的，藏起来会让"正文路径指向哪"这类问题
+  //   只能去数据库查。
+  ctr.append(
+    renderManuscriptEditor({
+      el,
+      invoke: call,
+      msg: () => el('div', 'form-msg'),
+      chapter: c,
+    }),
+  );
 }
 
 // ─────────────────────────────────────────────────────────────

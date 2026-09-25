@@ -371,3 +371,97 @@ body {
 /* 提示级消息（发现未完成工作流）—— 用 warn 色，不是 err：
    它不表示出错，只表示"有件事你需要知道" */
 .form-msg--warn { color: var(--warn); }
+
+/* ═══════════════════════════════════════════════════════════════
+   Manuscript 编辑器（M4 / §六 §九 §二十七 §二十八 §二十九 §三十）
+   ═══════════════════════════════════════════════════════════════ */
+
+.editor {
+  margin-top: 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--pane-2);
+  display: flex;
+  flex-direction: column;
+}
+
+.editor__head { padding: 10px 12px 6px; }
+.editor__head h2 { margin: 0 0 6px; font-size: 15px; }
+
+.editor__meta {
+  display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+  font-size: 12px; color: var(--muted);
+}
+
+.editor__stat { font-variant-numeric: tabular-nums; }
+
+/* ⚠ 保存状态五态必须**颜色 + 文字双编码**：
+   只靠颜色时，色觉差异者与"扫一眼"的人都读不出区别，
+   而这里最要紧的区分是「未保存」与「有未恢复内容」。 */
+.save-status { font-size: 12px; }
+.save-status--clean { color: var(--ok); }
+.save-status--dirty { color: var(--warn); }
+.save-status--saving { color: var(--info); }
+.save-status--failed { color: var(--err); }
+/* 待恢复用 info 色而非 warn：它不是"你做错了什么"，是"有东西等你决定" */
+.save-status--recoverable { color: var(--info); font-weight: 600; }
+
+.editor__bar {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+/* ⚠ §三十：保存与提交到正史必须明显区分。
+   .btn--commit 与 .btn--danger 共用危险色系，但提交**不是破坏性操作**——
+   它只是不可逆地推进状态。所以用实心强调 + 上浮，而非 danger 的边框样式，
+   两者外观不同，作者不会把"提交"当成"删除"。 */
+.btn--commit {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+.btn--commit:hover { filter: brightness(1.12); }
+
+.editor__body { flex: 1; min-height: 0; }
+
+/* ⚠ 编辑器高度用 min-height 而非固定 height：
+   固定高度会让长章节只能在小窗口里滚动，而作者需要的是"能一次看到更多"。
+   160px 是保证"至少能看清一段"的下限。 */
+.editor__area {
+  display: block;
+  width: 100%;
+  min-height: 320px;
+  padding: 12px;
+  border: 0;
+  outline: none;
+  resize: vertical;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.9 "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+  tab-size: 2;
+}
+
+.editor__preview {
+  min-height: 320px;
+  padding: 12px 16px;
+  background: var(--bg);
+  overflow-y: auto;
+}
+
+/* 预览段落：与编辑区同字号行高，避免"预览看起来字数变少了"的错觉 */
+.editor__para {
+  margin: 0 0 1em;
+  font: 14px/1.9 "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+  text-indent: 2em;
+}
+
+.editor__foot {
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+  min-height: 26px;
+}

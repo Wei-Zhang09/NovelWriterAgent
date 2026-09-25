@@ -12,7 +12,7 @@
  *      在渲染进程里跑一段流程脚本，把每步结果收集回来。
  */
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +22,19 @@ const appRoot = join(here, '..');
 const OUT = join(appRoot, 'dist', 'gui-flow-result.json');
 
 if (existsSync(OUT)) unlinkSync(OUT);
+
+// ⚠ 每次从**干净的项目目录**开始。
+//
+// 原实现只删结果文件、不删项目目录，于是上一轮留下的
+// `workspace/chapters/NN/manuscript.md` 会被下一轮读到 ——
+// 断言"编辑器初值为空"就会失败，而失败原因与本次改动毫无关系。
+// 更糟的是它会**掩盖**真实缺陷：上一轮存下的正文恰好让
+// "保存后状态回到已保存"之类的断言通过。
+//
+// 这与 STEP 21 修过的「verify 脚本污染真实项目」是同一类问题：
+// 验证脚本的状态必须在它自己控制之下。
+const PROJECTS = join(tmpdir(), 'nwa-verify-flow');
+if (existsSync(PROJECTS)) rmSync(PROJECTS, { recursive: true, force: true });
 
 const child = spawn(
   process.platform === 'win32' ? 'npx.cmd' : 'npx',
@@ -33,7 +46,7 @@ const child = spawn(
       ...process.env,
       NWA_GUI_FLOW: '1',
       // ⚠ 隔离项目目录：GUI 流程验证会真实建书/建章，不得污染用户项目。
-      NWA_PROJECTS_ROOT: join(tmpdir(), 'nwa-verify-flow'),
+      NWA_PROJECTS_ROOT: PROJECTS,
       // ⚠ 界面结构验证不应真实调用 LLM（会消耗配额、拖慢、且引入超时假失败）。
       //   指向不存在的路径 → agentReady=false → 界面显示"需先配置模型"，
       //   正好也是我们要断言的"诚实失败"路径。
