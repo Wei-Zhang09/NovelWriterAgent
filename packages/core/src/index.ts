@@ -18,3 +18,4 @@ export * from './world-rule-conflict.js';
 export * from './staleness.js';
 export * from './editor-metrics.js';
 export * from './paths.js';
+export * from './blueprint-gate.js';

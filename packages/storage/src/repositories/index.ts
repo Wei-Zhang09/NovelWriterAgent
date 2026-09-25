@@ -18,6 +18,7 @@ import { CorpusRepository } from './corpus.js';
 import { TimelineRepository } from './timeline.js';
 import { CommitOverrideRepository } from './commit-overrides.js';
 import { WorldRepository } from './world.js';
+import { BlueprintRepository } from './blueprint.js';
 
 export interface Repositories {
   readonly projects: ProjectRepository;
@@ -55,6 +56,15 @@ export interface Repositories {
    *   characters（P2-2）同一类缺陷。
    */
   readonly world: WorldRepository;
+  /**
+   * 开书向导（前置设定流程）。
+   *
+   * ⚠ 用户诉求：「配置 AI 生成大纲角色等等相关功能，再由用户进行选择、
+   *   修改，最后确认一切前置信息后，再开始写作」。此前只有「作者手填 +
+   *   确认门禁」（settings-gate），缺「AI 生成草案」与「大纲」产物本身 ——
+   *   全仓 grep `大纲`/`outline` 只命中两处注释。
+   */
+  readonly blueprint: BlueprintRepository;
 }
 
 export function createRepositories(db: Database): Repositories {
@@ -71,6 +81,7 @@ export function createRepositories(db: Database): Repositories {
     timeline: new TimelineRepository(db),
     commitOverrides: new CommitOverrideRepository(db),
     world: new WorldRepository(db),
+    blueprint: new BlueprintRepository(db),
   };
 }
 
@@ -85,6 +96,13 @@ export { CorpusRepository, canProcess, PROCESSABLE_USAGE, CORPUS_SOURCE_TYPES, C
 export { TimelineRepository } from './timeline.js';
 export { CommitOverrideRepository } from './commit-overrides.js';
 export { WorldRepository, confirmBookSettings } from './world.js';
+export {
+  BlueprintRepository,
+  BLUEPRINT_STEP_ORDER,
+  stableStringify,
+  assertBlueprintStep,
+} from './blueprint.js';
+export type { BlueprintStepRow, BookBlueprintRow } from './blueprint.js';
 // M3：用户正文仓储（§四/§十/§三十五）。
 // ⚠ 独立于 `createRepositories(db)` —— 它需要 rootDir（工作区在项目目录下），
 //   而其余仓储只依赖 db。硬塞进统一工厂会让所有调用方都要多传一个参数。

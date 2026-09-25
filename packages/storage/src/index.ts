@@ -15,6 +15,13 @@ export { MIGRATIONS } from './migrations/index.js';
 
 export { createRepositories } from './repositories/index.js';
 export { confirmBookSettings } from './repositories/world.js';
+export {
+  BlueprintRepository,
+  BLUEPRINT_STEP_ORDER,
+  stableStringify,
+  assertBlueprintStep,
+} from './repositories/blueprint.js';
+export type { BlueprintStepRow, BookBlueprintRow } from './repositories/blueprint.js';
 export type { WorldEntityRow, CreateWorldEntityInput } from './repositories/world.js';
 export { TimelineRepository, toComparableHours } from './repositories/timeline.js';
 export type { CreateTimelineEventInput, TimelineQuery, TimelineEventRow } from './repositories/timeline.js';

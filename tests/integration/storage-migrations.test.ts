@@ -66,6 +66,7 @@ describe('迁移', () => {
       '0016_state_proposal_source_hash',
       '0017_manuscript_versions',
       '0018_manuscript_versions_book',
+      '0019_book_blueprint',
     ]);
   });
 
@@ -118,7 +119,9 @@ describe('迁移', () => {
 
     // 业务表 27 → 28（0012 新增 commit_overrides —— Commit 绕过审计）
     // 业务表 28 → 29（0017 新增 manuscript_versions —— 正文版本节点，M6）
-    expect(business.length).toBe(29);
+    // 业务表 29 → 31（0019 新增 blueprint_steps + book_blueprints
+    //   —— 开书向导的前置设定流程）
+    expect(business.length).toBe(31);
     expect(ftsVirtual.length).toBe(2);
     expect(shadow.length).toBe(10);
 
@@ -133,6 +136,12 @@ describe('迁移', () => {
     //   漏掉那一步总数会变成 47，而"少了索引"在功能上不会立刻报错 ——
     //   只是提交相关的按状态查询退化成全表扫描。
     // 索引 50 → 52（0017 新增 2 个：按章查版本、按章+seq 唯一）
+    // ⚠ 0019 **不增加**索引（仍为 52），且这是刻意的：
+    //   0019 的两个约束（blueprint_steps 的 UNIQUE(book_id, step)、
+    //   book_blueprints 的 PRIMARY KEY(book_id)）都由 SQLite 建**自动索引**，
+    //   而自动索引名是 `sqlite_autoindex_*`，被上面的
+    //   `name NOT LIKE 'sqlite_%'` 过滤掉了 —— 所以这里数不到它们。
+    //   这与 0018 同一条判断：book_id 只参与路径拼接、不做过滤，不另加索引。
     expect(indexes.length).toBe(52);
   });
 
@@ -162,6 +171,7 @@ describe('迁移', () => {
       '0016_state_proposal_source_hash',
       '0017_manuscript_versions',
       '0018_manuscript_versions_book',
+      '0019_book_blueprint',
     ]);
   });
 
