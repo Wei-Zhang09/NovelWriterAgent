@@ -194,6 +194,33 @@ function buildCharacterContext(
  * ⚠ 只注入 CONFIRMED 的条目 —— 草稿是"作者还在改，先别当准"。
  *   草稿条数记入日志，作者能在界面上看到"有几条没生效"。
  */
+/**
+ * 逐章细纲注入（W5 开书向导 Phase 3）。
+ *
+ * ⚠ 与 `buildWorldContext` 同一判断：细纲是**增强**不是前置依赖 ——
+ *   读细纲失败不该让整章写不出来（作者可能压根没用向导）。
+ *
+ * ⚠ 只注入**当前章**，不做 lookahead。
+ *   把后面几章的细纲也塞进去会稀释当前章的信息
+ *   （llm-generation-pipelines 规则 28：注入内容必须按相关性裁剪）。
+ */
+function buildChapterOutlineContext(
+  deps: WorkflowServicesDeps,
+  bookId: string,
+  chapterNumber: number,
+): string {
+  try {
+    return deps.repos.chapterOutlines.renderForPrompt(bookId, chapterNumber);
+  } catch (e) {
+    deps.logger.warn('章节细纲读取失败（本次不注入细纲）', {
+      bookId,
+      chapterNumber,
+      error: e instanceof Error ? e.message : String(e),
+    });
+    return '';
+  }
+}
+
 function buildWorldContext(deps: WorkflowServicesDeps, bookId: string): string {
   try {
     const all = deps.repos.world.listByBook(bookId).map(toWorldBrief);
@@ -557,14 +584,30 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
       //   确认这个动作的意义就在这里 —— 不然它只是"让 Agent 别拦我"，
       //   而不是"让 Agent 按设定写"。
       const worldContext = buildWorldContext(deps, ch.book_id);
+      // ⚠ 逐章细纲（W5）：作者在开书向导里确认过的本章意图。
+      //
+      //   这是细纲存在的**唯一意义** —— 它必须进 prompt，否则只是
+      //   一份"作者看过的文档"：门禁说"已确认"，模型却读不到，
+      //   于是作者以为 Agent 按细纲在写，实际它什么都不知道。
+      //   （W1 记录过的同一教训：`settings-gate` 的"门禁放行但 prompt
+      //     读到别的内容"。）
+      //
+      //   注入位置与 world/character 相同（都进 contextText），
+      //   因为这是 Planner 实际读取的那一个字段。
+      //
+      //   ⚠ 排在最前：细纲是"作者对本章的意图"，是**指令**；
+      //     世界规则与角色卡是**约束**。意图先于约束读，
+      //     模型才不会把细纲当成"众多参考之一"。
+      const outlineContext = buildChapterOutlineContext(deps, ch.book_id, ch.chapter_number);
       // ⚠ 世界观排在角色之前：世界规则是"这个世界的物理定律"，
       //   人物是在定律之内活动的。顺序反了会让模型先定人物再迁就规则。
-      const contextText = [worldContext, characterContext]
+      const contextText = [outlineContext, worldContext, characterContext]
         .filter((s) => s.trim().length > 0)
         .join('\n\n');
       if (contextText.length > 0) {
         log.info('已注入设定（规划）', {
           chapterNumber: ch.chapter_number,
+          outlineChars: outlineContext.length,
           worldChars: worldContext.length,
           charChars: characterContext.length,
         });

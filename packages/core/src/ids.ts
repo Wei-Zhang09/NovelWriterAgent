@@ -128,6 +128,8 @@ export const characterId = (): string => `char_${randomUUID()}`;
 export const worldEntityId = (): string => `world_${randomUUID()}`;
 /** 卷（开书向导 Phase 3）。用命名空间 ID：卷是用户可见的稳定标识 */
 export const volumeId = (): string => `vol_${randomUUID()}`;
+/** 逐章细纲（开书向导 Phase 3）。章号是业务键，id 只是主键 */
+export const chapterOutlineId = (): string => `cout_${randomUUID()}`;
 
 /** 章节 ID 由 book + 章节号决定，保证唯一且可预测 */
 export const chapterId = (book: string, chapterNumber: number): string =>

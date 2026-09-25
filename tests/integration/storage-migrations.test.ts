@@ -68,6 +68,7 @@ describe('迁移', () => {
       '0018_manuscript_versions_book',
       '0019_book_blueprint',
       '0020_volumes',
+      '0021_chapter_outlines',
     ]);
   });
 
@@ -123,7 +124,8 @@ describe('迁移', () => {
     // 业务表 29 → 31（0019 新增 blueprint_steps + book_blueprints
     //   —— 开书向导的前置设定流程）
     // 业务表 31 → 32（0020 新增 volumes —— 开书向导 Phase 3 的卷级大纲）
-    expect(business.length).toBe(32);
+    // 业务表 32 → 33（0021 新增 chapter_outlines —— 开书向导 Phase 3 的逐章细纲）
+    expect(business.length).toBe(33);
     expect(ftsVirtual.length).toBe(2);
     expect(shadow.length).toBe(10);
 
@@ -175,6 +177,7 @@ describe('迁移', () => {
       '0018_manuscript_versions_book',
       '0019_book_blueprint',
       '0020_volumes',
+      '0021_chapter_outlines',
     ]);
   });
 

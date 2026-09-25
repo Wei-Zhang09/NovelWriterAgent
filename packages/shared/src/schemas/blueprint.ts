@@ -543,3 +543,232 @@ export function validateOutlineSemantics(output: OutlineOutput): string[] {
 
   return issues;
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Phase 3（续）：逐章细纲
+// ═══════════════════════════════════════════════════════════════════
+
+/** 章节定位（oh-story 的"章节定位与张弛"） */
+export const CHAPTER_POSITIONINGS = [
+  'HIGH_PRESSURE',
+  'ADVANCE',
+  'TRAINING',
+  'RELATIONSHIP',
+  'LOW_PRESSURE',
+  'INFORMATION',
+] as const;
+export type ChapterPositioning = (typeof CHAPTER_POSITIONINGS)[number];
+
+export const CHAPTER_POSITIONING_LABELS: Readonly<Record<ChapterPositioning, string>> = {
+  HIGH_PRESSURE: '高压',
+  ADVANCE: '推进',
+  TRAINING: '修炼试错',
+  RELATIONSHIP: '关系回收',
+  LOW_PRESSURE: '低压生活',
+  INFORMATION: '信息整理',
+};
+
+/** 五段式内容概括 */
+export const ChapterSummarySchema = z.object({
+  cause: z.string().min(2, '起因不得为空').max(500),
+  development: z.string().min(2, '发展不得为空').max(500),
+  turn: z.string().min(2, '转折不得为空').max(500),
+  climax: z.string().min(2, '高潮不得为空').max(500),
+  /**
+   * 结尾落点。
+   *
+   * ⚠ 必须写**具体落点**（谁的什么动作/画面/台词），不写"尘埃落定"
+   *   这类状态判词 —— 后者对写作没有指导意义（Planner 拿不到可执行信息）。
+   */
+  ending: z.string().min(2, '结尾落点不得为空').max(500),
+});
+export type ChapterSummary = z.infer<typeof ChapterSummarySchema>;
+
+/**
+ * 单章细纲。
+ *
+ * ⚠ 字段取舍标准：**每个字段都必须是 Planner 能据以生成场景计划的**。
+ *   放一个 Planner 用不上的字段（如"本章标价"）只会占上下文预算 ——
+ *   而 Planner 的预算本来就要装世界规则、角色卡、技能块。
+ */
+export const ChapterOutlineSchema = z.object({
+  chapterNumber: z.number().int().min(1),
+  /** 核心事件（一句话） */
+  coreEvent: z.string().min(5, '核心事件不得为空').max(400),
+  /**
+   * 目标情绪。
+   *
+   * ⚠ 要求写成"前状态 → 后状态"，不得只写"热血"这类标签 ——
+   *   标签对 Planner 没有信息量（它没法据此决定场景怎么设计）。
+   */
+  targetEmotion: z.string().min(2, '目标情绪不得为空').max(300),
+  /** 主角目标 / 关键选择 */
+  protagonistGoal: z.string().min(2, '主角目标不得为空').max(400),
+  positioning: z.enum(CHAPTER_POSITIONINGS).nullable().default(null),
+  /** 本章结构公式：节点1（目的）+ 节点2（目的）+ … */
+  structureFormula: z.string().max(400).nullable().default(null),
+  /** 章首钩子 */
+  hook: z.string().min(2, '章首钩子不得为空').max(400),
+  summary: ChapterSummarySchema,
+  /** 主线推进 */
+  mainPlot: z.string().max(400).nullable().default(null),
+  /** 出场顺序 */
+  cast: z.array(z.string().min(1)).max(30).default([]),
+  /** 视角 / 信息差 */
+  infoGap: z.string().max(500).nullable().default(null),
+  /** 本章禁止提前释放（只写本章特有的） */
+  forbidden: z.string().max(500).nullable().default(null),
+  /** 字数目标。可空 → 回退到 books.target_words_per_chapter */
+  wordTarget: z.number().int().min(100).max(20000).nullable().default(null),
+});
+
+export type ChapterOutline = z.infer<typeof ChapterOutlineSchema>;
+
+/**
+ * 一批细纲的输出。
+ *
+ * ## ⚠⚠ 为什么上限是 10 而不是"一次生成全书"
+ *
+ * 参考项目 oh-story-claudecode 的原文：
+ *   「**不强行一次产出 30 章细纲**；全书 ≤30 章且用户明确要全书细纲时，
+ *     可分批连续交付。」
+ *
+ * 三条理由，每条都独立成立：
+ *   ① **质量**：细纲要写五段式 + 结构公式 + 信息差，一章就是几百字。
+ *      一次生成 30 章 ≈ 上万字，模型的注意力会摊薄 ——
+ *      后半段的章会明显比前半段敷衍（而作者要读到第 30 章才发现）。
+ *   ② **可审**：作者要**逐章选择、修改**（用户诉求）。一次给 30 章，
+ *      界面上是 30 个待审对象，作者会直接跳过审阅 —— 那比不生成更糟。
+ *   ③ **可续**：`chapter_outlines` 按 (book_id, chapter_number) 唯一，
+ *      分批生成天然可续做（第二批从第 11 章开始），不需要额外状态。
+ *
+ * 所以本 schema 强制 `chapters.length <= 10`，且调用方必须指定
+ * `startChapter` / `endChapter` 范围。
+ */
+export const ChapterOutlinesOutputSchema = z.object({
+  outlines: z.array(ChapterOutlineSchema).min(1).max(10),
+});
+
+export type ChapterOutlinesOutput = z.infer<typeof ChapterOutlinesOutputSchema>;
+
+/** 给模型看的形状提示 */
+export const CHAPTER_OUTLINE_SHAPE_HINT = `{
+  "outlines": [
+    {
+      "chapterNumber": 1,
+      "coreEvent": "主角盘下废弃拳馆，发现徒弟在打黑拳",
+      "targetEmotion": "从自暴自弃的麻木 → 被徒弟激起的怒意与护念",
+      "protagonistGoal": "想赶走徒弟让他别走自己的老路；必须选择是否承认自己当年的失败",
+      "positioning": "ADVANCE",
+      "structureFormula": "徒弟来访（立关系） + 主角拒绝（立旧伤） + 发现徒弟的手（转折） + 沉默收场（留钩子）",
+      "hook": "他在徒弟手上看到了自己当年的旧伤",
+      "summary": {
+        "cause": "徒弟找上门，说想学拳",
+        "development": "主角拒绝，两人争执",
+        "turn": "他看见徒弟手上的伤，位置与自己当年一模一样",
+        "climax": "他第一次没有立刻说「不」",
+        "ending": "他转身进屋，把门留了一条缝"
+      },
+      "mainPlot": "主角从拒绝一切与拳台有关的事，到第一次动摇",
+      "cast": ["沈砚", "徒弟小满"],
+      "infoGap": "读者知道主角的旧伤来历，徒弟不知道",
+      "forbidden": "不得揭示当年那场比赛的真相",
+      "wordTarget": 2500
+    }
+  ]
+}`;
+
+/**
+ * 校验细纲批次的**业务约束**。
+ *
+ * @param output 模型输出
+ * @param range 调用方指定的章号范围（用于校验模型是否越界/漏章）
+ */
+export function validateChapterOutlinesSemantics(
+  output: ChapterOutlinesOutput,
+  range: { readonly startChapter: number; readonly endChapter: number },
+): string[] {
+  const issues: string[] = [];
+
+  // 1. 占位符检测
+  const PLACEHOLDERS = ['待确认', '待定', 'TODO', 'todo', '例如…', '（此处填写）'];
+  const scan = (path: string, v: unknown): void => {
+    if (typeof v === 'string') {
+      for (const p of PLACEHOLDERS) {
+        if (v.includes(p)) issues.push(`${path} 含占位文本「${p}」`);
+      }
+      return;
+    }
+    if (Array.isArray(v)) v.forEach((x, i) => scan(`${path}[${i}]`, x));
+    else if (v && typeof v === 'object') {
+      for (const [k, val] of Object.entries(v as Record<string, unknown>)) scan(`${path}.${k}`, val);
+    }
+  };
+  output.outlines.forEach((o, i) => scan(`outlines[${i}]`, o));
+  if (issues.length > 0) return issues;
+
+  // 2. ⚠ 章号必须**连续且落在指定范围内**。
+  //
+  //    这不是形式要求：细纲按章号索引，缺章的后果是那一章没有意图约束 ——
+  //    Planner 拿不到"作者确认过什么"，只能自由发挥。
+  //    而作者看到"生成了 10 章细纲"，不会注意到其中缺了第 7 章。
+  const nums = output.outlines.map((o) => o.chapterNumber).sort((a, b) => a - b);
+  const dup = nums.filter((n, i) => nums.indexOf(n) !== i);
+  if (dup.length > 0) {
+    issues.push(`细纲章号重复：${[...new Set(dup)].join('、')}`);
+  }
+
+  const expected = range.endChapter - range.startChapter + 1;
+  if (nums.length !== expected) {
+    issues.push(
+      `要求生成第 ${range.startChapter}-${range.endChapter} 章共 ${expected} 章，` +
+        `实际给出 ${nums.length} 章`,
+    );
+  }
+
+  for (let n = range.startChapter; n <= range.endChapter; n++) {
+    if (!nums.includes(n)) issues.push(`缺少第 ${n} 章的细纲`);
+  }
+
+  const outOfRange = nums.filter((n) => n < range.startChapter || n > range.endChapter);
+  if (outOfRange.length > 0) {
+    issues.push(
+      `细纲章号越界：${outOfRange.join('、')}（要求范围 ${range.startChapter}-${range.endChapter}）`,
+    );
+  }
+
+  // 3. ⚠ 目标情绪不得只写标签。
+  //
+  //    "热血"/"悲伤"这类标签对 Planner 没有信息量 ——
+  //    它没法据此决定场景怎么设计、节奏怎么走。
+  //    要求写成"前状态 → 后状态"（见字段注释）。
+  const BARE_LABELS = ['热血', '悲伤', '开心', '紧张', '爽', '感动', '压抑', '温馨'];
+  for (const o of output.outlines) {
+    const e = o.targetEmotion.trim();
+    if (BARE_LABELS.includes(e)) {
+      issues.push(
+        `第 ${o.chapterNumber} 章的目标情绪只写了标签「${e}」—— ` +
+          '请写成"前状态 → 后状态"',
+      );
+    }
+  }
+
+  // 4. ⚠ 结尾落点不得是状态判词。
+  //
+  //    "尘埃落定"/"一切结束"这类写法没有可执行的落点，
+  //    Writer 拿到之后不知道该落在谁的什么动作上。
+  const VAGUE_ENDINGS = ['尘埃落定', '一切结束', '圆满结束', '告一段落', '就此结束'];
+  for (const o of output.outlines) {
+    const e = o.summary.ending.trim();
+    for (const v of VAGUE_ENDINGS) {
+      if (e.includes(v)) {
+        issues.push(
+          `第 ${o.chapterNumber} 章的结尾落点写成了状态判词「${v}」—— ` +
+            '请写具体的动作/画面/台词',
+        );
+      }
+    }
+  }
+
+  return issues;
+}

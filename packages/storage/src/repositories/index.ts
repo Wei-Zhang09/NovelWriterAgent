@@ -20,6 +20,7 @@ import { CommitOverrideRepository } from './commit-overrides.js';
 import { WorldRepository } from './world.js';
 import { BlueprintRepository } from './blueprint.js';
 import { VolumeRepository } from './volumes.js';
+import { ChapterOutlineRepository } from './chapter-outlines.js';
 
 export interface Repositories {
   readonly projects: ProjectRepository;
@@ -74,6 +75,14 @@ export interface Repositories {
    *   （保留旧第 2 卷 + 用新第 3 卷 → 范围重叠，而每卷单独看都合法）。
    */
   readonly volumes: VolumeRepository;
+  /**
+   * 逐章细纲（开书向导 Phase 3）。
+   *
+   * ⚠ 与卷**相反**：细纲只按给定章号 upsert，**不整表替换**。
+   *   细纲天然分批生成（「不强行一次产出 30 章细纲」），
+   *   整表替换会让第二批抹掉第一批（连同作者逐章改过的内容）。
+   */
+  readonly chapterOutlines: ChapterOutlineRepository;
 }
 
 export function createRepositories(db: Database): Repositories {
@@ -92,6 +101,7 @@ export function createRepositories(db: Database): Repositories {
     world: new WorldRepository(db),
     blueprint: new BlueprintRepository(db),
     volumes: new VolumeRepository(db),
+    chapterOutlines: new ChapterOutlineRepository(db),
   };
 }
 
@@ -115,6 +125,8 @@ export {
 export type { BlueprintStepRow, BookBlueprintRow } from './blueprint.js';
 export { VolumeRepository } from './volumes.js';
 export type { VolumeRow } from './volumes.js';
+export { ChapterOutlineRepository, toOutlineOutput } from './chapter-outlines.js';
+export type { ChapterOutlineRow, ChapterOutlineView } from './chapter-outlines.js';
 // M3：用户正文仓储（§四/§十/§三十五）。
 // ⚠ 独立于 `createRepositories(db)` —— 它需要 rootDir（工作区在项目目录下），
 //   而其余仓储只依赖 db。硬塞进统一工厂会让所有调用方都要多传一个参数。

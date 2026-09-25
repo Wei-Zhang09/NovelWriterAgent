@@ -106,3 +106,15 @@ export type {
   OutlineResult,
   OutlineStructuredCaller,
 } from './blueprint/outline-generator.js';
+
+// ── 开书向导 Phase 3：逐章细纲 ──────────────────────────────
+export {
+  ChapterOutlineGenerator,
+  renderChapterOutlineRequest,
+} from './blueprint/chapter-outline-generator.js';
+export type {
+  ChapterOutlineGeneratorOptions,
+  ChapterOutlineRequest,
+  ChapterOutlineResult,
+  ChapterOutlineStructuredCaller,
+} from './blueprint/chapter-outline-generator.js';
