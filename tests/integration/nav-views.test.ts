@@ -402,24 +402,50 @@ describe('⚠⚠ 右栏面板必须对用户可见（折叠组里的不算）', 
   const i = RENDERER.indexOf('function renderAgent()');
   const seg = RENDERER.slice(i, RENDERER.indexOf('async function boot()'));
 
-  it('模型设置面板必须放在**默认展开**的组里', () => {
-    const { defs, names } = groupsOf(seg);
-    // 找到 g0.append(renderModelSettings()) 里的组变量
-    const m = seg.match(/(g\d+)\.append\(renderModelSettings\(\)\)/);
-    expect(m, '找不到 renderModelSettings 被 append 到哪个组').not.toBeNull();
-    const g = m![1]!;
-    expect(
-      defs[g],
-      `模型设置被放进「${names[g]}」组，而该组默认折叠 —— 用户看不见（真实事故）`,
-    ).toBe(true);
-  });
+  /**
+   * ⚠⚠ **开写前必须可见**的面板清单（面板导向，不是组导向）
+   *
+   * 为什么不写「默认展开的组恰好是 X 和 Y」：
+   *   那种写法**只在改分组时报警，不在加面板时报警** —— 新面板放进
+   *   一个默认折叠的组，组的集合没变，断言照样通过。
+   *
+   *   这正是缺陷复发的路径：模型设置（第 1 次）之后，语料/蒸馏面板
+   *   （第 2 次）又被埋进「质量与记忆」（默认折叠），用户问
+   *   「蒸馏功能在哪里？」。组集合的断言对此完全无感。
+   *
+   * 现在改成：**逐个面板**断言它在默认展开的组里。
+   *   新增一个"开写前就要准备好"的面板时，必须显式加进这张表 ——
+   *   加了表就自动被断言，忘了加则是作者自己的判断，不是测试的漏洞。
+   */
+  const MUST_BE_VISIBLE: ReadonlyArray<readonly [string, string]> = [
+    ['模型设置', 'renderModelSettings\\(\\)'],
+    ['语料与蒸馏', 'renderCorpusPanel\\('],
+  ];
 
-  it('⚠ 默认展开的组恰好是「模型」与「写作流程」', () => {
-    const open: string[] = [];
-    for (const m of seg.matchAll(/const g\d+ = panelGroup\('([^']+)',\s*(true|false)\)/g)) {
-      if (m[2] === 'true') open.push(m[1]!);
+  for (const [label, callPattern] of MUST_BE_VISIBLE) {
+    it(`「${label}」面板必须放在**默认展开**的组里（否则用户看不见）`, () => {
+      const { defs, names } = groupsOf(seg);
+      const re = new RegExp(`(g\\d+)\\.append\\(${callPattern}`);
+      const m = seg.match(re);
+      expect(m, `找不到 ${label} 被 append 到哪个组（模式 ${callPattern}）`).not.toBeNull();
+      const g = m![1]!;
+      expect(
+        defs[g],
+        `「${label}」被放进「${names[g]}」组，而该组默认折叠 —— 用户看不见（真实事故复发两次）`,
+      ).toBe(true);
+    });
+  }
+
+  it('⚠ 每个 render*Panel 调用都必须落在一个已声明的组里（防止面板无处安放）', () => {
+    // 反向守卫：如果某个面板被 append 到一个不存在的组变量，
+    // 上面那条断言会报"找不到" —— 但只有列进 MUST_BE_VISIBLE 的才会被查。
+    // 这里确认所有 append(render...) 的目标组都在 panelGroup 声明里。
+    const { defs } = groupsOf(seg);
+    const targets = [...seg.matchAll(/(g\d+)\.append\(/g)].map((m) => m[1]!);
+    expect(targets.length).toBeGreaterThan(0);
+    for (const g of new Set(targets)) {
+      expect(Object.keys(defs), `面板挂到了未声明的组 ${g}`).toContain(g);
     }
-    expect(open.sort()).toEqual(['写作流程', '模型'].sort());
   });
 
   it('⚠ 诊断类组保持默认折叠（减少视觉噪声）', () => {
@@ -436,5 +462,60 @@ describe('⚠⚠ 右栏面板必须对用户可见（折叠组里的不算）', 
       main,
       '缺少"模型设置面板对用户可见"的断言 —— 只查 DOM 存在会让折叠缺陷漏过',
     ).toContain('closest(\'details:not([open])\')');
+  });
+});
+
+/**
+ * ⚠⚠ 左栏「项目」列表的死链接回归防护
+ *
+ * 真实事故：左栏「项目」分组看着像可切换的入口，实际是死的 ——
+ *   ① 每条都硬编码 `nav-item--active`，多本书永远**同时高亮**，
+ *      作者无法判断当前在写哪本；
+ *   ② 全仓没有 `nav.addEventListener` / `project.switch`，
+ *      **点它没有任何反应**。
+ * 用户原话：「这个所谓的项目栏应该没有用处啊，管理只需按书籍进行管理就行了」
+ *
+ * 教训：**"看起来像入口" != "是入口"**。
+ *   这类缺陷不报错、断言只查"元素在不在"也照样通过，
+ *   只能显式断言"可点性"与"高亮唯一性"。
+ */
+describe('⚠⚠ 左栏导航：项目不再是死链接，高亮唯一', () => {
+  const i = RENDERER.indexOf('function renderNav(');
+  const seg = RENDERER.slice(i, RENDERER.indexOf('// ── §41 / §42'));
+
+  it('左栏不再渲染「项目」分组（用户决策：只按书管理）', () => {
+    expect(seg, '左栏又出现了「项目」分组标题').not.toContain("nav-section', '项目'");
+  });
+
+  it('⚠ 左栏不得存在**硬编码 active** 的条目（死链接特征）', () => {
+    // 硬编码 active = 无论选中与否都高亮 = 用户看不出当前在哪一项。
+    // 合法的写法必须是三元判断（依 state 决定）。
+    const hardcoded = seg.match(/nav-item nav-item--active/g) ?? [];
+    expect(
+      hardcoded.length,
+      `左栏有 ${hardcoded.length} 处硬编码 active —— 多本书会同时高亮（真实事故）`,
+    ).toBe(0);
+  });
+
+  it('⚠ 每一个 nav-item 都必须有点击处理器（否则是死链接）', () => {
+    // 数出创建了多少个 nav-item，以及挂了多少个 click。
+    const items = (seg.match(/el\('div', `?nav-item/g) ?? []).length;
+    const clicks = (seg.match(/addEventListener\('click'/g) ?? []).length;
+    expect(items, '左栏没有渲染任何 nav-item？').toBeGreaterThan(0);
+    expect(
+      clicks,
+      `${items} 个 nav-item 只挂了 ${clicks} 个 click —— 存在点不动的死链接（真实事故）`,
+    ).toBeGreaterThanOrEqual(items);
+  });
+
+  it('⚠ 项目目录降级为**只读标签**（是信息，不是入口）', () => {
+    // 只读标签不能有 hover 背景或 pointer 光标 —— 那会让人以为能点。
+    const css = readSrc(join(REPO, 'apps/desktop/src/renderer/style.css'));
+    const block = css.slice(css.indexOf('.nav-project {'), css.indexOf('.nav-project__name {'));
+    expect(block, '找不到 .nav-project 样式').not.toBe('');
+    expect(block, '.nav-project 不应有 cursor:pointer（会让人以为可点）').not.toContain(
+      'cursor: pointer',
+    );
+    expect(block, '.nav-project 不应有 :hover 反馈（会让人以为可点）').not.toContain(':hover');
   });
 });

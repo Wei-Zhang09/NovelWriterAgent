@@ -122,7 +122,7 @@ async function loadProjects() {
     await loadChapters();
   }
 
-  renderNav(projects);
+  renderNav();
   renderCenter();
   renderAgent();
 }
@@ -222,21 +222,23 @@ async function rememberBook(bookId) {
   await call('prefs.set', { lastBookId: bookId });
 }
 
-function renderNav(projects) {
+function renderNav() {
   const nav = $('nav');
   nav.replaceChildren();
 
-  if (projects.length === 0) {
-    nav.append(el('div', 'empty', '还没有项目'));
-    return;
-  }
-
-  nav.append(el('div', 'nav-section', '项目'));
-  for (const p of projects) {
-    const item = el('div', 'nav-item nav-item--active');
-    item.append(el('span', 'nav-label', p.name));
-    if (p.genre) item.append(el('span', 'nav-meta', p.genre));
-    nav.append(item);
+  // ── 用户决策（2026-09-25）：**不按项目导航，只按书管理** ──
+  // 原「项目」分组是死链接：每条都硬编码 nav-item--active（多本书永远同时高亮），
+  // 且没有任何点击处理器（全仓无 nav.addEventListener / project.switch）——
+  // 看着像入口，实际点不动，反而让人以为"软件坏了"。
+  //
+  // 但项目名不能一起删：书是**装在项目目录里**的（project.db + books/<bookId>/），
+  // 作者需要知道"我正在写的这些书存在哪个目录下"。所以降级为**只读标签**，
+  // 放最上面并标明不可点。
+  if (state.project) {
+    const head = el('div', 'nav-project');
+    head.append(el('span', 'nav-project__label', '项目目录'));
+    head.append(el('span', 'nav-project__name', state.project.name ?? ''));
+    nav.append(head);
   }
 
   nav.append(el('div', 'nav-section', '书目'));
@@ -250,7 +252,7 @@ function renderNav(projects) {
       // ⚠ 记住"正在写哪本" —— 切换只改当前写作目标，不动任何一本书的内容
       await rememberBook(b.id);
       await loadChapters();
-      renderNav(projects);
+      renderNav();
       renderCenter();
       renderAgent();
     });
@@ -270,7 +272,7 @@ function renderNav(projects) {
     item.append(el('span', 'nav-label', label));
     item.addEventListener('click', () => {
       state.currentView = key;
-      renderNav(projects);
+      renderNav();
       renderView(render);
     });
     nav.append(item);
@@ -290,7 +292,7 @@ function renderNav(projects) {
       state.selectedChapterId = c.id;
       // 离开"账目视图"回到章节详情
       state.currentView = null;
-      renderNav(projects);
+      renderNav();
       renderChapterDetail(c);
       renderTopbar();
     });
@@ -1541,7 +1543,17 @@ function renderAgent() {
   const g2 = panelGroup('质量与记忆', false);
   const g3 = panelGroup('检索与上下文', false);
   const g4 = panelGroup('系统诊断', false);
-  a.append(g0, g1, g2, g3, g4);
+  // ⚠ 「语料与蒸馏」单独一组、默认展开（同「模型」组的修法）。
+  //
+  //   起因是同一类缺陷的**第二次复发**：语料导入/蒸馏面板原本挂在
+  //   「质量与记忆」（默认折叠）里，用户启动后问「蒸馏功能在哪里？」
+  //   —— 功能早就做完了，只是看不见。
+  //
+  //   判据：**一次性配置**（导入自己的小说、蒸馏出技能）不是日常写作
+  //   动作，但它决定"技能库里有什么"，属于**开写前就要准备好**的事，
+  //   与模型配置同级，不该埋在折叠组里等用户去挖。
+  const g5 = panelGroup('语料与蒸馏', true);
+  a.append(g0, g5, g1, g2, g3, g4);
 
   // 诊断组：工具与权限（排错用，默认折叠）
   g4.append(el('h3', null, `已注册工具（${state.tools.length}）`));
@@ -2394,7 +2406,7 @@ function renderAgent() {
   // ⚠ 此前**完全没有这个入口** —— 导入只存在于 verify-books.mjs
   //   （硬编码书单），用户无法导入自己的小说。
   const corpusMsg = el('div', 'form-msg');
-  g2.append(renderCorpusPanel({ el, invoke: call, msg: corpusMsg }));
+  g5.append(renderCorpusPanel({ el, invoke: call, msg: corpusMsg }));
 
   const backupMsg = el('div', 'form-msg');
   g3.append(renderBackupPanel({ el, invoke: call, msg: backupMsg }));

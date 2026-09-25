@@ -170,6 +170,23 @@ body {
 .nav-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav-meta { font-size: 11px; color: var(--muted); flex: none; }
 .nav-item--chapter { padding-left: 16px; }
+/* 只读的项目目录标签（用户决策：不按项目导航，只按书管理）
+   ⚠ 刻意**不做 hover 背景、不做 cursor:pointer** —— 它是信息，不是入口。
+     做成可点的样子正是原「项目」列表的问题所在。 */
+.nav-project {
+  padding: 8px 12px 6px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 6px;
+}
+.nav-project__label { display: block; font-size: 11px; color: var(--muted); }
+.nav-project__name {
+  display: block;
+  font-size: 12px;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .empty { color: var(--muted); font-size: 12px; padding: 6px 10px; }
 
 /* 状态 chip */
