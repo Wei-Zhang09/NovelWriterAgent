@@ -39,6 +39,17 @@ export const ErrorCode = {
    * 这不是系统故障，是"前置条件未满足"——与 COMMIT_LOCKED 同类语义。
    */
   SETTINGS_NOT_CONFIRMED: 'SETTINGS_NOT_CONFIRMED',
+  /**
+   * 产物（Review / Continuity / State）与当前正文版本不一致（M1 / §19–§22）。
+   *
+   * recoverable=true：重新跑一遍对应的检查即可，不需要改代码或重试。
+   * 与 COMMIT_LOCKED 同类语义 —— 是"前置条件未满足"，不是系统故障。
+   *
+   * ⚠ 独立错误码而不是复用 COMMIT_FAILED：两者的处置完全不同。
+   *   COMMIT_FAILED 要去看提交事务；本错误码要去看"哪一份结论过期了"。
+   *   合成一个码会让 UI 无法给出正确的下一步。
+   */
+  ARTIFACT_STALE: 'ARTIFACT_STALE',
 
   // ---- 提交与恢复（ADR-0002 v2） ----
   COMMIT_FAILED: 'COMMIT_FAILED',
@@ -105,6 +116,7 @@ const ERROR_SEMANTICS: Record<ErrorCodeValue, { recoverable: boolean; retryable:
   EVIDENCE_NOT_FOUND: { recoverable: true, retryable: false },
   EVIDENCE_QUOTE_MISMATCH: { recoverable: true, retryable: false },
   SETTINGS_NOT_CONFIRMED: { recoverable: true, retryable: false },
+  ARTIFACT_STALE: { recoverable: true, retryable: false },
 
   COMMIT_FAILED: { recoverable: true, retryable: true },
   COMMIT_CONFLICT: { recoverable: false, retryable: false },

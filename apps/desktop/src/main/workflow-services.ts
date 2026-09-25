@@ -36,9 +36,12 @@ import {
   DEFAULT_TARGET_WORDS_PER_CHAPTER,
   perSceneWords,
   checkWordCountDeviation,
+  sha256Text,
 } from '@nwa/core';
 import type { Repositories, Database } from '@nwa/storage';
 import type { ToolRegistry, NovelWorkflowServices } from '@nwa/harness';
+import { pickCommitSource } from '@nwa/harness';
+import type { CommitSourceKey } from '@nwa/harness';
 import { hashOfFile } from '@nwa/harness';
 import { evaluateSettingsGate, hashSettings, renderWorldRulesForReview } from '@nwa/core';
 import {
@@ -258,6 +261,34 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
     });
     ws.ensure();
     return ws;
+  };
+
+  /**
+   * 读**当前正文**（M1 / ADR-0008）。
+   *
+   * 顺序：manuscript ?? revision ?? draft —— 与提交源**同一个函数**
+   * （`pickCommitSource`）决定。
+   *
+   * ⚠ 为什么必须共用：此前 review / continuity / settleState 各自读
+   *   `draft`，而 commit 取 `manuscript ?? revision ?? draft`。
+   *   用户改过正文后，这两者**不是同一份文本** ——
+   *   "审阅通过"描述的是 AI 初稿，提交的却是用户手改稿。
+   *   门禁看起来在工作，实际管着另一个对象。
+   *   与 F1（提交源不读用户正文）是同一类缺陷，只是更深一层。
+   *
+   * ⚠ 不在这里抛"没有正文"：各 stage 的报错文案不同
+   *   （"请先写正文" / "无法做连续性检查"），由调用方决定。
+   */
+  const readCurrentBody = (
+    chapterNumber: number,
+  ): { body: string | null; source: string } => {
+    return pickCommitSource(
+      {
+        readWorkspaceText: (n: number, name: CommitSourceKey) =>
+          workspaceFor(n).readText(name),
+      },
+      chapterNumber,
+    );
   };
 
   return {
@@ -647,7 +678,9 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
     async review(input) {
       const ch = needChapter(deps, input.chapterId);
       const ws = workspaceFor(ch.chapter_number);
-      const draft = ws.readText('draft');
+      // ⚠ 检查对象 = 提交对象（M1 / ADR-0008）：读当前正文而非固定读 draft。
+      const current = readCurrentBody(ch.chapter_number);
+      const draft = current.body;
       if (draft === null) {
         throw new AppError(
           ErrorCode.TOOL_VALIDATION_ERROR,
@@ -757,7 +790,13 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
 
       const saved = await deps.tools.invoke(
         'review.run',
-        { chapterId: ch.id, review: { overallStatus: review.status, issues: review.issues } },
+        {
+          chapterId: ch.id,
+          review: { overallStatus: review.status, issues: review.issues },
+          // ⚠ 锚点从**实际被检查的文本**算出（与 draftText 同源），
+          //   不由模型提供 —— 见 review-tools.ts 的强制覆盖。
+          sourceHash: sha256Text(draft),
+        },
         adminContext(deps, ''),
       );
       if (!saved.ok) {
@@ -773,6 +812,9 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
         chapterNumber: ch.chapter_number,
         overallStatus: review.status,
         issues: review.issues,
+        // M1 / §19：工作区副本与库内记录必须带**同一个**锚点，
+        // 否则从文件读和从库读会得出不同的 stale 结论。
+        sourceHash: sha256Text(draft),
       });
       return {
         reportPath: ws.pathOf('review'),
@@ -830,7 +872,8 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
     async continuity(input) {
       const ch = needChapter(deps, input.chapterId);
       const ws = workspaceFor(ch.chapter_number);
-      const draft = ws.readText('draft');
+      // ⚠ 检查对象 = 提交对象（M1）：读当前正文，不固定读 draft。
+      const draft = readCurrentBody(ch.chapter_number).body;
       if (draft === null) {
         throw new AppError(ErrorCode.WORKSPACE_CORRUPTED, '工作区里没有草稿，无法做连续性检查');
       }
@@ -901,7 +944,10 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
     async settleState(input) {
       const ch = needChapter(deps, input.chapterId);
       const ws = workspaceFor(ch.chapter_number);
-      const draft = ws.readText('draft');
+      // ⚠ 结算对象 = 提交对象（M1）：读当前正文，不固定读 draft。
+      //   否则"提议已验证"针对的是 AI 初稿，而提交的是用户手改稿 ——
+      //   进 Canon 的状态与正文实际发生的事对不上。
+      const draft = readCurrentBody(ch.chapter_number).body;
       if (draft === null) {
         throw new AppError(
           ErrorCode.WORKSPACE_CORRUPTED,

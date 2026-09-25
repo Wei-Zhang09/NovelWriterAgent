@@ -36,6 +36,8 @@ export {
   createCommitTools,
   COMMIT_SOURCE_ORDER,
   COMMIT_SOURCE_FILE,
+  // M1：审阅/连续性/状态结算与提交必须针对**同一份**当前正文
+  pickCommitSource,
 } from './tools/commit-tools.js';
 export type { CommitSourceKey } from './tools/commit-tools.js';
 export type { AnyToolDefinition } from '@nwa/shared';

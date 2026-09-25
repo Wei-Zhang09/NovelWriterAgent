@@ -75,6 +75,19 @@ export const ReviewLocationSchema = z.object({
   sceneId: z.string().optional(),
   /** 原文片段（便于人工定位；不要求精确匹配，因为模型可能改写标点） */
   excerpt: z.string().max(200).optional(),
+  /**
+   * 段内字符偏移（相对该段开头，0 起），M1 / §18。
+   *
+   * ⚠ 与 excerpt **两者都要有**，不是二选一：
+   *   - offset 精确，但模型改写标点/多打一个空格就会漂；
+   *   - excerpt 稳定，但要靠文本搜索定位，可能命中多处。
+   *   编辑器优先用 offset，漂移时回落到 excerpt 搜索（M8）。
+   *
+   * ⚠ 用**字符**偏移而不是字节：中文一个字 3 字节，字节偏移
+   *   在 JS 字符串里对不上（`str.slice` 按 UTF-16 码元走）。
+   */
+  startOffset: z.number().int().nonnegative().optional(),
+  endOffset: z.number().int().nonnegative().optional(),
 });
 
 export const ReviewIssueSchema = z.object({
@@ -102,6 +115,19 @@ export const ReviewOutputSchema = z.object({
   issues: z.array(ReviewIssueSchema),
   /** 可选：一句话概述。不参与判定 */
   summary: z.string().max(1000).optional(),
+  /**
+   * 版本锚点（M1 / §19）：这份审阅结论所依据的**正文内容哈希**。
+   *
+   * ⚠ 这个字段**由宿主填写，不由模型填写**。它出现在这里而不是另立一个
+   *   "存储用 schema"，是因为读取方（`readReview`）拿到的就是这一份形状 ——
+   *   两套 schema 并存会让"哪些字段算审阅结果"在两处各答一次。
+   *
+   * ⚠ 但必须防住模型自己编一个：`review-tools.ts` 在落库时**无条件覆盖**
+   *   该字段（宿主给了用宿主的，宿主没给就置 null，绝不保留模型给的值）。
+   *   否则模型随手填一个 hash，stale 判定就会拿一个假锚点比对 ——
+   *   结果是"永远 FRESH"，比没有锚点更糟。
+   */
+  sourceHash: z.string().nullable().optional(),
 });
 
 export type ReviewLocation = z.infer<typeof ReviewLocationSchema>;

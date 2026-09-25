@@ -27,7 +27,7 @@
  * 合成一个方法就只能"全自动进 Canon"，那正是这条约束要防的事。
  */
 
-import { Logger, AppError, ErrorCode, evidenceId } from '@nwa/core';
+import { Logger, AppError, ErrorCode, evidenceId, sha256Text } from '@nwa/core';
 import type { Repositories, Database } from '@nwa/storage';
 import type { ProposedFact, StateVerificationReport } from '@nwa/shared';
 import { CanonPromoter } from '../canon/canon-promoter.js';
@@ -128,6 +128,10 @@ export class StateSettlement {
       characterStates: ex.proposed.characterStates,
       timelineEvents: ex.proposed.timelineEvents,
       foreshadowing: ex.proposed.foreshadowing,
+      // ⚠ 版本锚点（M1 / §21）：从**实际被提取的文本**算出，不由调用方传入。
+      //   调用方传的话就有传错/忘记传的可能，而"锚点写错"表现为
+      //   stale 判定永远 FRESH —— 检查形同虚设且极难发现。
+      sourceHash: sha256Text(input.draftText),
     });
 
     // 验证（代码，不调模型）

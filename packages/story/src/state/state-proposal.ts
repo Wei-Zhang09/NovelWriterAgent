@@ -37,6 +37,14 @@ export interface StateProposalRecord {
   readonly foreshadowing: readonly ProposedForeshadowing[];
   readonly status: StateProposalStatus;
   readonly verification: StateVerificationReport | null;
+  /**
+   * 版本锚点（M1 / §21）：这份提议所依据的**正文内容哈希**。
+   *
+   * null = 无法确认对应哪一版（0016 之前的老数据，或调用方未提供）。
+   * ⚠ 判定时 null 按 NO_ANCHOR 处理（拒绝提交但如实说明原因），
+   *   **不是**"没锚点就当新鲜"—— 那是没检查却说通过。
+   */
+  readonly sourceHash: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -53,6 +61,7 @@ interface Row {
   relationships_json: string;
   status: string;
   verification_json: string | null;
+  source_hash: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -89,14 +98,22 @@ export class StateProposalRepository {
     readonly characterStates?: readonly ProposedCharacterState[];
     readonly timelineEvents?: readonly ProposedTimelineEvent[];
     readonly foreshadowing?: readonly ProposedForeshadowing[];
+    /**
+     * 版本锚点（M1 / §21）：这份提议所依据的正文内容哈希。
+     *
+     * ⚠ 可选但**调用方应当传**：不传则落 null，之后该提议永远被判
+     *   NO_ANCHOR 而不能用于提交。让"忘了传"表现为可发现的
+     *   "这份提议没有版本锚点"，而不是静默当成新鲜。
+     */
+    readonly sourceHash?: string | null;
   }): StateProposalRecord {
     const ts = now();
     this.db.run(
       `INSERT INTO state_proposals
          (id, workflow_id, chapter_id, book_id, facts_json, character_states_json,
           timeline_events_json, foreshadowing_json, relationships_json,
-          status, verification_json, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          status, verification_json, source_hash, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       input.id,
       input.workflowId ?? null,
       input.chapterId,
@@ -110,6 +127,7 @@ export class StateProposalRepository {
       //   允许创建时就写 VERIFIED 等于给门禁开了一个后门。
       'PROPOSED',
       null,
+      input.sourceHash ?? null,
       ts,
       ts,
     );
@@ -218,6 +236,7 @@ export class StateProposalRepository {
       ),
       status: r.status as StateProposalStatus,
       verification,
+      sourceHash: r.source_hash ?? null,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     };

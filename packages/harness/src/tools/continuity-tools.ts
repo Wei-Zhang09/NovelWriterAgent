@@ -30,6 +30,8 @@ export function createContinuityTools(
         message: string;
         sourceRef: string;
       }[];
+      /** M1 / §20：本次检查所依据的正文内容哈希（stale 判定锚点） */
+      sourceHash: string;
       checked: {
         canonFacts: number;
         characters: number;
@@ -60,6 +62,8 @@ export function createContinuityTools(
           sourceRef: z.string(),
         }),
       ),
+      // M1 / §20：stale 判定的锚点（必填，见 ContinuityReport.sourceHash）
+      sourceHash: z.string(),
       checked: z.object({
         canonFacts: z.number().int(),
         characters: z.number().int(),
@@ -106,6 +110,7 @@ export function createContinuityTools(
           message: i.message,
           sourceRef: i.sourceRef,
         })),
+        sourceHash: report.sourceHash,
         checked: report.checked,
       };
     },

@@ -26,7 +26,7 @@
  *
  * 本类不持有任何写工具，只读。
  */
-import { Logger, checkWorldRules, type Nullable } from '@nwa/core';
+import { Logger, checkWorldRules, sha256Text, type Nullable } from '@nwa/core';
 import type { PlanOutput } from '@nwa/shared';
 import type { Repositories } from '@nwa/storage';
 
@@ -69,6 +69,15 @@ export interface ContinuityReport {
   readonly issues: readonly ContinuityIssue[];
   readonly blockingCount: number;
   readonly warningCount: number;
+  /**
+   * 版本锚点（M1 / §20）：本次检查所依据的**正文内容哈希**。
+   *
+   * ⚠ 由 `check()` 从它实际收到的 `draftText` 直接算出，不由调用方传入 ——
+   *   调用方传的话就有传错/忘记传的可能，而"锚点写错"的表现是
+   *   stale 判定永远 FRESH（检查形同虚设），几乎不可能被发现。
+   *   从入参文本算，锚点与被检查的内容**必然同源**。
+   */
+  readonly sourceHash: string;
   /** 本次检查实际对账了多少条 Canon 记录（可断言，防"空跑也算通过"） */
   readonly checked: {
     readonly canonFacts: number;
@@ -138,6 +147,10 @@ export class ContinuityChecker {
       issues,
       blockingCount: issues.filter((i) => i.severity === 'BLOCKING').length,
       warningCount: issues.filter((i) => i.severity === 'WARNING').length,
+      // ⚠ 锚点从**实际检查的文本**算出（与入参同源），不由调用方传入：
+      //   传进来的话"传错/忘记传"会让 stale 判定永远 FRESH，
+      //   而那是"检查看起来在工作、实际没锚点"——最难发现的一类失效。
+      sourceHash: sha256Text(draftText),
       checked: {
         canonFacts: canonFacts.length,
         characters: characters.length,

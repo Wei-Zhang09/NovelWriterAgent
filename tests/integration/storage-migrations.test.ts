@@ -63,6 +63,7 @@ describe('迁移', () => {
       '0013_book_word_target',
       '0014_settings_gate',
       '0015_commit_manifest_source',
+      '0016_state_proposal_source_hash',
     ]);
   });
 
@@ -154,6 +155,7 @@ describe('迁移', () => {
       '0013_book_word_target',
       '0014_settings_gate',
       '0015_commit_manifest_source',
+      '0016_state_proposal_source_hash',
     ]);
   });
 

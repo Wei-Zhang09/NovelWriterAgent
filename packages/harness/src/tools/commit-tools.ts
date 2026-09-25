@@ -41,14 +41,19 @@ export const COMMIT_SOURCE_FILE: Readonly<Record<CommitSourceKey, string>> = {
 };
 
 /**
- * 按优先级链取本次要提交的正文（ADR-0008）。
+ * 按优先级链取**当前正文**（ADR-0008）。
  *
  * 顺序：manuscript ?? revision ?? draft
  *
- * ⚠ 抽成单一实现而非在两处各写一遍 —— 两处（dryRun 预览与真实提交）
- *   必须给出**同一个**答案，否则"预览说提交 A、实际提交 B"是最难查的 bug。
+ * ⚠ 抽成单一实现而非在各处各写一遍 —— 预览、真实提交、审阅、连续性检查、
+ *   状态结算**必须针对同一份文本**，否则"审阅通过"这句话描述的是另一份稿子。
+ *   那是与 F1 同一类的缺陷：检查的对象 ≠ 提交的对象，
+ *   门禁看起来在工作，实际管着别的东西。
+ *
+ * ⚠ 导出而不是留在本文件内部：M1 之后 app 层的 review / continuity /
+ *   settleState 都用它取正文，三者与 commit 由**同一个函数**决定"当前正文是哪份"。
  */
-function pickCommitSource(
+export function pickCommitSource(
   deps: {
     readonly readWorkspaceText: (
       chapterNumber: number,
