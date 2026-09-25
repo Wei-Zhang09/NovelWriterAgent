@@ -39,6 +39,8 @@ import {
   sha256Text,
 } from '@nwa/core';
 import type { Repositories, Database } from '@nwa/storage';
+import { ManuscriptRepository } from '@nwa/storage';
+import type { ManuscriptVersionSource } from '@nwa/storage';
 import type { ToolRegistry, NovelWorkflowServices } from '@nwa/harness';
 import { pickCommitSource } from '@nwa/harness';
 import type { CommitSourceKey } from '@nwa/harness';
@@ -261,6 +263,57 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
     });
     ws.ensure();
     return ws;
+  };
+
+  /**
+   * 用户正文仓储（M6 起在此建版本节点）。
+   *
+   * ⚠ 与 `workspaceFor` 是**两个不同的东西**，不要合并：
+   *   ChapterWorkspace 管工作区产物（draft / revision / review…），
+   *   ManuscriptRepository 管用户正文与版本节点。
+   *   合并会让"AI 的产出"与"用户的产出"在代码层失去区分，
+   *   而那正是 §15（AI 不得覆盖用户正文）要守住的东西。
+   */
+  const manuscriptRepo = (): ManuscriptRepository =>
+    new ManuscriptRepository({
+      db: deps.db,
+      rootDir: deps.dir,
+      logger: deps.logger.child('manuscript'),
+    });
+
+  /**
+   * 建版本节点，**失败不阻断主流程**（M6）。
+   *
+   * ⚠ 为什么吞掉异常：版本记录是**辅助能力**，而调用它的是
+   *   "生成草稿""改稿"这类主流程。若版本写入失败就让整章生成失败，
+   *   等于用一个附加功能把核心功能拖垮 —— 代价完全不成比例。
+   *
+   *   但**必须留日志**：静默吞掉会让"版本历史缺了一段"变成
+   *   无法解释的现象（作者只会看到版本列表少了几条）。
+   */
+  const recordVersion = (input: {
+    chapterId: string;
+    chapterNumber: number;
+    text: string | null;
+    sourceType: ManuscriptVersionSource;
+    note?: string;
+  }): void => {
+    if (input.text === null) return;
+    try {
+      manuscriptRepo().createVersion({
+        chapterId: input.chapterId,
+        chapterNumber: input.chapterNumber,
+        text: input.text,
+        sourceType: input.sourceType,
+        ...(input.note === undefined ? {} : { note: input.note }),
+      });
+    } catch (e) {
+      log.warn('版本节点创建失败（不阻断主流程）', {
+        chapterNumber: input.chapterNumber,
+        sourceType: input.sourceType,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
   };
 
   /**
@@ -578,6 +631,10 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
     // ── 5. 写正文 ──
     async write(input) {
       const ch = needChapter(deps, input.chapterId);
+      // M6：版本节点需要这两个值，且必须与 save/listVersions 用的是**同一组**
+      //   （chapterId 是主键、chapterNumber 决定文件路径，混用会写到别的章目录）
+      const chapterId = ch.id;
+      const chapterNumber = ch.chapter_number;
       // ⚠ 设定门禁（P2-3）：与 plan 一样要拦 —— 计划可能是门禁前就落库的
       assertSettingsGate(deps, ch.book_id);
       const model = needModel(deps, '生成正文');
@@ -661,6 +718,17 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
         );
       }
       const d = res.draft!;
+      // M6：Writer 出稿 → AI_DRAFT 版本节点（ADR-0008 §6）
+      //
+      // ⚠ 用 `readText('draft')` 而不是拼 `d.scenes` ——
+      //   版本必须与**磁盘上的 draft.md 逐字相同**，
+      //   否则"版本"与"产物"是两个东西，恢复出来的内容对不上。
+      recordVersion({
+        chapterId,
+        chapterNumber,
+        text: ws.readText('draft'),
+        sourceType: 'AI_DRAFT',
+      });
       return {
         draftPath: d.draftPath,
         contentHash: hashOfArtifact(d.draftPath) ?? '',
@@ -859,6 +927,20 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
           res.error?.message ?? '改稿失败',
         );
       }
+
+      // M6：Agent 修订产出 → AI_REVISION 版本节点
+      //
+      // ⚠ 这里记的是 **revision.md**（AI 的修订建议），不是 manuscript ——
+      //   §15 要求 AI 修订不得自动覆盖用户正文，所以 revision 只是
+      //   一个"候选版本"，作者显式接受后才会成为新的正文版本。
+      //   把 revision 记成版本正是为了让作者能对比与接受。
+      recordVersion({
+        chapterId: ch.id,
+        chapterNumber: ch.chapter_number,
+        text: ws.readText('revision'),
+        sourceType: 'AI_REVISION',
+        note: `应用 ${String(res.appliedEdits ?? 0)} 处替换`,
+      });
 
       return {
         revisionPath: ws.pathOf('revision'),

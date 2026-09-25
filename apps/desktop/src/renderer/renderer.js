@@ -146,6 +146,9 @@ function renderNav(projects) {
   if (state.chapters.length === 0) nav.append(el('div', 'empty', '还没有章节'));
   for (const c of state.chapters) {
     const item = el('div', 'nav-item nav-item--chapter');
+    // M6：把 chapterId 挂到 DOM 上 —— 版本/Diff 相关操作都要它，
+    // 而"从显示文本反查 id"不可靠（标题可能重复、可能被改）。
+    item.dataset.chapterId = c.id;
     item.append(el('span', 'nav-label', `第 ${c.chapterNumber} 章`));
     item.append(statusChip(c.status));
     item.addEventListener('click', () => renderChapterDetail(c));

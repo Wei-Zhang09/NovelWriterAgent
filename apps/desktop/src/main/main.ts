@@ -513,6 +513,70 @@ function createWindow(): void {
               const detailAfter = $('center')?.textContent ?? '';
               rec('⚠ 保存后仍无正式正文（未进 Canon）',
                   detailAfter.includes('未提交的章节不产生正式正文'), '');
+
+              // 6c) M6：版本节点（§十三 §十四）
+              //     ⚠ 本区块内禁止出现反引号（工程约定 1）。
+              //     走**渲染进程真实桥**而不是直接调仓储 ——
+              //     上一轮「undefined 字」正是只有真 GUI 路径才暴露。
+              const cid = chapterItems[0]?.dataset?.chapterId ?? '';
+              rec('章节节点带 chapterId（版本操作的前提）', cid.length > 0, 'cid=' + cid);
+
+              // ⚠ IPC 返回的是信封 { ok, data }（与 renderer 的 call() 一致）——
+              //   本文件第一版直接读 r.versions 得到 0 条，断言"失败"而库里其实有数据。
+              //   断言读错层级会得到假红（比假绿好，但同样是在报错误的东西）。
+              const callIpc = async (m, prm) => {
+                const r = await window.nwa.invoke(m, prm);
+                return (r && r.ok) ? r.data : null;
+              };
+
+              const verList = await callIpc('manuscript.listVersions', { chapterId: cid });
+              const vers = verList?.versions ?? [];
+              rec('⚠ 手动保存后产生版本节点', vers.length >= 1, 'versions=' + vers.length);
+              rec('⚠ 版本来源为 USER_EDIT（手动保存）',
+                  vers[0]?.sourceType === 'USER_EDIT', 'source=' + (vers[0]?.sourceType ?? ''));
+              rec('⚠ 版本带内容 hash（判重与锚点的依据）',
+                  typeof vers[0]?.contentHash === 'string' && vers[0].contentHash.length === 64,
+                  'hash=' + String(vers[0]?.contentHash ?? ''));
+
+              // 内容未变再保存一次 → 不产生新版本（hash 判重）
+              saveBtn?.click();
+              await sleep(1200);
+              const verList2 = await callIpc('manuscript.listVersions', { chapterId: cid });
+              rec('⚠ 内容未变时重复保存不产生新版本',
+                  (verList2?.versions ?? []).length === vers.length,
+                  'before=' + vers.length + ' after=' + ((verList2?.versions ?? []).length));
+
+              // §十三：版本正文落文件且可读回
+              if (vers[0]) {
+                const vr = await callIpc('manuscript.readVersion', { versionId: vers[0].id });
+                rec('⚠ 版本正文可读回且非空',
+                    typeof vr?.text === 'string' && vr.text.length > 0,
+                    'missing=' + String(vr?.missing) + ' len=' + (vr?.text ? vr.text.length : -1));
+              }
+
+              // §十三：恢复到历史版本 → 正文变回该版本内容，且**不碰 Canon**
+              if (vers[0]) {
+                setArea('这是被改坏的新内容。');
+                await sleep(600);
+                saveBtn?.click();
+                await sleep(1200);
+                const verList3 = await callIpc('manuscript.listVersions', { chapterId: cid });
+                rec('改动后产生第二个版本节点',
+                    (verList3?.versions ?? []).length === vers.length + 1,
+                    'versions=' + ((verList3?.versions ?? []).length));
+
+                // 恢复到 v001
+                const target = (verList3?.versions ?? []).find(v => v.seq === 1);
+                if (target) {
+                  const rr = await callIpc('manuscript.restoreVersion', { versionId: target.id });
+                  rec('⚠ 恢复历史版本成功', !!rr, 'ok=' + String(!!rr));
+                  rec('⚠ 恢复后正文变回该版本内容',
+                      (rr?.text ?? '').indexOf('雨落') >= 0, 'len=' + (rr?.text ? rr.text.length : -1));
+                  const chipAfter = document.querySelector('.nav-item--chapter .chip')?.textContent ?? '';
+                  rec('⚠ 恢复后章节状态仍为草稿（恢复 != 提交）',
+                      chipAfter === '草稿', 'chip=' + chipAfter);
+                }
+              }
             }
 
             // 7) 模型设置面板（STEP 3）—— 常驻右栏，故在章节详情打开后仍应存在

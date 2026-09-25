@@ -1305,6 +1305,31 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     }
 
     const d = res.draft!;
+    // ── M6：AI_DRAFT 版本节点（ADR-0008 §6）──
+    //
+    // ⚠ 这条路径（逐步按钮 writer.write）与 workflow-services 的 write
+    //   是**同一个功能的两条入口**。只给其中一条建版本，会让"用工作流写
+    //   有版本、用逐步按钮写没版本"—— 正是上一段注释里说的
+    //   "同一个功能两种行为是最难查的那类缺陷"。
+    //
+    // ⚠ 用 workspace.readText('draft') 而不是 d.text：版本必须与磁盘上的
+    //   draft.md 逐字相同，否则"版本"与"产物"是两个东西。
+    try {
+      manuscriptRepo().createVersion({
+        chapterId: chapter.id,
+        chapterNumber: chapter.chapter_number,
+        text: workspace.readText('draft') ?? d.text,
+        sourceType: 'AI_DRAFT',
+      });
+    } catch (e) {
+      // 版本是辅助能力，写入失败不该让整章生成失败；但要留日志，
+      // 否则"版本历史缺一段"会变成无法解释的现象。
+      logger.warn('版本节点创建失败（不影响生成）', {
+        chapterNumber: chapter.chapter_number,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+
     // ⚠ 偏离说明要回报给上层：模型自报"我偏离了计划"是给人工复核的
     //   信号，但只有**显示出来**才有用。此前它只落在
     //   workflow-services 的返回值里，UI 完全看不到 ——
@@ -1580,6 +1605,24 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       return { ok: false, error: res.error ?? { code: 'REVISION_FAILED', message: '改稿失败' } };
     }
 
+    // ── M6：AI_REVISION 版本节点 ──
+    // ⚠ 记的是 revision.md（AI 的修订建议），不是 manuscript ——
+    //   §15 要求 AI 修订不得自动覆盖用户正文，所以 revision 只是候选版本。
+    try {
+      manuscriptRepo().createVersion({
+        chapterId: chapter.id,
+        chapterNumber: chapter.chapter_number,
+        text: ws.readText('revision') ?? '',
+        sourceType: 'AI_REVISION',
+        note: `应用 ${String(res.appliedEdits ?? 0)} 处替换`,
+      });
+    } catch (e) {
+      logger.warn('版本节点创建失败（不影响改稿）', {
+        chapterNumber: chapter.chapter_number,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+
     return {
       ok: true,
       appliedEdits: res.appliedEdits,
@@ -1682,7 +1725,84 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     // ⚠ 保存成功后清掉待恢复的 autosave —— 用户已经显式保存了，
     //   再留着副本会让下次打开又提示"发现未恢复的编辑内容"。
     if (res.changed) repo.clearAutosave(chapter.chapter_number);
-    return { ...res, chapterId: chapter.id };
+
+    // ── M6：手动保存建 USER_EDIT 版本节点（ADR-0008 §6）──
+    //
+    // ⚠ 只在 `changed` 时建：`createVersion` 内部也按内容 hash 判重，
+    //   但这里先判一次能省掉一次查询 —— 更重要的是语义清楚：
+    //   "内容没变的手动保存"不产生版本，这一层就把话说死了。
+    //
+    // ⚠ 版本创建失败**不让保存失败**：保存是用户的核心诉求
+    //   （"别丢我的字"），版本是附加能力。为一个附加能力让保存报错，
+    //   代价完全不成比例。
+    let version: unknown = null;
+    if (res.changed) {
+      try {
+        version = repo.createVersion({
+          chapterId: chapter.id,
+          chapterNumber: chapter.chapter_number,
+          text: params.text,
+          sourceType: 'USER_EDIT',
+        });
+      } catch (e) {
+        logger.warn('版本节点创建失败（保存已成功）', {
+          chapterId: chapter.id,
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+    return { ...res, chapterId: chapter.id, version };
+  },
+
+  // ── M6：版本节点（§十三 §十四）──
+
+  /**
+   * 列出某章的版本（新的在前）。
+   *
+   * ⚠ 不返回正文内容：一章节几十个版本，全带上会让列表 IPC
+   *   变成几百 KB 的传输，而列表只需要元信息。
+   */
+  'manuscript.listVersions': (params: { chapterId: string }) => {
+    const p = requireProject();
+    const chapter = p.repos.chapters.get(params.chapterId);
+    return {
+      chapterId: chapter.id,
+      versions: manuscriptRepo().listVersions(chapter.id),
+    };
+  },
+
+  /** 读某个版本的正文（用户点开某一版时调用） */
+  'manuscript.readVersion': (params: { versionId: string }) => {
+    requireProject();
+    const text = manuscriptRepo().readVersion(params.versionId);
+    if (text === null) {
+      // ⚠ 文件缺失（可能被人工清理，§十四 明确版本可丢弃）——
+      //   返回明确原因而不是抛错：抛错会让整个版本面板打不开。
+      return { versionId: params.versionId, text: null, missing: true };
+    }
+    return { versionId: params.versionId, text, missing: false };
+  },
+
+  /**
+   * 恢复到某个版本（§十三，用户显式动作）。
+   *
+   * ⚠ 恢复**不删除**中间版本 —— 作者恢复后往往还要再对比回来，
+   *   删掉等于替用户做了不可逆的决定。
+   */
+  'manuscript.restoreVersion': (params: { versionId: string }) => {
+    requireProject();
+    const r = manuscriptRepo().restoreVersion(params.versionId);
+    if (r === null) {
+      throw new AppError(ErrorCode.STORAGE_QUERY_FAILED, '版本不存在或内容文件缺失，无法恢复');
+    }
+    return {
+      versionId: params.versionId,
+      restoredFrom: r.restoredFrom,
+      version: r.version,
+      // ⚠ 恢复只改正文，**不碰 Canon**（§二 SAVE != COMMIT 同样适用）
+      saved: r.saved,
+      text: manuscriptRepo().get(r.restoredFrom.chapterNumber),
+    };
   },
 
   /**

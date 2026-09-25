@@ -38,7 +38,8 @@
  *   放这里会让"判定逻辑"与"文件写入"耦合成一个不可单测的整体。
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { AppError, ErrorCode, sha256Text, type Logger, type Nullable } from '@nwa/core';
 import { now, type Database } from '@nwa/storage';
 
@@ -105,6 +106,73 @@ export interface AutosaveRecoveryCheck {
  *   （`@nwa/story` 依赖它，反向依赖会造成循环）。
  *   一致性由 `tests/integration/manuscript-save.test.ts` 断言。
  */
+/**
+ * 版本节点的来源（§十三）。
+ *
+ * ⚠ 与 §十三 的清单**逐字对应**，不要合并同类项：
+ *   `RESTORED_AUTOSAVE` 与 `USER_EDIT` 的内容可能完全相同，
+ *   但"作者自己改的"与"作者点了恢复到某一版"是**不同的事实** ——
+ *   事后回看版本历史时，这两者的含义完全不同。
+ */
+export const MANUSCRIPT_VERSION_SOURCES = [
+  'AI_DRAFT',
+  'AI_REVISION',
+  'USER_EDIT',
+  'RESTORED_AUTOSAVE',
+] as const;
+export type ManuscriptVersionSource = (typeof MANUSCRIPT_VERSION_SOURCES)[number];
+
+/** 版本节点（§十三 的 `ManuscriptVersion`） */
+export interface ManuscriptVersion {
+  readonly id: string;
+  readonly chapterId: string;
+  readonly chapterNumber: number;
+  /** 同章内单调递增序号（从 1 起）。⚠ 排序用它，不用 created_at */
+  readonly seq: number;
+  readonly sourceType: ManuscriptVersionSource;
+  /** 内容文件相对**项目根**的路径 */
+  readonly contentPath: string;
+  readonly contentHash: string;
+  readonly charCount: number;
+  readonly note: Nullable<string>;
+  readonly createdAt: string;
+}
+
+/** 库行（snake_case） */
+interface ManuscriptVersionRow {
+  readonly id: string;
+  readonly chapter_id: string;
+  readonly chapter_number: number;
+  readonly seq: number;
+  readonly source_type: string;
+  readonly content_path: string;
+  readonly content_hash: string;
+  readonly char_count: number;
+  readonly note: string | null;
+  readonly created_at: string;
+}
+
+function toVersion(r: ManuscriptVersionRow): ManuscriptVersion {
+  return {
+    id: r.id,
+    chapterId: r.chapter_id,
+    chapterNumber: r.chapter_number,
+    seq: r.seq,
+    // ⚠ 不信任库里的字符串：表上没有 CHECK 约束（迁移里刻意不加，
+    //   因为新增来源类型时要改表），所以在这里收窄。
+    //   遇到未知值按 USER_EDIT 处理而不是抛错 —— 版本列表打不开
+    //   比"来源标签不准"严重得多。
+    sourceType: (MANUSCRIPT_VERSION_SOURCES as readonly string[]).includes(r.source_type)
+      ? (r.source_type as ManuscriptVersionSource)
+      : 'USER_EDIT',
+    contentPath: r.content_path,
+    contentHash: r.content_hash,
+    charCount: r.char_count,
+    note: r.note,
+    createdAt: r.created_at,
+  };
+}
+
 const FILES = {
   manuscript: 'manuscript.md',
   autosave: 'manuscript.autosave.md',
@@ -388,6 +456,186 @@ export class ManuscriptRepository {
     );
     if (!row) return false;
     return row.status === 'COMMITTED' || row.status === 'COMMITTING';
+  }
+
+  // ────────────── 版本节点（M6 / §十三 §十四）──────────────
+  //
+  // ⚠ 粒度由 ADR-0008 §6 钉死：只在 AI_DRAFT / AI_REVISION /
+  //   USER_EDIT（且 hash 变化）/ RESTORED_AUTOSAVE 建节点。
+  //   **自动保存不建版本** —— 否则一次编辑产生几十个节点，
+  //   与 §41「不要复杂版本树 UI」直接冲突，而且真正的节点会被淹没。
+
+  /**
+   * 建一个版本节点。
+   *
+   * ⚠ 幂等判据是**内容 hash**，不是"调用了几次"：
+   *   作者反复按 Ctrl+S（内容没变）不该堆出一串内容相同的节点 ——
+   *   那会让版本历史变成噪声，而噪声里的"上一版"是不可信的。
+   *
+   * @param input.chapterId     章节 id（chapters.id）
+   * @param input.chapterNumber 章号（工作区路径按它拼接）
+   * @param input.text          该版本的正文内容
+   * @param input.sourceType    AI_DRAFT / AI_REVISION / USER_EDIT / RESTORED_AUTOSAVE
+   * @param input.note          可选说明
+   * @returns 新建的版本；若与最新版本内容相同则返回 null（未新建）
+   */
+  createVersion(input: {
+    chapterId: string;
+    chapterNumber: number;
+    text: string;
+    sourceType: ManuscriptVersionSource;
+    note?: string;
+  }): Nullable<ManuscriptVersion> {
+    const hash = sha256Text(input.text);
+    const latest = this.latestVersion(input.chapterId);
+
+    // ⚠ 内容与最新版本相同 → 不建节点。
+    //   注意这里**只比最新一个**，不是"全表去重"：作者改回旧内容
+    //   （A → B → A）是一次真实的编辑动作，应当留下痕迹 ——
+    //   "又变回 A 了"本身是有信息量的事实。
+    if (latest !== null && latest.contentHash === hash) return null;
+
+    const seq = (latest?.seq ?? 0) + 1;
+    const fileName = `v${String(seq).padStart(3, '0')}.md`;
+    const relPath = `workspace/chapter-${String(input.chapterNumber).padStart(3, '0')}/versions/${fileName}`;
+    const absPath = join(this.rootDir, relPath);
+
+    mkdirSync(dirname(absPath), { recursive: true });
+    writeFileSync(absPath, input.text, { encoding: 'utf8', flag: 'w' });
+
+    const id = `mv_${randomUUID()}`;
+    const createdAt = now();
+    this.db.run(
+      `INSERT INTO manuscript_versions
+         (id, chapter_id, chapter_number, seq, source_type, content_path, content_hash, char_count, note, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      input.chapterId,
+      input.chapterNumber,
+      seq,
+      input.sourceType,
+      relPath,
+      hash,
+      input.text.length,
+      input.note ?? null,
+      createdAt,
+    );
+
+    this.logger.info('版本节点已创建', {
+      chapterNumber: input.chapterNumber,
+      seq,
+      sourceType: input.sourceType,
+      chars: input.text.length,
+    });
+
+    return {
+      id,
+      chapterId: input.chapterId,
+      chapterNumber: input.chapterNumber,
+      seq,
+      sourceType: input.sourceType,
+      contentPath: relPath,
+      contentHash: hash,
+      charCount: input.text.length,
+      note: input.note ?? null,
+      createdAt,
+    };
+  }
+
+  /**
+   * 按章列出全部版本（新的在前）。
+   *
+   * ⚠ 不返回正文内容：一章节几十个版本，把内容全带上会让列表 IPC
+   *   变成几百 KB 的传输，而列表 UI 只需要元信息。
+   *   要看内容走 `readVersion()`。
+   */
+  listVersions(chapterId: string): ManuscriptVersion[] {
+    const rows = this.db.all<ManuscriptVersionRow>(
+      `SELECT * FROM manuscript_versions WHERE chapter_id = ? ORDER BY seq DESC`,
+      chapterId,
+    );
+    return rows.map(toVersion);
+  }
+
+  /** 最新版本；没有则 null */
+  latestVersion(chapterId: string): Nullable<ManuscriptVersion> {
+    const row = this.db.get<ManuscriptVersionRow>(
+      `SELECT * FROM manuscript_versions WHERE chapter_id = ? ORDER BY seq DESC LIMIT 1`,
+      chapterId,
+    );
+    return row ? toVersion(row) : null;
+  }
+
+  /**
+   * 读某个版本的正文内容。
+   *
+   * ⚠ 文件缺失返回 null 而不是抛错：版本文件可能被人工清理
+   *   （§十四 明确版本是可丢弃的），此时列表仍应可用，
+   *   只是那一版的内容打不开 —— 报错会让整个版本列表打不开。
+   */
+  readVersion(versionId: string): Nullable<string> {
+    const row = this.db.get<ManuscriptVersionRow>(
+      `SELECT * FROM manuscript_versions WHERE id = ?`,
+      versionId,
+    );
+    if (!row) return null;
+    const abs = join(this.rootDir, row.content_path);
+    if (!existsSync(abs)) return null;
+    return readFileSync(abs, 'utf8');
+  }
+
+  /**
+   * 恢复到某个版本（§十三：用户显式动作）。
+   *
+   * ⚠ 恢复**必须**同时做两件事，缺一不可：
+   *   1. 把该版本内容写成新的**当前正文**（用户点了恢复就是要这个）
+   *   2. 再建一个 `RESTORED_AUTOSAVE` 节点记录这次动作
+   *
+   *   只做 1 会丢失"是谁把它改回去的"这条信息；
+   *   只做 2 则正文没变，用户看到的还是旧内容。
+   *
+   * ⚠ 恢复**不删除**中间版本。作者恢复后往往还要再对比回来 ——
+   *   删掉中间版本等于替用户做了不可逆的决定。
+   */
+  restoreVersion(versionId: string): Nullable<{
+    version: ManuscriptVersion;
+    saved: ManuscriptSaveResult;
+    restoredFrom: ManuscriptVersion;
+  }> {
+    const row = this.db.get<ManuscriptVersionRow>(
+      `SELECT * FROM manuscript_versions WHERE id = ?`,
+      versionId,
+    );
+    if (!row) return null;
+    const source = toVersion(row);
+    const text = this.readVersion(versionId);
+    if (text === null) return null;
+
+    const saved = this.save(source.chapterNumber, text);
+    const created = this.createVersion({
+      chapterId: source.chapterId,
+      chapterNumber: source.chapterNumber,
+      text,
+      sourceType: 'RESTORED_AUTOSAVE',
+      note: `恢复到 v${String(source.seq).padStart(3, '0')}`,
+    });
+
+    // ⚠ createVersion 可能返回 null（内容与最新版本相同）——
+    //   那意味着"恢复到的就是当前内容"，此时没有新节点可报，
+    //   但恢复动作本身已经生效（正文已是该版本）。
+    //   用一个合成的视图返回，避免调用方以为失败。
+    const version =
+      created ??
+      this.latestVersion(source.chapterId) ??
+      source;
+
+    this.logger.info('已恢复到历史版本', {
+      chapterNumber: source.chapterNumber,
+      from: source.seq,
+      newSeq: created?.seq ?? null,
+    });
+
+    return { version, saved, restoredFrom: source };
   }
 }
 

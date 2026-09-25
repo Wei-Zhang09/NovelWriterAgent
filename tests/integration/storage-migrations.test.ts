@@ -64,6 +64,7 @@ describe('迁移', () => {
       '0014_settings_gate',
       '0015_commit_manifest_source',
       '0016_state_proposal_source_hash',
+      '0017_manuscript_versions',
     ]);
   });
 
@@ -115,7 +116,8 @@ describe('迁移', () => {
     const business = all.filter((t) => !shadow.includes(t) && !ftsVirtual.includes(t));
 
     // 业务表 27 → 28（0012 新增 commit_overrides —— Commit 绕过审计）
-    expect(business.length).toBe(28);
+    // 业务表 28 → 29（0017 新增 manuscript_versions —— 正文版本节点，M6）
+    expect(business.length).toBe(29);
     expect(ftsVirtual.length).toBe(2);
     expect(shadow.length).toBe(10);
 
@@ -129,7 +131,8 @@ describe('迁移', () => {
     //   DROP TABLE 会连带删掉它的 2 个索引，重建表后必须手工再建回来。
     //   漏掉那一步总数会变成 47，而"少了索引"在功能上不会立刻报错 ——
     //   只是提交相关的按状态查询退化成全表扫描。
-    expect(indexes.length).toBe(50);
+    // 索引 50 → 52（0017 新增 2 个：按章查版本、按章+seq 唯一）
+    expect(indexes.length).toBe(52);
   });
 
   it('⚠ 全部迁移都已应用（构建产物不遗漏 SQL）', () => {
@@ -156,6 +159,7 @@ describe('迁移', () => {
       '0014_settings_gate',
       '0015_commit_manifest_source',
       '0016_state_proposal_source_hash',
+      '0017_manuscript_versions',
     ]);
   });
 

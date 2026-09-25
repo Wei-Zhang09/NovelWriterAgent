@@ -20,8 +20,10 @@ export { TimelineRepository, toComparableHours } from './repositories/timeline.j
 export type { CreateTimelineEventInput, TimelineQuery, TimelineEventRow } from './repositories/timeline.js';
 export type { Repositories } from './repositories/index.js';
 // M3：用户正文仓储（§四/§十/§三十五）
-export { ManuscriptRepository } from './repositories/manuscript.js';
+export { ManuscriptRepository, MANUSCRIPT_VERSION_SOURCES } from './repositories/manuscript.js';
 export type {
+  ManuscriptVersion,
+  ManuscriptVersionSource,
   ManuscriptSaveResult,
   EditorState,
   AutosaveSnapshot,

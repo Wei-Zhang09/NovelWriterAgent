@@ -89,11 +89,14 @@ export { WorldRepository, confirmBookSettings } from './world.js';
 // ⚠ 独立于 `createRepositories(db)` —— 它需要 rootDir（工作区在项目目录下），
 //   而其余仓储只依赖 db。硬塞进统一工厂会让所有调用方都要多传一个参数。
 export { ManuscriptRepository } from './manuscript.js';
+export { MANUSCRIPT_VERSION_SOURCES } from './manuscript.js';
 export type {
   ManuscriptSaveResult,
   EditorState,
   AutosaveSnapshot,
   AutosaveRecoveryCheck,
+  ManuscriptVersion,
+  ManuscriptVersionSource,
 } from './manuscript.js';
 export type { WorldEntityRow, CreateWorldEntityInput } from './world.js';
 export type { CommitOverrideRow, OverriddenCheck } from './commit-overrides.js';
