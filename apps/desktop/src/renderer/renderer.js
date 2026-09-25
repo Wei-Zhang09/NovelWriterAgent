@@ -847,6 +847,16 @@ function renderCharacterForm() {
  * ⚠ 界面必须把门禁状态**说清楚**：作者看到"设定未确认 → 写不了"
  *   却不知道去哪确认，比不做门禁更糟。所以面板顶部常驻一行状态。
  */
+/** 世界观设定类型（添加与编辑两处共用，避免两份列表漂移） */
+const WORLD_TYPE_OPTIONS = [
+  ['WORLD_RULE', '世界规则'],
+  ['LOCATION', '地理'],
+  ['FACTION', '势力'],
+  ['ITEM', '器物'],
+  ['CONCEPT', '概念'],
+  ['CUSTOM', '其他'],
+];
+
 function renderSettingsForm() {
   const box = el('div', 'form');
   box.append(el('h3', null, '世界观设定'));
@@ -855,14 +865,7 @@ function renderSettingsForm() {
   const name = el('input');
   name.placeholder = '设定名称（必填），如 灵力枯竭';
   const typeSel = el('select');
-  for (const t of [
-    ['WORLD_RULE', '世界规则'],
-    ['LOCATION', '地理'],
-    ['FACTION', '势力'],
-    ['ITEM', '器物'],
-    ['CONCEPT', '概念'],
-    ['CUSTOM', '其他'],
-  ]) {
+  for (const t of WORLD_TYPE_OPTIONS) {
     const o = el('option');
     o.value = t[0];
     o.textContent = t[1];
@@ -902,14 +905,133 @@ function renderSettingsForm() {
       return;
     }
     for (const e of d.entities) {
-      const row = el('div', 'issue-row');
-      const body = el('div', 'issue-body');
-      const tag = e.status === 'CONFIRMED' ? '已确认' : '草稿';
-      body.append(el('div', 'issue-msg', `[${tag}] ${e.name}`));
-      if (e.description) body.append(el('div', 'issue-src', e.description));
-      row.append(body);
-      list.append(row);
+      list.append(renderEntityRow(e));
     }
+  }
+
+  /**
+   * 一条设定的展示行 + 编辑/删除入口。
+   *
+   * ⚠ 这两个操作是补上来的：在此之前设定**只能加不能改不能删** ——
+   *   作者打错一个字，那条设定就永久错着，而且会带着错字进 prompt
+   *   并参与连续性判定。`world.update`/`world.remove` 早就存在，
+   *   只是没有 UI 入口。
+   */
+  function renderEntityRow(e) {
+    const row = el('div', 'issue-row');
+    const body = el('div', 'issue-body');
+    const tag = e.status === 'CONFIRMED' ? '已确认' : '草稿';
+    body.append(el('div', 'issue-msg', `[${tag}] ${e.name}`));
+    if (e.description) body.append(el('div', 'issue-src', e.description));
+
+    const actions = el('div', 'btn-row');
+    const editBtn = el('button', 'btn', '编辑');
+    const delBtn = el('button', 'btn', '删除');
+    actions.append(editBtn, delBtn);
+    body.append(actions);
+    row.append(body);
+
+    // ── 编辑：就地展开，避免跳到另一个表单后失去上下文 ──
+    editBtn.addEventListener('click', () => {
+      if (row.querySelector('.world-edit')) return;
+      // ⚠ 必须在 refresh() 之前捕获：refresh 会整片重建列表，
+      //   之后闭包里的 e 已不是当前 DOM 对应的那条。
+      const wasConfirmed = e.status === 'CONFIRMED';
+      const editBox = el('div', 'world-edit');
+      const eName = el('input');
+      eName.value = e.name;
+      const eType = el('select');
+      for (const t of WORLD_TYPE_OPTIONS) {
+        const o = el('option');
+        o.value = t[0];
+        o.textContent = t[1];
+        if (t[0] === e.type) o.selected = true;
+        eType.append(o);
+      }
+      const eDesc = el('textarea', 'sum-edit');
+      eDesc.rows = 3;
+      eDesc.value = e.description ?? '';
+      const saveBtn = el('button', 'btn btn--primary', '保存');
+      const cancelBtn = el('button', 'btn', '取消');
+      const eMsg = el('div', 'form-msg');
+      const editActions = el('div', 'btn-row');
+      editActions.append(saveBtn, cancelBtn);
+      editBox.append(eName, eType, eDesc, editActions, eMsg);
+      body.append(editBox);
+
+      cancelBtn.addEventListener('click', () => editBox.remove());
+      saveBtn.addEventListener('click', async () => {
+        const n = eName.value.trim();
+        if (!n) {
+          eMsg.className = 'form-msg form-msg--err';
+          eMsg.textContent = '设定名称不得为空';
+          return;
+        }
+        saveBtn.disabled = true;
+        const r = await tool(
+          'world.update',
+          {
+            worldEntityId: e.id,
+            type: eType.value,
+            name: n,
+            description: eDesc.value.trim(),
+          },
+          'WRITE',
+        );
+        saveBtn.disabled = false;
+        if (!r.ok) {
+          eMsg.className = 'form-msg form-msg--err';
+          eMsg.textContent = `${r.error.code}: ${r.error.message}`;
+          return;
+        }
+        // ⚠ 改已确认的设定会让整本书退回未确认（刻意设计）——
+        //   必须说出来，否则作者会以为只是改了个错字，
+        //   接着发现写作被门禁拦住而不知何故。
+        msg.className = 'form-msg form-msg--ok';
+        msg.textContent = wasConfirmed
+          ? `已修改「${n}」｜⚠ 已确认设定被改动，本书退回「未确认」，需重新确认后才能继续写作`
+          : `已修改「${n}」`;
+        await refresh();
+      });
+    });
+
+    // ── 删除：真破坏性且不可撤销，须勾选确认（沿用备份恢复的既有约定）──
+    delBtn.addEventListener('click', () => {
+      if (row.querySelector('.world-del')) return;
+      const delBox = el('div', 'world-del');
+      const confirmRow = el('label', 'perm-line');
+      const cb = el('input');
+      cb.type = 'checkbox';
+      confirmRow.append(cb, document.createTextNode(` 我确认删除「${e.name}」（不可撤销）`));
+      const doBtn = el('button', 'btn btn--danger', '删除');
+      doBtn.disabled = true;
+      cb.addEventListener('change', () => {
+        doBtn.disabled = !cb.checked;
+      });
+      const delActions = el('div', 'btn-row');
+      const cancelDel = el('button', 'btn', '取消');
+      delActions.append(doBtn, cancelDel);
+      const dMsg = el('div', 'form-msg');
+      delBox.append(confirmRow, delActions, dMsg);
+      body.append(delBox);
+
+      cancelDel.addEventListener('click', () => delBox.remove());
+      doBtn.addEventListener('click', async () => {
+        doBtn.disabled = true;
+        const r = await tool('world.remove', { worldEntityId: e.id }, 'WRITE');
+        if (!r.ok) {
+          dMsg.className = 'form-msg form-msg--err';
+          dMsg.textContent = `${r.error.code}: ${r.error.message}`;
+          doBtn.disabled = false;
+          return;
+        }
+        msg.className = 'form-msg form-msg--ok';
+        msg.textContent = `已删除「${e.name}」`;
+        await refresh();
+      });
+    });
+
+    return row;
   }
 
   addBtn.addEventListener('click', async () => {

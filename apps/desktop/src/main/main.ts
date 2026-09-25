@@ -751,6 +751,64 @@ function createWindow(): void {
                   const after = setForm.querySelector('.perm-line')?.textContent ?? '';
                   rec('⚠ 确认后门禁放行（作者可以开写了）',
                       after.includes('已确认'), after.slice(0, 70));
+
+                  // ── 17e) 设定编辑 / 删除（P2-4 补完）──
+                  //
+                  // ⚠ 在此之前设定**只能加不能改不能删**：作者打错一个字，
+                  //   那条设定就永久错着，还会带着错字进 prompt 并参与
+                  //   连续性判定。world.update/world.remove 早已存在，
+                  //   缺的只是 UI 入口 —— 所以这里必须真点按钮验证接线，
+                  //   不能只断言"编辑/删除按钮在"。
+                  const rows = [...setForm.querySelectorAll('.issue-row')];
+                  rec('设定列表每条都有编辑/删除入口',
+                      rows.length > 0 && rows.every(r =>
+                        !!btnByText(r, '编辑') && !!btnByText(r, '删除')), '行数 ' + rows.length);
+
+                  if (rows.length > 0) {
+                    // ── 编辑：改名字后保存，必须真的落库 ──
+                    const eBtn = btnByText(rows[0], '编辑');
+                    eBtn?.click();
+                    await sleep(300);
+                    const eBox = rows[0].querySelector('.world-edit');
+                    rec('⚠ 点编辑就地展开编辑框', !!eBox, '');
+                    if (eBox) {
+                      const eName = eBox.querySelector('input');
+                      setInput(eName, '灵力枯竭（改）');
+                      btnByText(eBox, '保存')?.click();
+                      await sleep(1500);
+                      const em = setForm.querySelector('.form-msg')?.textContent ?? '';
+                      rec('⚠ 编辑真的落库', em.includes('灵力枯竭（改）'), em.slice(0, 80));
+                      // 改已确认设定 → 必须明确告知退回未确认（否则作者
+                      // 发现写作被门禁拦住时不知何故）
+                      rec('⚠ 改已确认设定会提示退回未确认',
+                          em.includes('退回') && em.includes('重新确认'), em.slice(0, 90));
+                    }
+
+                    // ── 删除：未勾选时按钮必须禁用（真破坏性不可撤销）──
+                    const rows2 = [...setForm.querySelectorAll('.issue-row')];
+                    const dBtn = rows2[0] && btnByText(rows2[0], '删除');
+                    dBtn?.click();
+                    await sleep(300);
+                    const dBox = rows2[0]?.querySelector('.world-del');
+                    rec('⚠ 点删除展开确认区', !!dBox, '');
+                    if (dBox) {
+                      const doBtn = btnByText(dBox, '删除');
+                      rec('⚠ 未勾选时删除按钮禁用（防误删）', !!doBtn && doBtn.disabled, '');
+                      const cb = dBox.querySelector('input[type=checkbox]');
+                      if (cb && doBtn) {
+                        cb.click();
+                        await sleep(200);
+                        rec('⚠ 勾选后删除按钮才可用', !doBtn.disabled, '');
+                        doBtn.click();
+                        await sleep(1500);
+                        const dm = setForm.querySelector('.form-msg')?.textContent ?? '';
+                        rec('⚠ 删除真的生效', dm.includes('已删除'), dm.slice(0, 80));
+                        const left = setForm.querySelectorAll('.issue-row').length;
+                        rec('⚠ 删除后列表确实少一条', left === rows2.length - 1,
+                            '剩余 ' + left + ' / 原 ' + rows2.length);
+                      }
+                    }
+                  }
                 }
               }
             }

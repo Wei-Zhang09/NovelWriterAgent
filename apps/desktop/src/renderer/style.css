@@ -157,6 +157,16 @@ body {
 }
 .btn--danger-soft:hover:not(:disabled) { border-color: var(--warn); }
 
+/* ⚠ 真破坏性操作（不可撤销）：覆盖目标项目、删除已确认设定。
+   这个类此前被 panels.js 的"执行恢复"按钮用了，但**从未定义过** ——
+   危险按钮和普通按钮长得一模一样，作者看不出哪个点了会丢数据。 */
+.btn--danger {
+  background: #3a1a1a; border-color: #6b2b2b; color: #e88;
+  font-weight: 600;
+}
+.btn--danger:hover:not(:disabled) { border-color: var(--danger, #d9534f); background: #451f1f; }
+.btn--danger:disabled { opacity: .45; cursor: not-allowed; }
+
 /* 模型自报偏离计划（P1）：只作复核提示，不是正文的一部分 */
 .perm-line--warn { color: var(--warn); margin-top: 8px; }
 .draft-deviation {
