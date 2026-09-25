@@ -216,6 +216,8 @@ export function createAllTools(
       readonly indexer?: {
         indexChapter(input: {
           chapterId: string;
+          /** 章节所属的书 —— FTS 的隔离键，必须来自 chapters.book_id */
+          bookId: string;
           chapterNumber: number;
           body: string;
           sourceRef: string;

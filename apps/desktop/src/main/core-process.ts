@@ -799,7 +799,12 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
           indexChapter: (input) => {
             fts.indexChapter({
               chapterId: input.chapterId,
-              bookId: resolveBookId() ?? '',
+              // ⚠ bookId 由提交链路从 `chapters.book_id` 传下来（权威），
+              //   **不再用 resolveBookId()** —— 那个解析器在未指定时
+              //   回退到"最近创建的书"，与"本章属于哪本书"无关。
+              //   用它的后果：给 B 书提交，正文被索引到 A 书名下，
+              //   而 search() 按 book_id 过滤 → 搜 B 书搜出 A 书正文。
+              bookId: input.bookId,
               chapterNumber: input.chapterNumber,
               sourceRef: input.sourceRef,
               text: input.body,

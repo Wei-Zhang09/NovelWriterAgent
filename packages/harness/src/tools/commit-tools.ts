@@ -94,6 +94,7 @@ export function createCommitTools(
     readonly indexer?: {
       indexChapter(input: {
         chapterId: string;
+        bookId: string;
         chapterNumber: number;
         body: string;
         sourceRef: string;
@@ -315,6 +316,8 @@ export function createCommitTools(
 
       const report = engine.commit({
         chapterId: chapter.id,
+        // ⚠ 用章节行自己的 book_id（权威），不用 resolveBookId() 回退
+        bookId: chapter.book_id,
         chapterNumber: chapter.chapter_number,
         body,
         // ⚠ 摘要必须**已有内容**才允许提交。

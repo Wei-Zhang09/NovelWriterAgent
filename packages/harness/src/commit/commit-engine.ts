@@ -48,6 +48,21 @@ export interface ManifestArtifact {
 export interface CommitRequest {
   readonly chapterId: string;
   readonly chapterNumber: number;
+  /**
+   * 章节所属的书（多书隔离）。
+   *
+   * ⚠ 为什么必须由调用方显式传入、不能在这里猜：
+   *   提交时要把本章正文写进 FTS 索引，而 `chapter_fts.book_id` 是
+   *   **检索的隔离键**（`search()` 用 `WHERE book_id = ?` 过滤）。
+   *   此前索引器由 app 层注入时用 `resolveBookId()` 取书 ——
+   *   那是个**回退到"最近创建的书"**的解析器，与"本章属于哪本书"无关。
+   *   于是给 B 书提交时，正文会被索引到 A 书名下：
+   *   搜 B 书会搜出 A 书的正文，**跨书污染**（用户硬要求禁止的情形）。
+   *
+   *   调用方手里有 `chapters` 行（`chapter.book_id`），那是权威来源；
+   *   引擎自己猜不如让调用方把已知事实传进来。
+   */
+  readonly bookId: string;
   /** 待提交的正文（来自工作区 revision.md 或 draft.md） */
   readonly body: string;
   /** 章节摘要（写入 memory_items 与文件） */
@@ -108,6 +123,8 @@ export interface CommitEngineOptions {
   readonly indexer?: {
     indexChapter(input: {
       chapterId: string;
+      /** 章节所属的书 —— FTS 的隔离键，必须来自 chapters.book_id */
+      bookId: string;
       chapterNumber: number;
       body: string;
       sourceRef: string;
@@ -396,7 +413,7 @@ export class CommitEngine {
     // 若此处失败，pending 标记保留 → 下次启动 Repair 会补做。
     let indexesRebuilt = false;
     try {
-      this.indexChapter(req.chapterId, req.chapterNumber, req.body, chapterPath);
+      this.indexChapter(req.chapterId, req.bookId, req.chapterNumber, req.body, chapterPath);
       indexesRebuilt = true;
     } catch (e) {
       // ⚠ 索引失败不让提交失败：正文与 DB 都已落定，索引可从真源重建。
@@ -449,6 +466,7 @@ export class CommitEngine {
    */
   private indexChapter(
     chapterId: string,
+    bookId: string,
     chapterNumber: number,
     body: string,
     sourceRef: string,
@@ -465,7 +483,7 @@ export class CommitEngine {
     //   行 id 是路径（chapters/001.md），而 rebuild 路径写入的是真 id
     //   （ch_sim_001）—— 同一章节在两条写入路径下身份不一致，
     //   重建前后检索结果的 id 对不上。
-    indexer.indexChapter({ chapterId, chapterNumber, body, sourceRef });
+    indexer.indexChapter({ chapterId, bookId, chapterNumber, body, sourceRef });
   }
 
   private maybeKill(at: KillSwitch['at'][number]): void {
