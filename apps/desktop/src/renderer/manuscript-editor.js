@@ -47,8 +47,17 @@ const SAVE_STATUS = {
   RECOVERABLE: { text: '⟲ 发现未恢复的编辑内容', cls: 'save-status--recoverable' },
 };
 
-/** autosave 的 debounce 间隔（§八）。⚠ 由 main 侧兜底，这里只是触发频率 */
-const AUTOSAVE_DEBOUNCE_MS = 3000;
+/**
+ * ⚠ M5 起 debounce **不在 renderer**（§八）。
+ *
+ *   autosave 存在的唯一理由是防丢失，而最常见的丢失场景正是
+ *   renderer 自己崩掉（OOM / 页面异常）。定时器活在 renderer 里
+ *   就会随页面一起死 —— 恰好在最需要它的时候不工作。
+ *
+ *   所以 renderer 只做一件事：**每次输入把快照推给主进程**
+ *   （`window.nwa.autosave`），由主进程 debounce + 落盘。
+ *   页面死了，主进程还在，快照照样写成文件。
+ */
 
 /**
  * 编辑器面板。
@@ -80,7 +89,6 @@ export function renderManuscriptEditor({ el, invoke, msg, chapter }) {
    * 而 mtime 正是恢复提示的展示依据。
    */
   let lastAutosavedText = null;
-  let autosaveTimer = null;
   let saving = false;
   /** 视图：'edit' | 'preview' */
   let view = 'edit';
@@ -234,21 +242,18 @@ export function renderManuscriptEditor({ el, invoke, msg, chapter }) {
   // ⚠ 写的是**旁路副本**，不碰正式正文 —— 由仓储层保证。
   //   若这里改成"自动保存即保存"，§十二 的切章保护就失去意义。
   // ─────────────────────────────────────────────────────────
-  function scheduleAutosave() {
-    if (autosaveTimer !== null) clearTimeout(autosaveTimer);
-    autosaveTimer = setTimeout(() => {
-      autosaveTimer = null;
-      void runAutosave();
-    }, AUTOSAVE_DEBOUNCE_MS);
-  }
-
-  async function runAutosave() {
-    // ⚠ 判据是"与上次 autosave 的内容不同"，**不是**"与磁盘正文不同"。
-    //   后者会让作者改一个字后停手时，每次 input 事件都重写同一份副本 ——
-    //   无意义写入刷新 mtime，而 mtime 是恢复提示的展示依据。
-    //   内容与磁盘正文相同时也没必要写副本（没有"未保存的改动"可救）。
+  /**
+   * 把当前快照推给主进程（§八）。
+   *
+   * ⚠ 判据是"与上次推过的内容不同"，**不是**"与磁盘正文不同"：
+   *   后者会让作者改一个字后停手时，每次 input 都推一遍同样的内容 ——
+   *   主进程的 debounce 虽然会合并，但这是在无谓地跨进程拷贝整章文本。
+   *   内容与磁盘正文相同时也没必要推（没有"未保存的改动"可救）。
+   */
+  function pushSnapshot() {
     if (text === savedText || text === lastAutosavedText) return;
-    const r = await invoke('manuscript.autosave', {
+    lastAutosavedText = text;
+    window.nwa.autosave({
       chapterId: chapter.id,
       text,
       cursor: area.selectionStart,
@@ -256,22 +261,21 @@ export function renderManuscriptEditor({ el, invoke, msg, chapter }) {
       selectionEnd: area.selectionEnd,
       scrollTop: area.scrollTop,
     });
-    if (!r.ok) {
-      // ⚠ autosave 失败**不改**保存状态：正文还没保存，
-      //   把状态改成"失败"会让作者以为手动保存也失败了。
-      statusLine.className = 'form-msg form-msg--warn';
-      statusLine.textContent = `自动保存失败：${r.error.message}（正文未受影响，请手动保存）`;
-      return;
-    }
-    lastAutosavedText = text;
   }
 
+  /**
+   * 切章/关窗前让主进程把未落盘的快照写掉（§十二）。
+   *
+   * ⚠ 必须 await：确认写完了才能切章。
+   */
   async function flushAutosave() {
-    if (autosaveTimer !== null) {
-      clearTimeout(autosaveTimer);
-      autosaveTimer = null;
+    pushSnapshot();
+    try {
+      await window.nwa.flushAutosave(chapter.id);
+    } catch {
+      // ⚠ 失败不阻断切章：flush 是尽力而为的保护，
+      //   为它挡住用户的切章动作得不偿失（正文本身在编辑器里还在）。
     }
-    await runAutosave();
   }
 
   // ─────────────────────────────────────────────────────────
@@ -397,7 +401,8 @@ export function renderManuscriptEditor({ el, invoke, msg, chapter }) {
   area.addEventListener('input', () => {
     text = area.value;
     recomputeStatus();
-    scheduleAutosave();
+    // ⚠ 只推快照，不自己 debounce —— debounce 在主进程（M5）
+    pushSnapshot();
     void refreshMetrics();
   });
   area.addEventListener('keyup', updateSelection);
@@ -432,8 +437,14 @@ export function renderManuscriptEditor({ el, invoke, msg, chapter }) {
   });
 
   /**
-   * ⚠ 切章/离开前 flush：debounce 未触发的 autosave 若不冲掉，
+   * ⚠ 切章/离开前 flush：主进程 debounce 未到点的快照若不冲掉，
    *   作者写完最后一句立刻切走，那几句就只存在于内存里。
+   *
+   *   M5 起这条保护有**两层**：
+   *     1. 这里（renderer 主动 flush，正常切章路径）
+   *     2. 主进程的 `render-process-gone` / `before-quit`（崩溃与退出路径）
+   *   第二层才是把 debounce 移到主进程的意义 —— 页面已经死了，
+   *   它最后推过去的快照仍然能落盘。
    */
   window.addEventListener('beforeunload', () => {
     void flushAutosave();

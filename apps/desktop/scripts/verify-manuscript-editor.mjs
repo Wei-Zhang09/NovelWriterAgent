@@ -59,21 +59,36 @@ globalThis.clearTimeout = (id) => {
   timers.delete(id);
 };
 
-/** 手动跑掉所有待触发的定时器（模拟"时间到了"） */
-function fireTimers() {
-  const pending = [...timers.entries()];
-  timers.clear();
-  for (const [, t] of pending) t.fn();
-  return pending.length;
-}
-
 const windowListeners = {};
+
+/**
+ * M5：autosave 的落盘通道现在挂在 `window.nwa` 上（preload 暴露）。
+ *
+ * ⚠ 替身必须与 preload 的真实签名一致 —— 上一轮 M4 的教训是
+ *   mock 返回了真实仓储没有的字段，导致一个真实缺陷在验证器里"通过"。
+ */
+const nwaCalls = { autosave: [], flush: [] };
 globalThis.window = {
   addEventListener: (ev, fn) => {
     (windowListeners[ev] ??= []).push(fn);
   },
   removeEventListener: () => {},
+  nwa: {
+    autosave: (payload) => {
+      nwaCalls.autosave.push(payload);
+    },
+    flushAutosave: async (chapterId) => {
+      nwaCalls.flush.push(chapterId);
+      return { ok: true };
+    },
+  },
 };
+
+/** 重置 window.nwa 调用记录（每个场景开始前调用） */
+function resetNwa() {
+  nwaCalls.autosave.length = 0;
+  nwaCalls.flush.length = 0;
+}
 
 function makeEl(tag) {
   const node = {
@@ -363,9 +378,13 @@ console.log('\n──── 3. ⚠ 提交按钮不得绕过检查（§三十 §�
 }
 
 // ═══════════════════════════════════════════════════════════
-console.log('\n──── 4. autosave：debounce + 内容未变不写（§八）────\n');
+console.log('\n──── 4. ⚠ autosave 的 debounce 在**主进程**（M5 / §八）────\n');
 // ═══════════════════════════════════════════════════════════
 {
+  // ⚠ 本节要证明的正是"renderer 里没有定时器"这件事。
+  //   若哪天有人把 debounce 挪回 renderer，下面第一条断言立刻失败 ——
+  //   而那个改动会让 autosave 在页面崩溃时失效（最需要它的场景）。
+  resetNwa();
   const env = makeEnv({ hasRecovery: false, diskText: '原始正文。' });
   const box = renderManuscriptEditor({
     el,
@@ -378,7 +397,6 @@ console.log('\n──── 4. autosave：debounce + 内容未变不写（§八�
 
   const area = byClass(box, 'editor__area');
 
-  // 连续三次输入 —— 只应产生**一次** autosave（debounce 的语义）
   area.value = '第一次改动';
   area.fire('input');
   area.value = '第二次改动';
@@ -387,35 +405,39 @@ console.log('\n──── 4. autosave：debounce + 内容未变不写（§八�
   area.fire('input');
 
   rec(
-    '⚠ 输入后**立即**没有 autosave（确实是延迟，不是每次都写）',
+    '⚠ 输入后**立即**推了快照给主进程（debounce 不在这里）',
+    nwaCalls.autosave.length === 3,
+    `推送 ${nwaCalls.autosave.length} 次`,
+  );
+  rec(
+    '⚠ renderer 里没有 autosave 定时器（debounce 已移到主进程）',
+    timers.size === 0,
+    `renderer 定时器 ${timers.size} 个`,
+  );
+  rec(
+    '⚠ renderer 也**不**直接调 manuscript.autosave IPC',
     env.callsTo('manuscript.autosave').length === 0,
-    `立即写了 ${env.callsTo('manuscript.autosave').length} 次`,
-  );
-  rec('定时器已排入队列（debounce 生效）', timers.size >= 1, `待触发 ${timers.size} 个`);
-
-  fireTimers();
-  await new Promise((r) => process.nextTick(r));
-  await new Promise((r) => process.nextTick(r));
-
-  rec(
-    '⚠ 三次连续输入只产生 1 次 autosave（debounce 合并）',
-    env.callsTo('manuscript.autosave').length === 1,
-    `写了 ${env.callsTo('manuscript.autosave').length} 次`,
+    `IPC 调用 ${env.callsTo('manuscript.autosave').length} 次`,
   );
   rec(
-    'autosave 写的是最新内容',
-    env.callsTo('manuscript.autosave')[0]?.params.text === '第三次改动',
+    '推送的是最新内容（每次覆盖，不排队）',
+    nwaCalls.autosave.at(-1)?.text === '第三次改动',
+    nwaCalls.autosave.at(-1)?.text,
+  );
+  rec(
+    '推送携带光标/选区/滚动位置（§十一 编辑器状态）',
+    'cursor' in (nwaCalls.autosave.at(-1) ?? {}) &&
+      'selectionStart' in (nwaCalls.autosave.at(-1) ?? {}) &&
+      'scrollTop' in (nwaCalls.autosave.at(-1) ?? {}),
   );
 
-  // 内容未变时再触发一次 → 不该写（无意义写入会刷新 mtime）
-  const before = env.callsTo('manuscript.autosave').length;
+  // ⚠ 内容未变时不推（无谓的跨进程拷贝整章文本）
+  const before = nwaCalls.autosave.length;
   area.fire('input'); // value 未变
-  fireTimers();
-  await new Promise((r) => process.nextTick(r));
   rec(
-    '⚠ 内容未变时不重复 autosave（避免刷新 mtime 制造假恢复提示）',
-    env.callsTo('manuscript.autosave').length === before,
-    `${before} → ${env.callsTo('manuscript.autosave').length}`,
+    '⚠ 内容未变时不重复推送快照',
+    nwaCalls.autosave.length === before,
+    `${before} → ${nwaCalls.autosave.length}`,
   );
 }
 
@@ -496,15 +518,17 @@ console.log('\n──── 5b. ⚠ 恢复后**不改动**直接切章，副本�
   await new Promise((r) => process.nextTick(r));
   await new Promise((r) => process.nextTick(r));
 
-  const before = env.callsTo('manuscript.autosave').length;
+  resetNwa();
   box.__cleanup(); // 模拟切章
   await new Promise((r) => process.nextTick(r));
   await new Promise((r) => process.nextTick(r));
 
   rec(
-    '⚠ 恢复后未改动就切章，副本仍被写出（否则恢复白做）',
-    env.callsTo('manuscript.autosave').length === before + 1,
-    `${before} → ${env.callsTo('manuscript.autosave').length}`,
+    '⚠ 恢复后未改动就切章，副本仍被推送并 flush（否则恢复白做）',
+    nwaCalls.autosave.length === 1 &&
+      nwaCalls.autosave[0].text === '自动保存的正文。' &&
+      nwaCalls.flush.length === 1,
+    `推送 ${nwaCalls.autosave.length} 次 / flush ${nwaCalls.flush.length} 次`,
   );
 }
 
@@ -630,9 +654,10 @@ console.log('\n──── 8. Ctrl+S 只在编辑器聚焦时拦截 ───�
 }
 
 // ═══════════════════════════════════════════════════════════
-console.log('\n──── 9. 离开前 flush 未触发的 autosave ────\n');
+console.log('\n──── 9. ⚠ 切章前 flush（§十二）────\n');
 // ═══════════════════════════════════════════════════════════
 {
+  resetNwa();
   const env = makeEnv({ hasRecovery: false, diskText: '原正文。' });
   const box = renderManuscriptEditor({
     el,
@@ -646,21 +671,31 @@ console.log('\n──── 9. 离开前 flush 未触发的 autosave ───�
   const area = byClass(box, 'editor__area');
   area.value = '刚写完的最后一句。';
   area.fire('input');
-  // 定时器还没触发就切章
-  const before = env.callsTo('manuscript.autosave').length;
+  const pushedAfterInput = nwaCalls.autosave.length;
 
   box.__cleanup();
   await new Promise((r) => process.nextTick(r));
   await new Promise((r) => process.nextTick(r));
 
   rec(
-    '⚠ 切章前 flush：未到点的 autosave 被立即写掉（否则最后几句只在内存里）',
-    env.callsTo('manuscript.autosave').length === before + 1,
-    `${before} → ${env.callsTo('manuscript.autosave').length}`,
+    '⚠ 切章时向主进程请求 flush（让 debounce 未到点的内容立即落盘）',
+    nwaCalls.flush.length === 1,
+    `flush 请求 ${nwaCalls.flush.length} 次`,
   );
   rec(
-    'flush 写入的是最后的内容',
-    env.callsTo('manuscript.autosave').at(-1)?.params.text === '刚写完的最后一句。',
+    'flush 指定了当前章节（不误伤其他章节的待落盘内容）',
+    nwaCalls.flush[0] === 'ch-1',
+    String(nwaCalls.flush[0]),
+  );
+  rec(
+    'input 时已把内容推给主进程（flush 才有东西可写）',
+    pushedAfterInput === 1 && nwaCalls.autosave[0].text === '刚写完的最后一句。',
+    `推送 ${pushedAfterInput} 次`,
+  );
+  rec(
+    '⚠ 内容已推过则 flush 不重复推送（避免无谓的跨进程拷贝）',
+    nwaCalls.autosave.length === pushedAfterInput,
+    `${pushedAfterInput} → ${nwaCalls.autosave.length}`,
   );
 }
 

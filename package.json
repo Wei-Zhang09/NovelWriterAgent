@@ -56,7 +56,8 @@
     "verify:timeline": "electron apps/desktop/scripts/verify-timeline.mjs",
     "verify:summary-gate": "electron apps/desktop/scripts/verify-summary-gate.mjs",
     "verify:workflow-panel": "node apps/desktop/scripts/verify-workflow-panel.mjs",
-    "verify:manuscript-editor": "node apps/desktop/scripts/verify-manuscript-editor.mjs"
+    "verify:manuscript-editor": "node apps/desktop/scripts/verify-manuscript-editor.mjs",
+    "verify:autosave-scheduler": "node apps/desktop/scripts/verify-autosave-scheduler.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

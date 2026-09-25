@@ -34,6 +34,134 @@ let core: UtilityProcess | null = null;
 /** 记录主进程到 core 的请求，用于把 core 的响应路由回渲染进程 */
 const pending = new Map<string, (payload: unknown) => void>();
 
+/**
+ * 向 core 发一次请求（与 IPC 路由共用同一条通道）。
+ *
+ * ⚠ 抽出来是为了让 autosave 调度器能在**没有 renderer 参与**的情况下
+ *   把内容落盘 —— 这正是 M5 的全部意义。
+ */
+function callCore(method: string, params?: unknown): Promise<unknown> {
+  if (!core) {
+    return Promise.resolve({
+      ok: false,
+      error: { code: 'WORKSPACE_CORRUPTED', message: 'core 进程未运行' },
+    });
+  }
+  const requestId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  return new Promise((resolve) => {
+    pending.set(requestId, resolve);
+    core!.postMessage({ kind: 'request', requestId, method, params });
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+// M5：autosave 的 debounce **在主进程**（§八 / §十二）
+//
+// ⚠ 为什么不在 renderer 里 debounce（本节最关键的一处决策）
+//
+//   autosave 存在的唯一理由是"防止丢失"。而最常见的丢失场景正是
+//   **renderer 自己崩掉**（OOM、页面异常、长章节渲染卡死）。
+//   若 debounce 定时器活在 renderer 里，它随页面一起死 ——
+//   恰好在最需要它的时候不工作。
+//
+//   放在主进程则不同：renderer 死了，主进程还在，定时器照常触发，
+//   内容照样落盘。用户重开时就能看到"发现未恢复的编辑内容"。
+//
+//   代价：renderer 每次输入都要推一次文本（跨进程拷贝）。
+//   权衡下来这是对的 —— 几百 KB 的拷贝远比丢掉作者刚写的三千字便宜。
+// ─────────────────────────────────────────────────────────────
+
+/** debounce 间隔（§八 建议 500–2000ms） */
+const AUTOSAVE_DEBOUNCE_MS = 1500;
+
+/** 每个章节一个待落盘的 pending 快照（按 chapterId 分组） */
+interface PendingAutosave {
+  chapterId: string;
+  text: string;
+  cursor: number;
+  selectionStart: number;
+  selectionEnd: number;
+  scrollTop: number;
+  timer: NodeJS.Timeout;
+}
+const pendingAutosaves = new Map<string, PendingAutosave>();
+
+/** 组装落盘参数（三处调用共用，避免字段漏传） */
+function autosaveParams(p: {
+  chapterId: string;
+  text: string;
+  cursor?: number;
+  selectionStart?: number;
+  selectionEnd?: number;
+  scrollTop?: number;
+}): Record<string, unknown> {
+  return {
+    chapterId: p.chapterId,
+    text: p.text,
+    cursor: p.cursor ?? 0,
+    selectionStart: p.selectionStart ?? p.cursor ?? 0,
+    selectionEnd: p.selectionEnd ?? p.cursor ?? 0,
+    scrollTop: p.scrollTop ?? 0,
+  };
+}
+
+/**
+ * 记录一次待落盘的编辑（renderer 每次输入调用）。
+ *
+ * ⚠ 同章节的后续调用**覆盖**前一个快照并重置定时器 —— 这才是 debounce。
+ *   若改成排队，作者快速敲字会在队列里堆出几十个中间版本，
+ *   只有最后一次是有意义的，前面全是无谓的磁盘写入。
+ */
+function scheduleAutosave(payload: {
+  chapterId: string;
+  text: string;
+  cursor?: number;
+  selectionStart?: number;
+  selectionEnd?: number;
+  scrollTop?: number;
+}): void {
+  const prev = pendingAutosaves.get(payload.chapterId);
+  if (prev) clearTimeout(prev.timer);
+
+  const timer = setTimeout(() => {
+    pendingAutosaves.delete(payload.chapterId);
+    void callCore('manuscript.autosave', autosaveParams(payload)).then((r) => {
+      const res = r as { ok?: boolean; error?: { message?: string } } | undefined;
+      if (res && res.ok === false) {
+        // ⚠ 失败必须留日志：autosave 是静默的，没有日志就毫无痕迹。
+        logger.warn('autosave 落盘失败', {
+          chapterId: payload.chapterId,
+          error: res.error?.message,
+        });
+      }
+    });
+  }, AUTOSAVE_DEBOUNCE_MS);
+
+  pendingAutosaves.set(payload.chapterId, { ...autosaveParams(payload), timer } as PendingAutosave);
+}
+
+/**
+ * 立即把待落盘内容写掉（切章 / 关窗 / renderer 崩溃时调用）。
+ *
+ * ⚠ 调用方**必须 await**：关窗流程要等它写完才能退出，
+ *   否则进程先没了、内容还在内存里 —— 那正是它要防的事。
+ */
+async function flushAutosave(chapterId?: string): Promise<void> {
+  const targets = [...pendingAutosaves.values()].filter(
+    (t) => chapterId === undefined || t.chapterId === chapterId,
+  );
+  if (targets.length === 0) return;
+
+  for (const t of targets) {
+    clearTimeout(t.timer);
+    pendingAutosaves.delete(t.chapterId);
+  }
+  await Promise.all(
+    targets.map((t) => callCore('manuscript.autosave', autosaveParams(t))),
+  );
+  logger.info('已 flush 未落盘的自动保存', { count: targets.length });
+}
+
 function startCoreProcess(): void {
   const coreEntry = join(here, 'core-process.js');
   logger.info('启动 core utilityProcess', { entry: coreEntry });
@@ -1077,6 +1205,19 @@ function createWindow(): void {
     });
   }
 
+  /**
+   * M5：**renderer 崩溃时**把未落盘的内容冲掉。
+   *
+   * ⚠ 这是把 debounce 放主进程的**全部理由**在这里兑现：
+   *   页面已经死了，但它最后一次推过来的快照还在主进程内存里。
+   *   不在这里 flush，那份快照就随窗口一起消失 ——
+   *   而"作者刚写完一段、页面崩了"正是最需要恢复的场景。
+   */
+  win.webContents.on('render-process-gone', (_e, details) => {
+    logger.error('渲染进程异常退出，立即 flush 自动保存', details);
+    void flushAutosave();
+  });
+
   win.on('closed', () => {
     win = null;
   });
@@ -1122,6 +1263,42 @@ function registerIpc(): void {
     chrome: process.versions.chrome,
     version: app.getVersion(),
   }));
+
+  /**
+   * M5：自动保存（§八 / §十二）。
+   *
+   * ⚠ 用 `ipcMain.on`（单向）而不是 `handle`：renderer 不需要等结果，
+   *   而等待会让每次按键都挂一个 Promise —— 高频路径上不该有这种开销。
+   */
+  ipcMain.on(
+    IPC.AUTOSAVE,
+    (
+      _e,
+      payload: {
+        chapterId: string;
+        text: string;
+        cursor?: number;
+        selectionStart?: number;
+        selectionEnd?: number;
+        scrollTop?: number;
+      },
+    ) => {
+      if (!payload || typeof payload.chapterId !== 'string') return;
+      scheduleAutosave(payload);
+    },
+  );
+
+  /**
+   * M5：切章前 flush（§十二）。
+   *
+   * ⚠ 这是"切章保护"真正生效的地方：debounce 未到点的内容若不冲掉，
+   *   作者写完最后一句立刻切走，那几句就只存在于内存里。
+   *   renderer 主动请求 + 等待完成，确认落盘后才切。
+   */
+  ipcMain.handle('nwa:autosave-flush', async (_e, payload?: { chapterId?: string }) => {
+    await flushAutosave(payload?.chapterId);
+    return { ok: true };
+  });
 }
 
 app.whenReady().then(() => {
@@ -1134,7 +1311,27 @@ app.whenReady().then(() => {
   });
 });
 
+/**
+ * ⚠ 退出前必须**等** autosave 落盘（§十二）。
+ *
+ *   原实现直接 `app.quit()` —— debounce 那 1.5 秒内写下的内容
+ *   会随进程一起消失。关窗是最常见的"停止写作"动作，
+ *   恰好也是最后一次改动最容易被丢掉的一刻。
+ *
+ *   `before-quit` 里 preventDefault + 异步 flush + 再 quit 是 Electron
+ *   的标准做法：直接 await 在 quit 流程里不生效，因为 quit 不会等。
+ */
+let quitting = false;
+app.on('before-quit', (e) => {
+  if (quitting || pendingAutosaves.size === 0) return;
+  e.preventDefault();
+  quitting = true;
+  void flushAutosave().finally(() => {
+    core?.kill();
+    app.quit();
+  });
+});
+
 app.on('window-all-closed', () => {
-  core?.kill();
   if (process.platform !== 'darwin') app.quit();
 });
