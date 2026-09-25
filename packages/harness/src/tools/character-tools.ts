@@ -110,9 +110,13 @@ export function createCharacterTools(repos: Repositories): AnyToolDefinition[] {
 
   const update: AnyToolDefinition = {
     name: 'character.update',
-    description: '更新角色档案（叙事定位 / 当前状态 / 自由档案）。',
+    description:
+      '更新角色档案（角色名 / 别名 / 叙事定位 / 当前状态 / 自由档案）。' +
+      '⚠ 改角色名会改变正文里"谁是谁"的识别结果，可能影响连续性检查。',
     inputSchema: z.object({
       characterId: z.string().min(1),
+      name: z.string().min(1).optional(),
+      aliases: z.array(z.string().min(1)).optional(),
       role: z.string().optional(),
       currentStatus: z.string().optional(),
       profile: z.unknown().optional(),
@@ -122,23 +126,59 @@ export function createCharacterTools(repos: Repositories): AnyToolDefinition[] {
     errorCodes: [ErrorCode.TOOL_VALIDATION_ERROR, ErrorCode.STORAGE_QUERY_FAILED],
     execute: (input: {
       characterId: string;
+      name?: string;
+      aliases?: string[];
       role?: string;
       currentStatus?: string;
       profile?: unknown;
     }) => {
-      const patch: { role?: string | null; profile?: unknown; currentStatus?: string | null } = {};
+      const patch: {
+        name?: string;
+        aliases?: readonly string[];
+        role?: string | null;
+        profile?: unknown;
+        currentStatus?: string | null;
+      } = {};
+      if (input.name !== undefined) patch.name = input.name;
+      if (input.aliases !== undefined) patch.aliases = input.aliases;
       if (input.role !== undefined) patch.role = input.role;
       if (input.currentStatus !== undefined) patch.currentStatus = input.currentStatus;
       if (input.profile !== undefined) patch.profile = input.profile;
       if (Object.keys(patch).length === 0) {
         throw new Error('没有要更新的字段');
       }
-      const row = repos.characters.updateProfile(input.characterId, patch);
+      const row = repos.characters.update(input.characterId, patch);
       return { characterId: row.id, updated: true };
     },
   };
 
-  return [create, list, update];
+  /**
+   * 删除角色（P2-4c）。
+   *
+   * ⚠ 有 CANON 事实的角色会被仓储层拒绝 —— 已进入正史的角色被删掉，
+   * 等于让"已发生的事"失去主体。工具的 errorCodes 里带
+   * TOOL_VALIDATION_ERROR，前端据此把拒绝原因显示给作者。
+   */
+  const remove: AnyToolDefinition = {
+    name: 'character.remove',
+    description:
+      '删除角色。⚠ 有已进入正史（CANON）事实的角色不能删除 —— ' +
+      '如只是改名请用 character.update。',
+    inputSchema: z.object({ characterId: z.string().min(1) }),
+    outputSchema: z.object({
+      characterId: z.string(),
+      removed: z.boolean(),
+      detachedFacts: z.number(),
+    }),
+    permission: 'WRITE',
+    errorCodes: [ErrorCode.TOOL_VALIDATION_ERROR, ErrorCode.STORAGE_QUERY_FAILED],
+    execute: ({ characterId }: { characterId: string }) => {
+      const r = repos.characters.remove(characterId);
+      return { characterId, removed: r.removed, detachedFacts: r.detachedFacts };
+    },
+  };
+
+  return [create, list, update, remove];
 }
 
 function safeParse(s: string): unknown {

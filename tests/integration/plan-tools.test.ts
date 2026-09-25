@@ -197,13 +197,14 @@ describe('chapter.getPlan', () => {
 });
 
 describe('工具总数（STEP 20 后）', () => {
-  it('工具总数随 STEP 递增（当前 32）', () => {
+  it('工具总数随 STEP 递增（当前 33）', () => {
     t = createTestProject();
     const names = registry(t).list().map((x) => x.name);
     // STEP 20 新增 book.{create,list} 与 character.{create,list,update}
+    // P2-4c 新增 character.remove（角色此前只能加不能改不能删）
     // P0-5 新增 timeline.{addEvent,check}
     // P2-3 新增 world.{create,list,update,remove}
-    expect(names).toHaveLength(32);
+    expect(names).toHaveLength(33);
     expect(names).toContain('chapter.plan');
     expect(names).toContain('chapter.getPlan');
     expect(names).toContain('timeline.addEvent');

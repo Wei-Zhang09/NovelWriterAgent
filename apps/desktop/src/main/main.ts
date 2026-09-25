@@ -713,6 +713,77 @@ function createWindow(): void {
                     cm.includes('沈砚'), cm.slice(0, 70));
                 rec('⚠ 角色出现在列表中（真的落库了）',
                     charForm.textContent.includes('沈砚'), '');
+
+                // ── 17c-2) 角色编辑 / 删除（P2-4c）──
+                //
+                // ⚠ 与设定（P2-4b）同类死胡同，但更深一层：设定那边只是
+                //   缺 UI；角色这边 character.update 的 schema **不接受
+                //   name/aliases**、仓储层连 remove 都没有。
+                //   作者最常要改的恰恰是**打错的名字**（角色名是识别
+                //   "谁是谁"的键），所以必须真点、真改、真验证落库。
+                const cRows = [...charForm.querySelectorAll('.issue-row')];
+                rec('角色列表每条都有编辑/删除入口',
+                    cRows.length > 0 && cRows.every(r2 =>
+                      !!btnByText(r2, '编辑') && !!btnByText(r2, '删除')),
+                    '行数 ' + cRows.length);
+
+                if (cRows.length > 0) {
+                  // ── 改名：这是此前**根本做不到**的操作 ──
+                  const ceBtn = btnByText(cRows[0], '编辑');
+                  ceBtn?.click();
+                  await sleep(300);
+                  const ceBox = cRows[0].querySelector('.char-edit');
+                  rec('⚠ 点编辑就地展开角色编辑框', !!ceBox, '');
+                  if (ceBox) {
+                    const ceName = ceBox.querySelector('input');
+                    setInput(ceName, '沈砚之');
+                    btnByText(ceBox, '保存')?.click();
+                    await sleep(1500);
+                    const cem = charForm.querySelector('.form-msg')?.textContent ?? '';
+                    rec('⚠ 角色改名真的落库（此前 update 不接受 name）',
+                        cem.includes('沈砚之'), cem.slice(0, 80));
+                    rec('⚠ 改名提示会影响连续性检查',
+                        cem.includes('连续性'), cem.slice(0, 90));
+                    // ⚠ 必须查**列表行**，不能查 charForm.textContent：
+                    //   后者包含上面那条成功提示，而提示文本是由**输入框**
+                    //   拼出来的，不是从库里读回来的 —— 于是"漏提交 name"
+                    //   这种缺陷照样通过（实测假绿：注入后仍 114/114）。
+                    //   列表是 refresh() 后由 character.list 重建的，才是真证据。
+                    const cRowsAfter = [...charForm.querySelectorAll('.issue-row')];
+                    const cNameShown = cRowsAfter[0]
+                      ?.querySelector('.issue-msg')?.textContent ?? '';
+                    rec('⚠ 列表行显示的是新名字（从库里读回来）',
+                        cNameShown.includes('沈砚之'), cNameShown.slice(0, 60));
+                    rec('⚠ 列表行不再是旧名字',
+                        !cNameShown.includes('沈砚 '), cNameShown.slice(0, 60));
+                  }
+
+                  // ── 删除：未勾选必须禁用 ──
+                  const cRows2 = [...charForm.querySelectorAll('.issue-row')];
+                  const cdBtn = cRows2[0] && btnByText(cRows2[0], '删除');
+                  cdBtn?.click();
+                  await sleep(300);
+                  const cdBox = cRows2[0]?.querySelector('.char-del');
+                  rec('⚠ 点删除展开确认区（角色）', !!cdBox, '');
+                  if (cdBox) {
+                    const cdoBtn = btnByText(cdBox, '删除');
+                    rec('⚠ 未勾选时删除按钮禁用（防误删，角色）',
+                        !!cdoBtn && cdoBtn.disabled, '');
+                    const ccb = cdBox.querySelector('input[type=checkbox]');
+                    if (ccb && cdoBtn) {
+                      ccb.click();
+                      await sleep(200);
+                      rec('⚠ 勾选后删除按钮才可用（角色）', !cdoBtn.disabled, '');
+                      cdoBtn.click();
+                      await sleep(1500);
+                      const cdm = charForm.querySelector('.form-msg')?.textContent ?? '';
+                      rec('⚠ 角色删除真的生效', cdm.includes('已删除'), cdm.slice(0, 80));
+                      const cLeft = charForm.querySelectorAll('.issue-row').length;
+                      rec('⚠ 删除后角色列表确实少一条', cLeft === cRows2.length - 1,
+                          '剩余 ' + cLeft + ' / 原 ' + cRows2.length);
+                    }
+                  }
+                }
               }
             }
 

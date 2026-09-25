@@ -781,17 +781,141 @@ function renderCharacterForm() {
       return;
     }
     for (const c of chars) {
-      const row = el('div', 'issue-row');
-      const body = el('div', 'issue-body');
-      body.append(el('div', 'issue-msg', `${c.name}${c.role ? ` — ${c.role}` : ''}`));
-      const bits = [];
-      if (c.aliases?.length) bits.push(`又称 ${c.aliases.join('、')}`);
-      if (c.currentStatus) bits.push(`现状：${c.currentStatus}`);
-      if (c.profile) bits.push(typeof c.profile === 'string' ? c.profile : JSON.stringify(c.profile));
-      if (bits.length > 0) body.append(el('div', 'issue-src', bits.join('｜')));
-      row.append(body);
-      list.append(row);
+      list.append(renderCharacterRow(c));
     }
+  }
+
+  /**
+   * 一个角色的展示行 + 编辑/删除入口（P2-4c）。
+   *
+   * ⚠ 与设定（P2-4b）是同一类死胡同，但更深一层：设定那边只是缺 UI，
+   *   角色这边连 `character.update` 都**不接受 name/aliases**、
+   *   仓储层也没有 `remove()`。所以本行能用，是三层一起补的结果。
+   */
+  function renderCharacterRow(c) {
+    const row = el('div', 'issue-row');
+    const body = el('div', 'issue-body');
+    body.append(el('div', 'issue-msg', `${c.name}${c.role ? ` — ${c.role}` : ''}`));
+    const bits = [];
+    if (c.aliases?.length) bits.push(`又称 ${c.aliases.join('、')}`);
+    if (c.currentStatus) bits.push(`现状：${c.currentStatus}`);
+    if (c.profile) bits.push(typeof c.profile === 'string' ? c.profile : JSON.stringify(c.profile));
+    if (bits.length > 0) body.append(el('div', 'issue-src', bits.join('｜')));
+
+    const actions = el('div', 'btn-row');
+    const editBtn = el('button', 'btn', '编辑');
+    const delBtn = el('button', 'btn', '删除');
+    actions.append(editBtn, delBtn);
+    body.append(actions);
+    row.append(body);
+
+    editBtn.addEventListener('click', () => {
+      if (row.querySelector('.char-edit')) return;
+      const editBox = el('div', 'char-edit');
+      const eName = el('input');
+      eName.value = c.name;
+      eName.placeholder = '角色名';
+      const eAliases = el('input');
+      eAliases.value = (c.aliases ?? []).join('、');
+      eAliases.placeholder = '别名（逗号分隔，可选）';
+      const eRole = el('input');
+      eRole.value = c.role ?? '';
+      eRole.placeholder = '定位，如 主角 / 配角（可选）';
+      const eProfile = el('textarea', 'sum-edit');
+      eProfile.rows = 3;
+      eProfile.value = typeof c.profile === 'string'
+        ? c.profile
+        : c.profile
+          ? JSON.stringify(c.profile)
+          : '';
+      eProfile.placeholder = '外貌、性格、背景等（可选）';
+      const saveBtn = el('button', 'btn btn--primary', '保存');
+      const cancelBtn = el('button', 'btn', '取消');
+      const eMsg = el('div', 'form-msg');
+      const editActions = el('div', 'btn-row');
+      editActions.append(saveBtn, cancelBtn);
+      editBox.append(eName, eAliases, eRole, eProfile, editActions, eMsg);
+      body.append(editBox);
+
+      cancelBtn.addEventListener('click', () => editBox.remove());
+      saveBtn.addEventListener('click', async () => {
+        const n = eName.value.trim();
+        if (!n) {
+          eMsg.className = 'form-msg form-msg--err';
+          eMsg.textContent = '角色名不得为空';
+          return;
+        }
+        const aliasList = eAliases.value
+          .split(/[,，、]/)
+          .map((x) => x.trim())
+          .filter((x) => x.length > 0);
+        saveBtn.disabled = true;
+        const r = await tool('character.update', {
+          characterId: c.id,
+          name: n,
+          aliases: aliasList,
+          role: eRole.value.trim(),
+          ...(eProfile.value.trim() ? { profile: eProfile.value.trim() } : {}),
+        }, 'WRITE');
+        saveBtn.disabled = false;
+        if (!r.ok) {
+          eMsg.className = 'form-msg form-msg--err';
+          eMsg.textContent = `${r.error.code}: ${r.error.message}`;
+          return;
+        }
+        // ⚠ 改名会改变正文里"谁是谁"的识别结果 —— 必须说出来，
+        //   否则作者不知道这会影响连续性检查。
+        msg.className = 'form-msg form-msg--ok';
+        msg.textContent = n !== c.name
+          ? `已改名为「${n}」｜⚠ 角色名是识别"谁是谁"的键，改名会影响连续性检查`
+          : `已更新「${n}」`;
+        await refresh();
+      });
+    });
+
+    delBtn.addEventListener('click', () => {
+      if (row.querySelector('.char-del')) return;
+      const delBox = el('div', 'char-del');
+      const confirmRow = el('label', 'perm-line');
+      const cb = el('input');
+      cb.type = 'checkbox';
+      confirmRow.append(cb, document.createTextNode(` 我确认删除「${c.name}」（不可撤销）`));
+      const doBtn = el('button', 'btn btn--danger', '删除');
+      doBtn.disabled = true;
+      cb.addEventListener('change', () => {
+        doBtn.disabled = !cb.checked;
+      });
+      const delActions = el('div', 'btn-row');
+      const cancelDel = el('button', 'btn', '取消');
+      delActions.append(doBtn, cancelDel);
+      const dMsg = el('div', 'form-msg');
+      delBox.append(confirmRow, delActions, dMsg);
+      body.append(delBox);
+
+      cancelDel.addEventListener('click', () => delBox.remove());
+      doBtn.addEventListener('click', async () => {
+        doBtn.disabled = true;
+        const r = await tool('character.remove', { characterId: c.id }, 'WRITE');
+        if (!r.ok) {
+          // ⚠ 有 CANON 事实的角色会被仓储层拒绝 —— 这不是故障，
+          //   是设计：已进入正史的角色被删掉，等于让"已发生的事"失去主体。
+          //   必须把原因和替代做法一起说清楚，否则作者只会看到"删除失败"。
+          dMsg.className = 'form-msg form-msg--err';
+          dMsg.textContent = `${r.error.message}`;
+          doBtn.disabled = false;
+          return;
+        }
+        msg.className = 'form-msg form-msg--ok';
+        msg.textContent =
+          `已删除「${c.name}」` +
+          (r.data.detachedFacts > 0
+            ? `｜同时清理了 ${r.data.detachedFacts} 条指向该角色的事实`
+            : '');
+        await refresh();
+      });
+    });
+
+    return row;
   }
 
   addBtn.addEventListener('click', async () => {

@@ -61,7 +61,7 @@ describe('注册', () => {
     // 而工具层此前完全没有 character.* 与 book.*）
     expect(byPrefix('book.')).toEqual(['book.create', 'book.list']);
     expect(byPrefix('character.')).toEqual([
-      'character.create', 'character.list', 'character.update',
+      'character.create', 'character.list', 'character.remove', 'character.update',
     ]);
     // P0-5 补的前缀：timeline（timeline_events 表早已存在，
     // 但此前全仓无代码使用、也没有任何工具暴露 —— 与 character.* 同类缺陷）
@@ -71,7 +71,7 @@ describe('注册', () => {
     expect(byPrefix('world.')).toEqual([
       'world.create', 'world.list', 'world.remove', 'world.update',
     ]);
-    expect(names).toHaveLength(32);
+    expect(names).toHaveLength(33);
   });
 
   it('拒绝重复注册（静默覆盖会让"注册了哪个版本"不可知）', () => {
@@ -124,7 +124,8 @@ describe('注册', () => {
     // P2-3：设定增删改都是写入（⚠ world.remove 也是 —— 删除设定会改变
     //       门禁指纹，等于改变了 Agent 的写作依据，不是无害操作）
     expect(report.WRITE).toEqual([
-      'book.create', 'chapter.create', 'character.create', 'character.update',
+      'book.create', 'chapter.create', 'character.create', 'character.remove',
+      'character.update',
       'project.create', 'project.update', 'timeline.addEvent',
       'world.create', 'world.remove', 'world.update',
     ]);
