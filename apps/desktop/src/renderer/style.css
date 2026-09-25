@@ -85,6 +85,55 @@ body {
 .brand { font-weight: 600; }
 .phase { color: var(--muted); font-size: 12px; }
 .ver { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+/* ── 全页视图（时间线 / 伏笔）── */
+.view { display: flex; flex-direction: column; gap: 12px; }
+.view__head { display: flex; align-items: center; gap: 12px; }
+.view__head h2 { margin: 0; font-size: 15px; }
+.view__body { display: flex; flex-direction: column; gap: 10px; }
+
+/* 账目表格 —— 时间线事件列表 */
+.grid {
+  width: 100%; border-collapse: collapse; font-size: 12px;
+  background: var(--pane); border: 1px solid var(--border); border-radius: 6px;
+}
+.grid th, .grid td {
+  text-align: left; padding: 6px 9px; border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.grid th {
+  color: var(--muted-2); font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .05em;
+}
+.grid tr:last-child td { border-bottom: 0; }
+.grid__num { font-variant-numeric: tabular-nums; color: var(--muted); }
+/* ⚠ "无明确日锚点"的事件要能一眼看出 —— 它们是"不可比较"的来源 */
+.grid__warn { color: var(--warn); }
+
+.card__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.card__title { font-weight: 600; font-size: 13px; }
+.issue-row__msg { flex: 1; }
+.issue-row__meta { color: var(--muted-2); font-size: 11px; }
+
+/* 伏笔列表里的按钮行不要顶上边距（卡片内已有间距） */
+.card .btn-row { margin-top: 8px; }
+
+/* §41 顶栏四要素：项目 / 当前章 / 模型 / Run 状态 */
+.topbar__facts {
+  display: flex; align-items: center; gap: 14px;
+  margin-left: 18px; font-size: 12px; min-width: 0;
+}
+.fact { display: inline-flex; align-items: baseline; gap: 5px; min-width: 0; }
+.fact__k { color: var(--muted-2); font-size: 11px; flex: none; }
+.fact__v {
+  color: var(--fg); font-weight: 600;
+  max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* ⚠ 状态色只用在"需要你注意"的两项（未配置 / 不可用），
+   正常的项保持中性 —— 全是彩色的顶栏等于没有重点 */
+.fact__v--ok { color: var(--ok); }
+.fact__v--warn { color: var(--warn); }
+.fact__v--muted { color: var(--muted); font-weight: 400; }
+
 .theme-toggle {
   height: 26px; padding: 0 11px; font-size: 12px; cursor: pointer;
   color: var(--fg); background: var(--pane-2);
@@ -175,6 +224,9 @@ body {
   color: var(--muted); font-size: 12px;
 }
 .callout--err { border-left-color: var(--err); }
+/* ⚠ warn 变体此前缺失 —— 而"待回收的伏笔"这类提示需要它。
+   缺失时 class 静默无效（浏览器不报错），提示看起来跟普通说明一样。 */
+.callout--warn { border-left-color: var(--warn); }
 
 /* 右栏 */
 .agent h3 { font-size: 12px; color: var(--muted); text-transform: uppercase;
@@ -205,6 +257,11 @@ body {
 .form--rail .form-row { display: block; margin-bottom: 6px; }
 .form--rail .form-label { display: block; min-width: 0; margin-bottom: 2px; font-size: 11px; }
 .form--rail .form-row input { width: 100%; margin-bottom: 0; font-size: 11px; padding: 5px 8px; }
+
+/* 勾选行：复选框与文字并排，别让复选框被上面那条 width:100% 拉满 */
+.form--rail .form-row--check { display: flex; align-items: center; gap: 6px; }
+.form--rail .form-row--check input[type='checkbox'] { width: auto; margin: 0; flex: none; }
+.form--rail .form-label--inline { margin-bottom: 0; cursor: pointer; }
 .form--rail .kv-k { min-width: 74px; font-size: 11px; }
 .form--rail .kv-v { font-size: 11px; }
 .btn-row { display: flex; gap: 8px; margin-top: 12px; }
@@ -254,6 +311,7 @@ body {
 }
 
 /* 一致性检查问题列表（STEP 8） */
+.issue-list { display: flex; flex-direction: column; }
 .issue-row {
   display: flex;
   gap: 8px;
@@ -300,6 +358,10 @@ body {
 }
 .tag--err { background: var(--tag-err-bg); color: var(--tag-err-fg); }
 .tag--warn { background: var(--tag-warn-bg); color: var(--tag-warn-fg); }
+/* 语义标签的其余三档 —— 与 chip 用同一组令牌，避免两套色系 */
+.tag--info { background: var(--chip-info-bg); color: var(--info); border: 1px solid var(--chip-info-bd); }
+.tag--ok { background: var(--chip-ok-bg); color: var(--ok); border: 1px solid var(--chip-ok-bd); }
+.tag--muted { background: var(--pane-2); color: var(--muted); border: 1px solid var(--border); }
 
 /* 门禁预检结果（STEP 8） */
 .perm-line--ok { color: var(--perm-ok-fg); }

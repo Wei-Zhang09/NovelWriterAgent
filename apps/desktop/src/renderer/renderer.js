@@ -14,6 +14,8 @@ import { renderCorpusPanel } from './corpus-panel.js';
 import { renderWorkflowPanel } from './workflow-panel.js';
 import { renderManuscriptEditor } from './manuscript-editor.js';
 import { renderPipeline } from './pipeline.js';
+import { renderTimelineView } from './timeline-view.js';
+import { renderForeshadowView } from './foreshadow-view.js';
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => {
@@ -31,6 +33,10 @@ const state = {
   books: [],
   chapters: [],
   selectedBookId: null,
+  /** 当前正在看的章节（§41 顶栏「当前章」）—— 由 renderChapterDetail 设置 */
+  selectedChapterId: null,
+  /** 当前导航视图（章节详情之外的全页视图：时间线 / 伏笔） */
+  currentView: null,
   tools: [],
   permissions: {},
   lastCall: null,
@@ -50,6 +56,8 @@ const state = {
   /** 当前正在看的工作流（P1 Workflow UI）。切项目后失效，故只存内存 */
   lastWorkflowId: null,
   lastWorkflow: null,
+  /** 模型表单当前正在编辑哪个 profile（保存后保持不动，见 renderModelSettings） */
+  modelFormProfileId: null,
 };
 
 async function call(method, params) {
@@ -117,6 +125,65 @@ async function loadProjects() {
   renderNav(projects);
   renderCenter();
   renderAgent();
+}
+
+/**
+ * §41 顶栏四要素：项目 / 当前章 / 模型 / Run 状态。
+ *
+ * ## ⚠ 每一项都必须来自真实数据，不能是"上次渲染留下的文字"
+ *
+ * 顶栏是**常驻可见**的，所以它错了会一直错 —— 而它显示的三件事
+ * （在用哪个模型、Run 有没有在跑、现在看的是哪一章）恰好都是
+ * "做错了会浪费时间"的信息。比如模型显示已配置但实际没配，
+ * 用户会反复点生成草稿然后困惑于为什么没反应。
+ *
+ * 因此这里每次都用 state 里的真实值重算；取不到就**如实说未配置/
+ * 未选择**，不留上一个值的残影。
+ */
+function renderTopbar() {
+  const set = (id, text, cls) => {
+    const n = $(id);
+    if (!n) return;
+    n.textContent = text;
+    n.className = 'fact__v' + (cls ? ' fact__v--' + cls : '');
+  };
+
+  // ── 项目 ──
+  set('fact-project', state.project?.name ?? '未打开');
+
+  // ── 当前章 ──
+  const ch = state.chapters.find((c) => c.id === state.selectedChapterId);
+  set(
+    'fact-chapter',
+    ch ? `第 ${ch.chapterNumber} 章` : '未选择',
+    ch ? null : 'muted',
+  );
+
+  // ── 模型 ──
+  // ⚠ 显示的是"配置了哪个模型"，不是"能不能连上" ——
+  //   连通性有单独的自检入口（模型面板的测试按钮），混在一起
+  //   会让顶栏的这句话变得不可信。
+  const cfg = state.modelConfig;
+  const writerSlot = cfg?.slots?.writer ?? '';
+  const prof = (cfg?.profiles ?? []).find((x) => x.id === writerSlot);
+  set(
+    'fact-model',
+    cfg?.configured ? (prof?.model ?? writerSlot ?? '已配置') : '未配置',
+    cfg?.configured ? 'ok' : 'warn',
+  );
+
+  // ── Run 状态 ──
+  // ⚠ 来源是 run.status 的 active 列表（真实在跑的 Run），
+  //   不是"上次点过按钮"。
+  const active = state.runStatus?.active ?? [];
+  const ready = state.runStatus?.agentReady === true;
+  if (active.length > 0) {
+    set('fact-run', `运行中 ${active.length}`, 'ok');
+  } else if (!ready) {
+    set('fact-run', '不可用（未配模型）', 'warn');
+  } else {
+    set('fact-run', '空闲', 'muted');
+  }
 }
 
 /**
@@ -190,6 +257,25 @@ function renderNav(projects) {
     nav.append(item);
   }
 
+  // ── §41 / §42：时间线与伏笔各自独立入口 ──
+  // ⚠ 两者都是"账目"视图（看已积累的事实），与章节列表的"工作对象"
+  //   性质不同，所以单独分组而不是混进「章节」里。
+  nav.append(el('div', 'nav-section', '设定与账目'));
+  for (const [key, label, render] of [
+    ['timeline', '时间线', renderTimelineView],
+    ['foreshadow', '伏笔', renderForeshadowView],
+  ]) {
+    const item = el('div', `nav-item nav-item--view${state.currentView === key ? ' nav-item--active' : ''}`);
+    item.dataset.view = key;
+    item.append(el('span', 'nav-label', label));
+    item.addEventListener('click', () => {
+      state.currentView = key;
+      renderNav(projects);
+      renderView(render);
+    });
+    nav.append(item);
+  }
+
   nav.append(el('div', 'nav-section', `章节（${state.chapters.length}）`));
   if (state.chapters.length === 0) nav.append(el('div', 'empty', '还没有章节'));
   for (const c of state.chapters) {
@@ -199,7 +285,15 @@ function renderNav(projects) {
     item.dataset.chapterId = c.id;
     item.append(el('span', 'nav-label', `第 ${c.chapterNumber} 章`));
     item.append(statusChip(c.status));
-    item.addEventListener('click', () => renderChapterDetail(c));
+    item.addEventListener('click', () => {
+      // §41 顶栏「当前章」据此显示 —— 记录的是**正在看的**那一章
+      state.selectedChapterId = c.id;
+      // 离开"账目视图"回到章节详情
+      state.currentView = null;
+      renderNav(projects);
+      renderChapterDetail(c);
+      renderTopbar();
+    });
     nav.append(item);
   }
 }
@@ -488,8 +582,34 @@ function renderModelSettings() {
   //   "请求超时（60000ms）"）。默认给 180 秒。
   const timeoutSec = makeRow('单次请求超时（秒）', '180');
 
+  // ⚠ 「设为全部槽位的默认模型」必须**可见可改**，不能硬编码。
+  //
+  //   原先这里固定发 `useForAllSlots: true` —— 意味着每保存一个 profile
+  //   都会**静默把所有槽位**（architect/writer/reviewer/utility）改指向它。
+  //   第一次配置时这是对的（就是要用它），但一旦存在多个 profile
+  //   （比如"便宜的模型跑 utility、强的跑 writer"），保存第二个就会
+  //   把前一个的槽位全部抢走，且界面上毫无提示。
+  const slotRow = el('div', 'form-row form-row--check');
+  const slotBox = el('input');
+  slotBox.type = 'checkbox';
+  slotBox.id = 'use-for-all-slots';
+  const slotLabel = el('label', 'form-label form-label--inline', '设为全部槽位的默认模型');
+  slotLabel.htmlFor = slotBox.id;
+  slotRow.append(slotBox, slotLabel);
+  box.append(slotRow);
+  // 默认：还没有可用配置或只有一个 profile 时勾上（这正是用户想要的）；
+  // 已经存在多个 profile 时不勾，避免静默抢走别的 profile 的槽位。
+  slotBox.checked = !(cfg?.profiles?.length) || cfg.profiles.length <= 1;
+
   if (cfg?.profiles?.length) {
-    const p = cfg.profiles[0];
+    // ⚠ prefill 要选**用户刚编辑过的那个** profile，不是永远第一个。
+    //
+    //   后端保存时曾把被编辑的 profile 挪到数组末尾（已修），但即便顺序稳定，
+    //   "永远显示第一个"仍然会让编辑第二个 profile 的用户在保存后看到
+    //   表单跳回第一个 —— 像改动丢了。
+    const p =
+      cfg.profiles.find((x) => x.id === state.modelFormProfileId) ?? cfg.profiles[0];
+    state.modelFormProfileId = p.id;
     id.value = p.id;
     endpoint.value = p.endpoint;
     model.value = p.model;
@@ -530,7 +650,8 @@ function renderModelSettings() {
         timeoutMs: (Number(timeoutSec.value) || 180) * 1000,
       },
       apiKey: apiKey.value.length > 0 ? apiKey.value : null,
-      useForAllSlots: true,
+      // 由用户勾选决定，不再硬编码 true（见上方说明）
+      useForAllSlots: slotBox.checked,
     };
     apiKey.value = '';
     const r = await call('model.config.save', payload);
@@ -547,6 +668,8 @@ function renderModelSettings() {
         msg.textContent = `配置已保存，但模型未就绪：${d.rebuildError ?? 'Runtime 未建立'}`
           + ' —— 请检查 endpoint / 模型名是否正确';
       }
+      // 记住刚保存的 profile，重渲染后表单仍停在它上面（否则会跳回第一个）
+      state.modelFormProfileId = d.profileId;
       await loadModelConfig();
       renderCenter();
       renderAgent();
@@ -1295,6 +1418,29 @@ function renderNewChapterForm() {
   return box;
 }
 
+/**
+ * 渲染一个"全页视图"（时间线 / 伏笔）。
+ *
+ * ⚠ 与 renderChapterDetail 的区别：这类视图**不绑定某一章**，
+ *   它是整本书的账目。所以进视图时要清掉 selectedChapterId ——
+ *   否则顶栏还显示"当前章 第 1 章"，而中栏其实在看全书时间线，
+ *   顶栏与内容说的不是一件事。
+ */
+function renderView(render) {
+  const ctr = $('center');
+  ctr.replaceChildren();
+  state.selectedChapterId = null;
+  ctr.append(
+    render({
+      el,
+      invoke: call,
+      state,
+      msg: el('div', 'form-msg'),
+    }),
+  );
+  renderTopbar();
+}
+
 function renderChapterDetail(c) {
   const ctr = $('center');
   ctr.replaceChildren();
@@ -1381,11 +1527,21 @@ function renderAgent() {
   //
   //   ⚠ 用原生 <details>/<summary> 而非自写折叠：原生元素自带
   //     键盘可达性与无障碍语义，自写要额外处理这些且容易漏。
+  // ⚠ 「模型」单独一组、默认展开、排在最前。
+  //
+  //   起因是真实反馈：模型设置原先放在「系统诊断」组里（默认折叠），
+  //   用户启动软件后**找不到模型配置入口**，以为功能没了。
+  //   而当时的 GUI 断言只查"元素在不在 DOM 里" —— 折叠组里的面板
+  //   照样在 DOM 里，所以断言一直通过，缺陷一直存在。
+  //
+  //   模型配置是**一切写作的前提**，不是"诊断时才看"的东西：
+  //   没配模型 → 规划/生成草稿/审稿全部不可用。因此它必须常驻可见。
+  const g0 = panelGroup('模型', true);
   const g1 = panelGroup('写作流程', true);
   const g2 = panelGroup('质量与记忆', false);
   const g3 = panelGroup('检索与上下文', false);
   const g4 = panelGroup('系统诊断', false);
-  a.append(g1, g2, g3, g4);
+  a.append(g0, g1, g2, g3, g4);
 
   // 诊断组：工具与权限（排错用，默认折叠）
   g4.append(el('h3', null, `已注册工具（${state.tools.length}）`));
@@ -2243,8 +2399,8 @@ function renderAgent() {
   const backupMsg = el('div', 'form-msg');
   g3.append(renderBackupPanel({ el, invoke: call, msg: backupMsg }));
 
+  g0.append(renderModelSettings());
   g4.append(renderRuntimePanel());
-  g4.append(renderModelSettings());
 
   g4.append(el('h3', null, '最近一次工具调用'));
   const diag = el('div', 'diag');
@@ -2281,6 +2437,7 @@ async function boot() {
   await loadModelConfig();
   await loadProjects();
   await loadRunStatus();
+  renderTopbar();
 }
 
 // 主题切换按钮 —— 落盘到用户级 prefs.json，重开保留

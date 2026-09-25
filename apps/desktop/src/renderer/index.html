@@ -12,6 +12,15 @@
     <header class="titlebar">
       <span class="brand">NovelWriter Agent</span>
       <span class="phase">v1.0 · 长篇创作</span>
+      <!-- §41 顶栏四要素：项目 / 当前章 / 模型 / Run 状态
+           ⚠ 四项都是「当前状态」，由 renderTopbar() 从真实数据填，
+             不放静态文字 —— 静态文字会与实际状态分叉且没人发现。 -->
+      <span class="topbar__facts" id="topbar">
+        <span class="fact"><span class="fact__k">项目</span><span class="fact__v" id="fact-project">—</span></span>
+        <span class="fact"><span class="fact__k">当前章</span><span class="fact__v" id="fact-chapter">未选择</span></span>
+        <span class="fact"><span class="fact__k">模型</span><span class="fact__v" id="fact-model">未配置</span></span>
+        <span class="fact"><span class="fact__k">Run</span><span class="fact__v" id="fact-run">空闲</span></span>
+      </span>
       <span class="ver" id="ver">—</span>
       <!-- 主题切换：偏好落盘在用户级 prefs.json，重开保留 -->
       <button class="theme-toggle" id="theme" type="button" aria-pressed="false">☾ 暗色</button>

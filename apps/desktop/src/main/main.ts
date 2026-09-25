@@ -597,7 +597,31 @@ function createWindow(): void {
             const modelForm = [...document.querySelectorAll('.form')]
               .find(f => f.querySelector('h3')?.textContent.includes('模型设置'));
             rec('模型设置面板常驻（章节详情打开后仍在）', !!modelForm, '');
+
+            // ⚠⚠ 只查"在不在 DOM 里"是不够的 —— 折叠组里的面板照样在 DOM 里，
+            //   但用户**看不见**。上一轮 STEP 22 分组后模型设置被放进
+            //   「系统诊断」组（默认折叠），用户实测反馈"模型配置 UI 不见了"，
+            //   而旧断言一直通过。可见性必须单独断言。
             if (modelForm) {
+              const closedAncestor = modelForm.closest('details:not([open])');
+              rec('⚠⚠ 模型设置面板对用户**可见**（不在折叠组里）',
+                  closedAncestor === null,
+                  closedAncestor
+                    ? '被折叠在：' + (closedAncestor.querySelector('summary')?.textContent ?? '?')
+                    : '可见');
+            }
+            if (modelForm) {
+              // ⚠ 「设为全部槽位的默认模型」必须**可见可改**。
+              //   原先渲染端硬编码 useForAllSlots:true —— 每保存一个 profile
+              //   就静默把四个槽位全改指向它，界面上毫无提示。
+              const slotBox = modelForm.querySelector('#use-for-all-slots');
+              rec('⚠ 槽位接管开关可见（不再静默抢走槽位）', Boolean(slotBox),
+                  slotBox ? 'type=' + slotBox.type + ' checked=' + slotBox.checked : '缺失');
+              const slotLbl = slotBox
+                ? modelForm.querySelector('label[for="use-for-all-slots"]') : null;
+              rec('⚠ 槽位接管开关有可读标签', Boolean(slotLbl && slotLbl.textContent.length > 4),
+                  slotLbl ? slotLbl.textContent : '无标签');
+
               const labels = [...modelForm.querySelectorAll('.form-label')].map(l => l.textContent);
               rec('含 endpoint / 模型名 / API Key 三项',
                   labels.some(l => l.includes('Endpoint')) &&
@@ -1199,13 +1223,20 @@ function createWindow(): void {
             //   面板平铺时也不会报错，但用户体验是滚不到底。
             const groups = [...document.querySelectorAll('.panel-group')];
             rec('⚠ 右栏已分组（不再是 14 个面板平铺）',
-                groups.length === 4, 'groups=' + groups.length);
+                groups.length === 5, 'groups=' + groups.length);
 
+            // ⚠ 默认展开「模型」与「写作流程」两组。
+            //
+            //   模型配置**必须可见**：它是所有写作动作的前提，没配模型
+            //   规划/生成草稿/审稿全部不可用。曾经它被折叠在「系统诊断」里，
+            //   用户实测反馈"模型配置 UI 不见了"。
+            //   写作流程是日常唯一会用的一组，保持展开。
             const openGroups = groups.filter(g => g.hasAttribute('open'));
-            rec('⚠ 默认只展开「写作流程」一组',
-                openGroups.length === 1 &&
-                (openGroups[0].querySelector('summary')?.textContent ?? '').includes('写作流程'),
-                'open=' + openGroups.map(g => g.querySelector('summary')?.textContent).join('、'));
+            const openNames = openGroups.map(g => g.querySelector('summary')?.textContent ?? '');
+            rec('⚠ 默认展开「模型」与「写作流程」（模型配置必须看得见）',
+                openNames.length === 2 &&
+                openNames.includes('模型') && openNames.includes('写作流程'),
+                'open=' + openNames.join('、'));
 
             // ⚠ 原生 details 自带无障碍语义与键盘可达性 —— 断言用的是原生元素
             rec('⚠ 折叠用原生 details/summary（自带无障碍与键盘可达）',
@@ -1214,7 +1245,11 @@ function createWindow(): void {
                 groups.map(g => g.tagName).join(','));
 
             // 写作流程组里应有规划/正文/审稿/提交
-            const workflow = openGroups[0]?.textContent ?? '';
+            // ⚠ 按组名取，不能取 openGroups[0] —— 组的顺序变了，
+            //   按下标取会拿到「模型」组的内容（实测踩到）。
+            const wfGroup = groups.find(g =>
+              (g.querySelector('summary')?.textContent ?? '').includes('写作流程'));
+            const workflow = wfGroup?.textContent ?? '';
             rec('「写作流程」含规划/正文/审稿/提交',
                 ['章节规划', '正文生成', '审稿', '提交为正式章节'].every(k => workflow.includes(k)),
                 workflow.slice(0, 60).replace(/\s+/g, ' '));
@@ -1315,6 +1350,59 @@ function createWindow(): void {
               // ⚠ 未提交时必须明确写出来（作者要一眼看出这不是正史）
               const sum = bar?.querySelector('.pipeline__sum')?.textContent ?? '';
               rec('⚠ 未提交状态明确标出', sum.includes('未提交'), sum.slice(0, 40));
+            }
+
+            // 6f) §41 顶栏四要素 + 时间线/伏笔独立入口
+            {
+              // ── 顶栏四要素 ──
+              for (const [id, label] of [['fact-project', '项目'], ['fact-chapter', '当前章'],
+                                          ['fact-model', '模型'], ['fact-run', 'Run']]) {
+                const n = $(id);
+                rec('§41 顶栏含「' + label + '」', Boolean(n),
+                    n ? n.textContent.slice(0, 30) : '缺失');
+              }
+              // ⚠ 顶栏必须显示**真实**项目名，不是占位符
+              const projText = $('fact-project')?.textContent ?? '';
+              rec('⚠ 顶栏「项目」显示真实项目名（非占位符）',
+                  projText.length > 0 && projText !== '—' && projText !== '未打开', projText);
+              // ⚠ 本章未配模型 → 必须明说未配置，不能空着
+              const modelText = $('fact-model')?.textContent ?? '';
+              rec('⚠ 顶栏「模型」未配置时明确显示（不空着）',
+                  modelText.length > 0, 'model=' + modelText);
+
+              // ── 时间线 / 伏笔各自独立入口 ──
+              const viewItems = [...document.querySelectorAll('.nav-item--view')];
+              rec('⚠ 左栏有时间线/伏笔独立入口（此前后端有、UI 无入口）',
+                  viewItems.length === 2, 'views=' + viewItems.length);
+              const viewNames = viewItems.map(n => n.dataset.view);
+              rec('两个入口分别是 timeline 与 foreshadow',
+                  viewNames.join(',') === 'timeline,foreshadow', viewNames.join(' '));
+
+              // 点进时间线：必须真的渲染出视图（不是空壳入口）
+              const tlItem = viewItems.find(n => n.dataset.view === 'timeline');
+              tlItem?.click();
+              await sleep(900);
+              const tlText = $('center')?.textContent ?? '';
+              rec('⚠ 点「时间线」真的渲染出视图（非空壳入口）',
+                  tlText.includes('时间线') && (tlText.includes('事件总数') || tlText.includes('读取失败')),
+                  tlText.slice(0, 50).replace(/\s+/g, ' '));
+              // ⚠ 进账目视图后顶栏「当前章」应清空 —— 否则顶栏与中栏说的不是一件事
+              rec('⚠ 进账目视图后顶栏「当前章」清空（顶栏与内容一致）',
+                  ($('fact-chapter')?.textContent ?? '') === '未选择',
+                  '当前章=' + ($('fact-chapter')?.textContent ?? ''));
+
+              // 点进伏笔
+              const fsItem = viewItems.find(n => n.dataset.view === 'foreshadow');
+              fsItem?.click();
+              await sleep(900);
+              const fsText = $('center')?.textContent ?? '';
+              rec('⚠ 点「伏笔」真的渲染出视图（非空壳入口）',
+                  fsText.includes('伏笔') && (fsText.includes('读取失败') || fsText.includes('还没有伏笔') || fsText.includes('总计')),
+                  fsText.slice(0, 50).replace(/\s+/g, ' '));
+
+              // 回到章节详情，避免影响后续断言
+              chapterItems[0]?.click();
+              await sleep(700);
             }
 
             // 6d) 主题切换 + 偏好持久化（浅/暗主题、当前书）

@@ -3701,7 +3701,19 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       },
     };
 
-    const profiles = [...(existing?.profiles ?? []).filter((x) => x.id !== next.id), next];
+    // ⚠ 更新已存在的 profile 时**保持原位置**，不能"删掉再追加"。
+    //
+    //   原来的 `[...filter(id !== next.id), next]` 会把被编辑的 profile
+    //   挪到数组末尾。渲染端 prefill 取 `profiles[0]`，于是用户改完
+    //   profile A 点保存后，表单会跳到 profile B —— 看起来像"我的修改
+    //   保存到了别的 profile 上"，或者"刚填的东西被覆盖了"。
+    //   实测：A、B 两个 profile，编辑 A 保存 → 表单显示 B。
+    const prev = existing?.profiles ?? [];
+    const at = prev.findIndex((x) => x.id === next.id);
+    const profiles =
+      at >= 0
+        ? prev.map((x, i) => (i === at ? next : x))   // 原位替换
+        : [...prev, next];                            // 新增才追加
     const slots: Record<ModelSlot, string> = params.useForAllSlots
       ? { architect: next.id, writer: next.id, reviewer: next.id, utility: next.id }
       : {
@@ -4058,6 +4070,60 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       blockingCount: report?.blockingCount ?? 0,
       warningCount: report?.warningCount ?? 0,
       limitations: report?.limitations ?? [],
+    };
+  },
+
+  /**
+   * 伏笔列表（§41 导航「伏笔」入口；施工文档 §42 页面清单）。
+   *
+   * ⚠ 此前只有仓储、**没有任何 IPC** —— 后端建好了但 UI 够不到，
+   *   与 `character.create`（存储层完整、工具缺失）、`detectProseIssues`
+   *   （写了没接线）是同一类缺陷：底层齐备，使用者看不见。
+   */
+  'foreshadow.list': (params: { bookId?: string }) => {
+    const p = requireProject();
+    const bookId = requireBookId(params.bookId);
+    const rows = p.repos.foreshadowing.listByBook(bookId);
+    return {
+      bookId,
+      count: rows.length,
+      items: rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        status: r.status,
+        tier: r.tier,
+        importance: r.importance,
+        setupChapter: r.setup_chapter,
+        expectedPayoffChapter: r.expected_payoff_chapter,
+        description: r.description,
+        updatedAt: r.updated_at,
+      })),
+    };
+  },
+
+  /**
+   * 推进伏笔状态（§41 伏笔入口的**唯一**写操作）。
+   *
+   * ⚠ 合法性由仓储的六态机判定，非法推进抛错而不是静默接受 ——
+   *   伏笔账目失真属于"事后最难修复"的数据，静默接受会让它悄悄烂掉。
+   *   这里**不重复实现**状态机，只把仓储的判断透出去。
+   */
+  'foreshadow.advance': (params: {
+    foreshadowId: string;
+    to: 'PLANNED' | 'PLANTED' | 'DEVELOPING' | 'READY' | 'PAID_OFF' | 'ABANDONED';
+    chapter?: number;
+  }) => {
+    const p = requireProject();
+    const row = p.repos.foreshadowing.advance(
+      params.foreshadowId,
+      params.to,
+      params.chapter === undefined ? {} : { chapter: params.chapter },
+    );
+    return {
+      id: row.id,
+      name: row.name,
+      status: row.status,
+      updatedAt: row.updated_at,
     };
   },
 
