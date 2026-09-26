@@ -92,6 +92,106 @@ export interface NovelWorkflowServices {
     }[];
   }>;
 
+  /**
+   * ── 开书向导（W7 接线）──────────────────────────────────────
+   *
+   * ⚠⚠ 这四个方法是 W2–W5 生成器**唯一的**生产入口。
+   *
+   * W7 的端到端测试实测发现：四个生成器（ConceptGenerator /
+   * SettingsGenerator / OutlineGenerator / ChapterOutlineGenerator）
+   * 在 `apps/` 里**零引用**，且没有任何地方调用 `saveDraft` / `saveEdited`。
+   *
+   * 后果是**静默的**：向导能"生成"但无法落库 → 四步永远是 NOT_STARTED →
+   * 门禁判 NOT_USED → **永远放行**。作者以为走完了向导，
+   * 而门禁从没拦过，prompt 也从没读到过前置内容。
+   *
+   * 这与 W6 修的是同一类缺陷（能力已存在、路径没接上），
+   * 只是这一层更靠前：W6 修的是"门禁没人执行"，这里修的是
+   * "生成器没人调用"。规则 33：分阶段测试查不出阶段之间的接线缺失。
+   *
+   * ⚠ 每个方法都**自己落库**（saveDraft/saveEdited），不把落库交给调用方 ——
+   *   否则又会出现"某条路径只生成不保存"。
+   */
+  readonly blueprint: {
+    /** Phase 1：生成选题方向（不落库 —— 候选要等作者选） */
+    readonly generateConcept: (input: {
+      readonly bookId: string;
+      readonly params: Record<string, unknown>;
+    }) => Promise<{
+      readonly candidates: readonly unknown[];
+      readonly issues?: readonly string[];
+      readonly attempts: number;
+    }>;
+
+    /** 作者选定一个候选 → 落库为 CONCEPT 步的草稿 */
+    readonly chooseConcept: (input: {
+      readonly bookId: string;
+      readonly candidate: unknown;
+    }) => Promise<{ readonly step: string; readonly status: string }>;
+
+    /** Phase 2：生成核心设定 + 角色，落库为 SETTINGS 步草稿 */
+    readonly generateSettings: (input: {
+      readonly bookId: string;
+      readonly params: Record<string, unknown>;
+    }) => Promise<{
+      readonly characters: readonly unknown[];
+      readonly worldEntities: readonly unknown[];
+      readonly conflicts: readonly unknown[];
+      readonly issues?: readonly string[];
+      readonly attempts: number;
+    }>;
+
+    /**
+     * 把作者的决定落进正式表（characters / world_entities）。
+     *
+     * ⚠ 这是"确认"之前最后一步，且**只执行作者的决定，不做决定**。
+     */
+    readonly materializeSettings: (input: {
+      readonly bookId: string;
+      readonly output: unknown;
+      readonly decisions: Record<string, string>;
+      readonly knownConflicts: readonly string[];
+    }) => Promise<{
+      readonly charactersCreated: readonly string[];
+      readonly worldCreated: readonly string[];
+      readonly skipped: readonly string[];
+      readonly renamed: readonly { readonly from: string; readonly to: string }[];
+      readonly vanished: readonly string[];
+      readonly newConflicts: readonly string[];
+    }>;
+
+    /** Phase 3：生成卷级大纲，**整体替换**落库 */
+    readonly generateOutline: (input: {
+      readonly bookId: string;
+      readonly params: Record<string, unknown>;
+    }) => Promise<{
+      readonly volumes: readonly unknown[];
+      readonly issues?: readonly string[];
+      readonly attempts: number;
+    }>;
+
+    /** Phase 3：生成逐章细纲（分批），按章 upsert 落库 */
+    readonly generateChapterOutlines: (input: {
+      readonly bookId: string;
+      readonly startChapter: number;
+      readonly endChapter: number;
+      readonly params: Record<string, unknown>;
+    }) => Promise<{
+      readonly outlines: readonly unknown[];
+      readonly created: number;
+      readonly updated: number;
+      readonly issues?: readonly string[];
+      readonly attempts: number;
+    }>;
+
+    /** 作者编辑某一步的内容（存 edited_json，不丢 AI 原稿） */
+    readonly saveStep: (input: {
+      readonly bookId: string;
+      readonly step: string;
+      readonly content: unknown;
+    }) => Promise<{ readonly step: string; readonly status: string }>;
+  };
+
   readonly plan: (input: {
     chapterId: string;
     chapterNumber: number;

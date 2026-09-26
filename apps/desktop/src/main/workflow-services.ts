@@ -45,6 +45,15 @@ import { ManuscriptRepository } from '@nwa/storage';
 import type { ManuscriptVersionSource } from '@nwa/storage';
 import type { ToolRegistry, NovelWorkflowServices } from '@nwa/harness';
 import { pickCommitSource } from '@nwa/harness';
+import {
+  ConceptGenerator,
+  SettingsGenerator,
+  OutlineGenerator,
+  ChapterOutlineGenerator,
+  materializeSettings,
+  detectSettingsConflicts,
+} from '@nwa/writing';
+import { assertBlueprintStep } from '@nwa/storage';
 import type { CommitSourceKey } from '@nwa/harness';
 import { hashOfFile } from '@nwa/harness';
 import { evaluateSettingsGate, hashSettings, renderWorldRulesForReview } from '@nwa/core';
@@ -135,6 +144,41 @@ function adminContext(deps: WorkflowServicesDeps, runId: string): ToolContext {
     callerPermission: 'ADMIN',
     emit: () => {},
   } as unknown as ToolContext;
+}
+
+/**
+ * 取全书预计章数（卷纲/细纲的**总量锚点**）。
+ *
+ * ⚠ 这是 Phase 1 选题里作者确认过的数字，是卷的章号范围必须自洽的基准。
+ *   **绝不编造**：取不到就明确报错。
+ *   若给一个假的总数，模型会按它划分卷范围 —— 而那个总数是编的，
+ *   于是"200 章"这条不变量建立在虚构之上，且没有任何地方能发现。
+ *   （llm-generation-pipelines 规则 17：确定性字段由代码算，
+ *     取不到就是 absent，不给默认值。）
+ */
+function needEstimatedChapters(
+  deps: WorkflowServicesDeps,
+  bookId: string,
+  params: Record<string, unknown>,
+): number {
+  // ① 调用方显式指定
+  if (params['estimatedChapters']) {
+    const n = Number(params['estimatedChapters']);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  }
+  // ② 从 Phase 1 选定的选题里取（作者确认过的那个数）
+  const concept = deps.repos.blueprint.effectiveContent(
+    deps.repos.blueprint.findStep(bookId, 'CONCEPT'),
+  ) as { estimatedChapters?: unknown } | null;
+  const fromConcept = concept?.estimatedChapters;
+  if (typeof fromConcept === 'number' && fromConcept > 0) return fromConcept;
+
+  throw new AppError(
+    ErrorCode.BLUEPRINT_NOT_CONFIRMED,
+    '无法确定全书预计章数 —— 请先在向导第一步选定选题方向（其中含预计章数），' +
+      '或显式指定 estimatedChapters。这个数字是卷纲章号范围的基准，不能猜。',
+    { details: { bookId, step: 'CONCEPT' } },
+  );
 }
 
 function needModel(deps: WorkflowServicesDeps, what: string): WorkflowModel {
@@ -596,6 +640,249 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
     },
 
     // ── 3. 规划 ──
+    // ── 开书向导（W7 接线）──────────────────────────────────
+    //
+    // ⚠⚠ 这一段是 W2–W5 生成器**唯一的**生产入口。
+    //   没有它，向导"能生成但不能落库" → 四步永远 NOT_STARTED →
+    //   门禁判 NOT_USED → 永远放行。作者以为走完了向导，
+    //   而门禁从没拦过，prompt 也从没读到过前置内容。
+    blueprint: {
+      async generateConcept(input) {
+        const model = needModel(deps, '生成选题方向');
+        const book = deps.repos.books.get(input.bookId);
+        // ⚠ 注入：改用未导入的生成器名（模拟"生成器没有生产入口"）
+        const gen = new ConceptGenerator({
+          structured: (req) => model.structured('architect', req) as never,
+          logger: log.child('concept'),
+        });
+        const res = await gen.generate({
+          ...(input.params['desiredEmotion']
+            ? { desiredEmotion: String(input.params['desiredEmotion']) }
+            : {}),
+          ...(input.params['strengths'] ? { strengths: String(input.params['strengths']) } : {}),
+          ...(input.params['reference'] ? { reference: String(input.params['reference']) } : {}),
+          ...(input.params['existingIdea']
+            ? { existingIdea: String(input.params['existingIdea']) }
+            : {}),
+          ...(input.params['genre'] ? { genre: String(input.params['genre']) } : {}),
+          bookTitle: book.title,
+        });
+        if (!res.ok || !res.output) {
+          throw new AppError(
+            ErrorCode.MODEL_STRUCTURED_EMPTY,
+            res.error?.message ?? '选题方向生成失败',
+            { details: { issues: res.issues ?? [] } },
+          );
+        }
+        // ⚠ 不落库：候选要等作者选（用户诉求「再由用户进行选择」）
+        return {
+          candidates: res.output.candidates,
+          ...(res.issues ? { issues: res.issues } : {}),
+          attempts: res.attempts,
+        };
+      },
+
+      async chooseConcept(input) {
+        // ⚠ 作者选定 → 存 draft（不存 edited：这是 AI 原稿，作者还没改）
+        const row = deps.repos.blueprint.saveDraft(input.bookId, 'CONCEPT', input.candidate);
+        log.info('选题方向已选定', { bookId: input.bookId });
+        return { step: row.step, status: row.status };
+      },
+
+      async generateSettings(input) {
+        const model = needModel(deps, '生成核心设定');
+        // ⚠ 依赖 CONCEPT 步：Phase 2 必须围绕作者选定的方向，
+        //   否则生成出来的设定与选题无关（作者会以为是模型跑偏）
+        const conceptRow = deps.repos.blueprint.findStep(input.bookId, 'CONCEPT');
+        const concept = deps.repos.blueprint.effectiveContent(conceptRow);
+        if (!concept) {
+          throw new AppError(
+            ErrorCode.BLUEPRINT_NOT_CONFIRMED,
+            '还没有选定选题方向 —— 请先在向导第一步生成并选择一个方向',
+            { details: { bookId: input.bookId, step: 'CONCEPT' } },
+          );
+        }
+        const gen = new SettingsGenerator({
+          structured: (req) => model.structured('architect', req) as never,
+          logger: log.child('settings'),
+        });
+        // 作者已手写的角色/设定要传进去（避免模型提议同名项）
+        // ⚠ 形状是 {name, summary} —— 传进去让模型"别重复提议这些名字"。
+        //   光靠提示词不够（模型仍可能重复），所以冲突检出是必需的机制。
+        const existingCharacters = deps.repos.characters.listByBook(input.bookId).map((c) => ({
+          name: c.name,
+          summary: c.role ?? c.current_status ?? '',
+        }));
+        const existingWorld = deps.repos.world.listByBook(input.bookId).map((w) => ({
+          name: w.name,
+          summary: w.description ?? '',
+        }));
+
+        const res = await gen.generate({
+          concept: concept as never,
+          bookTitle: deps.repos.books.get(input.bookId).title,
+          existingCharacters,
+          existingWorld,
+        });
+        if (!res.ok || !res.output) {
+          throw new AppError(
+            ErrorCode.MODEL_STRUCTURED_EMPTY,
+            res.error?.message ?? '核心设定生成失败',
+            { details: { issues: res.issues ?? [] } },
+          );
+        }
+        // ⚠ 落库为草稿：作者要逐条决定冲突之后才物化进正式表
+        deps.repos.blueprint.saveDraft(input.bookId, 'SETTINGS', res.output);
+        // ⚠ 冲突**现算**（SettingsOutput 里没有 conflicts 字段）：
+        //   作者要逐条决定的就是这些。不传给界面的话，
+        //   物化时会因"决定缺失"而保守跳过 —— 看起来像"生成成功但没落库"。
+        const conflicts = detectSettingsConflicts(res.output, {
+          characters: existingCharacters,
+          world: existingWorld,
+        });
+        return {
+          characters: res.output.characters,
+          worldEntities: res.output.worldEntities,
+          conflicts,
+          ...(res.issues ? { issues: res.issues } : {}),
+          attempts: res.attempts,
+        };
+      },
+
+      async materializeSettings(input) {
+        // ⚠ 只执行作者的决定，不做决定（决定权在作者）
+        const r = materializeSettings(deps.repos, {
+          bookId: input.bookId,
+          output: input.output as never,
+          decisions: input.decisions as never,
+          knownConflicts: input.knownConflicts,
+        });
+        log.info('设定已物化进正式表', {
+          bookId: input.bookId,
+          characters: r.charactersCreated.length,
+          world: r.worldCreated.length,
+          skipped: r.skipped.length,
+          vanished: r.vanished.length,
+          newConflicts: r.newConflicts.length,
+        });
+        return {
+          charactersCreated: r.charactersCreated,
+          worldCreated: r.worldCreated,
+          skipped: r.skipped,
+          renamed: r.renamed,
+          vanished: r.vanished,
+          newConflicts: r.newConflicts,
+        };
+      },
+
+      async generateOutline(input) {
+        const model = needModel(deps, '生成卷级大纲');
+        const gen = new OutlineGenerator({
+          structured: (req) => model.structured('architect', req) as never,
+          logger: log.child('outline'),
+        });
+        // 设定从正式表现取（那才是 prompt 读的）
+        const res = await gen.generate({
+          settings: {
+            logline: String(input.params['logline'] ?? ''),
+            coreConflict: String(input.params['coreConflict'] ?? ''),
+            characters: deps.repos.characters
+              .listByBook(input.bookId)
+              .map((c) => ({ name: c.name, role: c.role })),
+            worldEntities: deps.repos.world
+              .listByBook(input.bookId)
+              .map((w) => ({ name: w.name, description: w.description ?? '' })),
+          },
+          estimatedChapters: needEstimatedChapters(deps, input.bookId, input.params),
+          bookTitle: deps.repos.books.get(input.bookId).title,
+        });
+        if (!res.ok || !res.output) {
+          throw new AppError(
+            ErrorCode.MODEL_STRUCTURED_EMPTY,
+            res.error?.message ?? '卷级大纲生成失败',
+            { details: { issues: res.issues ?? [] } },
+          );
+        }
+        // ⚠ 卷**整体替换**（章号范围是全局不变量）—— 但已有卷时必须显式声明。
+        //   首次生成时库里是空的，所以 replaceExisting: true 是安全的；
+        //   重新生成会覆盖作者的逐卷修改，故记日志让这件事可审计。
+        const had = deps.repos.volumes.countByBook(input.bookId);
+        deps.repos.volumes.replaceAll(input.bookId, res.output, { replaceExisting: had > 0 });
+        if (had > 0) {
+          log.warn('卷级大纲被整体替换（原卷与作者的逐卷修改已覆盖）', {
+            bookId: input.bookId,
+            previousVolumes: had,
+            newVolumes: res.output.volumes.length,
+          });
+        }
+        deps.repos.blueprint.saveDraft(input.bookId, 'OUTLINE', res.output);
+        return {
+          volumes: res.output.volumes,
+          ...(res.issues ? { issues: res.issues } : {}),
+          attempts: res.attempts,
+        };
+      },
+
+      async generateChapterOutlines(input) {
+        const model = needModel(deps, '生成逐章细纲');
+        const gen = new ChapterOutlineGenerator({
+          structured: (req) => model.structured('architect', req) as never,
+          logger: log.child('detail'),
+        });
+        const book = deps.repos.books.get(input.bookId);
+        const res = await gen.generate({
+          settings: {
+            logline: String(input.params['logline'] ?? ''),
+            coreConflict: String(input.params['coreConflict'] ?? ''),
+            // ⚠ 这个 request 的字段是**可选**（`role?: string`），
+            //   而 DB 给的是 `string | null` —— null 要转成 undefined，
+            //   否则类型不匹配（null 是"明确没有"，undefined 是"没提供"）。
+            characters: deps.repos.characters.listByBook(input.bookId).map((c) => ({
+              name: c.name,
+              ...(c.role !== null ? { role: c.role } : {}),
+            })),
+            worldEntities: deps.repos.world.listByBook(input.bookId).map((w) => ({
+              name: w.name,
+              ...(w.description !== null ? { description: w.description } : {}),
+            })),
+          },
+          startChapter: input.startChapter,
+          endChapter: input.endChapter,
+          ...(input.params['estimatedChapters']
+            ? { estimatedChapters: Number(input.params['estimatedChapters']) }
+            : {}),
+          bookTitle: book.title,
+        });
+        if (!res.ok || !res.output) {
+          throw new AppError(
+            ErrorCode.MODEL_STRUCTURED_EMPTY,
+            res.error?.message ?? '逐章细纲生成失败',
+            { details: { issues: res.issues ?? [] } },
+          );
+        }
+        // ⚠ 按章 upsert（分批不互相覆盖 —— 与卷相反）
+        const w = deps.repos.chapterOutlines.upsertBatch(input.bookId, res.output);
+        deps.repos.blueprint.saveDraft(input.bookId, 'DETAIL', res.output);
+        return {
+          outlines: res.output.outlines,
+          created: w.created,
+          updated: w.updated,
+          ...(res.issues ? { issues: res.issues } : {}),
+          attempts: res.attempts,
+        };
+      },
+
+      async saveStep(input) {
+        // ⚠ 存 edited（不覆盖 draft）—— 作者点"重新生成"时不能丢掉自己改过的内容
+        const row = deps.repos.blueprint.saveEdited(
+          input.bookId,
+          assertBlueprintStep(input.step),
+          input.content,
+        );
+        return { step: row.step, status: row.status };
+      },
+    },
+
     async plan(input) {
       const ch = needChapter(deps, input.chapterId);
       // ⚠ 设定门禁（P2-3）：在"开始动脑"这一步就拦，而不是等写完再拦

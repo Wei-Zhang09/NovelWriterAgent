@@ -39,6 +39,7 @@ import {
   evaluateBookBlueprintGate,
   blueprintStateOf,
   confirmBookBlueprint,
+  assertBlueprintStep,
   ensureBookDirs,
   filterSkillsByGenre,
   migrateLegacyLayout,
@@ -92,6 +93,7 @@ import {
   summarizeStages,
 } from '@nwa/harness';
 import { createWorkflowServices, type WorkflowModel } from './workflow-services.js';
+import type { NovelWorkflowServices } from '@nwa/harness';
 import {
   PatternMiner,
   PatternStore,
@@ -155,6 +157,14 @@ interface OpenProject {
   runtime: AgentRuntime | null;
   /** FTS 索引器（补缺口：检索可用） */
   readonly fts: FtsIndex;
+  /**
+   * 工作流服务（含开书向导的生成入口，W7）。
+   *
+   * ⚠ 此前 services 是**内联创建后即丢弃**的 —— 只有工作流引擎拿到它。
+   *   于是向导的生成方法在 IPC 层**够不着**（没有引用），
+   *   作者在界面上无法触发任何向导生成。
+   */
+  services: NovelWorkflowServices;
 }
 
 let opened: OpenProject | null = null;
@@ -179,7 +189,8 @@ let opened: OpenProject | null = null;
  */
 let encryptionAvailable: boolean | null = null;
 
-/** main 在启动时通过 event 告知加密可用性 *//**
+/** main 在启动时通过 event 告知加密可用性 */
+/**
  * 计划工具的门禁断言（W6 开书向导）。
  *
  * ⚠ 与 `workflow-services` 里的 `assertBlueprintGate` **同一判定**，
@@ -702,13 +713,17 @@ function toolContext(callerPermission: ToolContext['callerPermission'] = 'ADMIN'
  */
 const workflowEngines = new Map<string, WorkflowEngine>();
 
-function buildWorkflowEngine(p: OpenProject): WorkflowEngine {
-  const repo = new WorkflowRepository(p.db, logger.child('workflow-repo'));
-  const engine = new WorkflowEngine({
-    repo,
-    events: p.events,
-    logger: logger.child('workflow'),
-  });
+/**
+ * 建工作流服务（W7）。
+ *
+ * ⚠ 抽成独立函数是必需的：向导 IPC 与工作流引擎**都要**它，
+ *   而 buildWorkflowEngine 是懒调用（只在启动工作流时）。
+ *   若只在 engine 里建，向导在没跑工作流时就用不了。
+ *
+ * ⚠ 只建一次并挂在 `p.services` 上：建两份会让向导生成用的 repos
+ *   与工作流用的不是同一套对象（当前 repos 无缓存，但这是靠不住的假设）。
+ */
+function createWorkflowServicesFor(p: OpenProject): NovelWorkflowServices {
   const model: WorkflowModel | null = p.runtime
     ? {
         plannerStructured: (req) => p.runtime!.plannerStructured(req as never),
@@ -716,10 +731,7 @@ function buildWorkflowEngine(p: OpenProject): WorkflowEngine {
         completeText: (slot, req) => p.runtime!.completeText(slot as never, req as never),
       }
     : null;
-
-  engine.registerAll(
-    createNovelWorkflowStages(
-      createWorkflowServices({
+  return createWorkflowServices({
         dir: p.dir,
         db: p.db,
         repos: p.repos,
@@ -785,9 +797,23 @@ function buildWorkflowEngine(p: OpenProject): WorkflowEngine {
             committed: rec.ok !== false,
           };
         },
-      }),
-    ),
-  );
+  });
+}
+
+/**
+ * 建工作流引擎（复用已建好的 services）。
+ *
+ * ⚠ 必须复用 `p.services` —— 若这里再建一份，向导生成与工作流会
+ *   持有两套不同的服务对象（今天 repos 无缓存所以看不出问题，
+ *   但那是靠不住的假设；且未来任何一处加缓存都会变成静默分叉）。
+ */
+function buildWorkflowEngine(p: OpenProject): WorkflowEngine {
+  const engine = new WorkflowEngine({
+    repo: new WorkflowRepository(p.db, logger.child('workflow-repo')),
+    events: p.events,
+    logger: logger.child('workflow'),
+  });
+  engine.registerAll(createNovelWorkflowStages(p.services));
   return engine;
 }
 
@@ -989,8 +1015,19 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     }
 
     const events = new EventBus({ runs: repos.runs, logger: logger.child('events') });
-    const project: OpenProject = { dir, db, repos, tools, events, runtime: null, fts };
+    // ⚠⚠ services 必须在**打开项目时**就建好，不能等 buildWorkflowEngine。
+    //   实测：buildWorkflowEngine 只在**启动工作流**时懒调用（两处），
+    //   而向导 IPC（blueprint.generate*）在没跑工作流时也会被调用 ——
+    //   若 services 那时是 undefined，向导一用就崩，且崩在"生成"这一步，
+    //   看起来像模型坏了。
+    const project = { dir, db, repos, tools, events, runtime: null, fts } as OpenProject;
+    // ⚠⚠ 顺序有讲究：**先建 runtime，再建 services**。
+    //   createWorkflowServicesFor 会读 `p.runtime` 来决定模型网关，
+    //   若反了，services 拿到的永远是 null —— 向导一用就报
+    //   "尚未配置模型"，而模型其实配好了（指向错误的排查方向）。
     project.runtime = buildRuntime(project);
+    // 建一次，工作流引擎复用同一个（两份会让向导与工作流用不同缓存）
+    project.services = createWorkflowServicesFor(project);
     opened = project;
     logger.info('项目已打开', { dir, tools: tools.list().length, agentReady: project.runtime !== null });
 
@@ -1234,6 +1271,105 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const row = p.repos.books.setBlueprintGate(params.bookId, params.enabled);
     logger.info('开书向导门禁已切换', { bookId: params.bookId, enabled: params.enabled });
     return { bookId: row.id, gateEnabled: row.blueprint_gate_enabled === 1 };
+  },
+
+  // ── 开书向导：生成与编辑（W7 接线）────────────────────────
+  //
+  // ⚠⚠ 这一段是 W2–W5 生成器**唯一**的 UI 可达路径。
+  //   W7 端到端测试实测发现：四个生成器在 apps/ 里零引用 ——
+  //   也就是说向导"能生成但无法落库"，四步永远 NOT_STARTED，
+  //   门禁判 NOT_USED → **永远放行**，prompt 也永远读不到前置内容。
+  //   规则 33：分阶段测试查不出阶段之间的接线缺失，只有按文档顺序
+  //   真的跑一遍才发现。
+
+  /** Phase 1：生成选题方向（不落库 —— 候选要等作者选） */
+  'blueprint.generateConcept': async (params: { bookId: string; params?: Record<string, unknown> }) => {
+    const p = requireProject();
+    return p.services.blueprint.generateConcept({
+      bookId: params.bookId,
+      params: params.params ?? {},
+    });
+  },
+
+  /** 作者选定一个候选 → 落库为 CONCEPT 步草稿 */
+  'blueprint.chooseConcept': async (params: { bookId: string; candidate: unknown }) => {
+    const p = requireProject();
+    return p.services.blueprint.chooseConcept({
+      bookId: params.bookId,
+      candidate: params.candidate,
+    });
+  },
+
+  /** Phase 2：生成核心设定 + 角色（落库为草稿，等作者逐条决定） */
+  'blueprint.generateSettings': async (params: { bookId: string; params?: Record<string, unknown> }) => {
+    const p = requireProject();
+    return p.services.blueprint.generateSettings({
+      bookId: params.bookId,
+      params: params.params ?? {},
+    });
+  },
+
+  /** 把作者对冲突的决定落进正式表（characters / world_entities） */
+  'blueprint.materializeSettings': async (params: {
+    bookId: string;
+    output: unknown;
+    decisions: Record<string, string>;
+    knownConflicts: string[];
+  }) => {
+    const p = requireProject();
+    return p.services.blueprint.materializeSettings({
+      bookId: params.bookId,
+      output: params.output,
+      decisions: params.decisions,
+      knownConflicts: params.knownConflicts,
+    });
+  },
+
+  /** Phase 3：生成卷级大纲（整体替换落库） */
+  'blueprint.generateOutline': async (params: { bookId: string; params?: Record<string, unknown> }) => {
+    const p = requireProject();
+    return p.services.blueprint.generateOutline({
+      bookId: params.bookId,
+      params: params.params ?? {},
+    });
+  },
+
+  /** Phase 3：生成逐章细纲（分批，按章 upsert） */
+  'blueprint.generateChapterOutlines': async (params: {
+    bookId: string;
+    startChapter: number;
+    endChapter: number;
+    params?: Record<string, unknown>;
+  }) => {
+    const p = requireProject();
+    return p.services.blueprint.generateChapterOutlines({
+      bookId: params.bookId,
+      startChapter: params.startChapter,
+      endChapter: params.endChapter,
+      params: params.params ?? {},
+    });
+  },
+
+  /** 作者编辑某一步（存 edited，不覆盖 AI 原稿） */
+  'blueprint.saveStep': async (params: { bookId: string; step: string; content: unknown }) => {
+    const p = requireProject();
+    return p.services.blueprint.saveStep({
+      bookId: params.bookId,
+      step: params.step,
+      content: params.content,
+    });
+  },
+
+  /** 读某一步当前内容（界面渲染用；SETTINGS 步读正式表） */
+  'blueprint.getStep': (params: { bookId: string; step: string }) => {
+    const p = requireProject();
+    const row = p.repos.blueprint.findStep(params.bookId, assertBlueprintStep(params.step));
+    return {
+      step: row.step,
+      status: row.status,
+      // ⚠ 有效内容 = edited ?? draft（作者改过的优先）
+      content: p.repos.blueprint.effectiveContent(row),
+    };
   },
 
   // ── 通过 Tool Registry 调用（统一走权限与校验门禁） ────────
@@ -4481,7 +4617,8 @@ function bootstrap(): void {
     }
   const events = new EventBus({ runs: repos.runs, logger: logger.child('events') });
   const bootFts = new FtsIndex({ db, tokenizer: bigramTokenizer, logger: logger.child('fts') });
-  const project: OpenProject = {
+  // ⚠ services 由 buildWorkflowEngine 填充（同一理由：避免建两份）
+  const project = {
     dir: PROJECTS_ROOT,
     db,
     repos,
@@ -4489,8 +4626,10 @@ function bootstrap(): void {
     events,
     runtime: null,
     fts: bootFts,
-  };
+  } as OpenProject;
   project.runtime = buildRuntime(project);
+  // ⚠ 同 project.open：runtime 先建，services 才能拿到模型网关
+  project.services = createWorkflowServicesFor(project);
   opened = project;
   logger.info('迁移完成', {
     applied: MIGRATIONS.map((m) => m.id),
