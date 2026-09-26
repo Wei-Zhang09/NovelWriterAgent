@@ -27,6 +27,8 @@
  * 于是"改名从未提交"照样通过。所以本脚本的断言一律查
  * **IPC 调用序列**（编辑器对外唯一的副作用通道），
  * 而不是查界面上的文字。
+ *
+ * @verify-kind: standalone — 纯 Node + 最小 DOM 替身，直接导入 renderer 源码；需独立跑，不依赖 Electron 启动
  */
 
 import { join, dirname } from 'node:path';

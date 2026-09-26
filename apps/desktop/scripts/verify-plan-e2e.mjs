@@ -16,6 +16,8 @@
  * 实测 bug：上下文不足（80 tokens）时，模型把「待确认：…」「例如…」
  * 原样写进字段，产出一份结构完备但**没有任何创作决定**的计划。
  * 本脚本真实调用模型，检查产出里是否还有占位符。
+ *
+ * @verify-kind: needs-model — 必须真实模型生成章节计划
  */
 import { app, utilityProcess, safeStorage } from 'electron';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';

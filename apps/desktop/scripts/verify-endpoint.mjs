@@ -14,6 +14,8 @@
  * 打印出来 —— 不经过任何业务逻辑，隔离出"服务端问题"还是"我们的问题"。
  *
  * ⚠ 密钥经 safeStorage 解密后直接用于请求头，**不打印**。
+ *
+ * @verify-kind: standalone — 端点连通性与重试，需要用户已配置的密钥引用（非模型能力验证）
  */
 import { app, safeStorage } from 'electron';
 import { join } from 'node:path';

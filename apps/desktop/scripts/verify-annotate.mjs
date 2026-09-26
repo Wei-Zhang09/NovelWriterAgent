@@ -22,6 +22,8 @@
  *   - sceneFunction 是否合理（对照场景首段内容）
  *   - 对话占比 / 节奏 是否符合直觉
  *   - 是否有明显的编造（标注了文本没写的内容）
+ *
+ * @verify-kind: needs-model — 必须真实模型做叙事标注
  */
 import { app, utilityProcess, safeStorage } from 'electron';
 import { existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';

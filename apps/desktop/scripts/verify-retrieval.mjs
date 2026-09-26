@@ -24,6 +24,8 @@
  *
  * 不真写就进不了 FTS，第 2 章的 Planner 检索就永远为空 ——
  * 那样脚本只能证明"SQL 能跑"，证明不了"旧章节真的被引用到了"。
+ *
+ * @verify-kind: needs-model — 检索需真实模型产出的摘要与记忆
  */
 import { app, utilityProcess, safeStorage } from 'electron';
 import { mkdirSync, rmSync } from 'node:fs';

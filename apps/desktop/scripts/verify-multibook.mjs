@@ -18,6 +18,8 @@
  * 不能出现相互污染的情况」。
  *
  * 因此必须端到端验证：**给 B 书写一章，A 书完全不受影响**。
+ *
+ * @verify-kind: standalone — 多书隔离验收，走真实 IPC，需 NWA_PROJECTS_ROOT 隔离
  */
 import { app, utilityProcess } from 'electron';
 import { existsSync, mkdirSync, rmSync } from 'node:fs';

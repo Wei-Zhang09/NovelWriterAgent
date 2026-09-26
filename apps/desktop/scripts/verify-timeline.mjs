@@ -21,6 +21,8 @@
  *
  * 验收用例本身就是**跨章**的（ch12 → ch13）。单章测试测不出
  * "故事时间倒退"——那需要两个事件落在不同的章里。
+ *
+ * @verify-kind: needs-model — 时间线需真写两章才能构成跨章事件
  */
 import { app, utilityProcess, safeStorage } from 'electron';
 import { mkdirSync, rmSync } from 'node:fs';

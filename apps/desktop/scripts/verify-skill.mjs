@@ -16,6 +16,8 @@
  *
  * ## ⚠ 会消耗模型额度
  * 按 sceneFunction 分组，每组一次调用。
+ *
+ * @verify-kind: needs-model — 必须真实模型编译技能
  */
 import { app, utilityProcess, safeStorage } from 'electron';
 import { join, dirname } from 'node:path';

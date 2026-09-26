@@ -22,6 +22,8 @@
  *
  * 用 `--file=` 指定本地文本；都没有则用内置的最小公版样本，
  * 并如实标注"未使用真实语料"（不假装验证过）。
+ *
+ * @verify-kind: standalone — 语料导入/章节识别，自己造临时语料目录
  */
 import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';

@@ -18,6 +18,8 @@
  * 这里"下游终点"是 **core 收到的请求**。若只断言"定时器被创建了"，
  * 那么把 `callCore(...)` 整行删掉、只留定时器，测试照样通过 ——
  * 而那条改动会让 autosave 彻底不落盘。
+ *
+ * @verify-kind: standalone — 用最小 electron 替身直接驱动 scheduleAutosave；vitest 跑不了（依赖 app/ipcMain）
  */
 
 import { readFileSync } from 'node:fs';

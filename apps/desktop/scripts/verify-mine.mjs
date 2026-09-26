@@ -14,6 +14,8 @@
  * ## ⚠ 会消耗模型额度
  *
  * 每组一次调用。默认最多 3 组（约 3 次调用）。
+ *
+ * @verify-kind: needs-model — 必须真实模型标注后才能挖掘模式
  */
 import { app, utilityProcess, safeStorage } from 'electron';
 import { join, dirname } from 'node:path';

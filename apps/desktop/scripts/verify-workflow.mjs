@@ -25,6 +25,8 @@
  * 模型未配置时，工作流会在 plan stage 失败（这是**正确行为** ——
  * 编排本身仍被完整验证：stage 顺序、状态落库、失败可恢复）。
  * 脚本会如实区分"环境问题"与"功能缺陷"。
+ *
+ * @verify-kind: needs-model — 整章工作流 12 个 stage，含真实模型调用
  */
 import { app, utilityProcess, safeStorage } from 'electron';
 import { mkdirSync, rmSync, existsSync } from 'node:fs';

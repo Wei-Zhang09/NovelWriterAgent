@@ -22,6 +22,8 @@
  * 最小可提交状态：章节行 + 工作区 draft.md + PASSED 审阅。
  *
  * 这样每一次运行都是确定性的 —— 模型方差不会让它时红时绿。
+ *
+ * @verify-kind: needs-model — 摘要门禁需真实模型产出候选摘要
  */
 import { app, utilityProcess, safeStorage } from 'electron';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';

@@ -15,6 +15,8 @@
  * 6. ⚠ workspace（未验证中间产物）**不**出现在导出物里
  *
  * ⚠ 全程用隔离的临时目录，不碰用户真实项目。
+ *
+ * @verify-kind: standalone — 备份/恢复/导出，走真实 IPC 并自行指定 outDir
  */
 import { app, utilityProcess, safeStorage } from 'electron';
 import {

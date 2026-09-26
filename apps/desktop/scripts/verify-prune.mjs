@@ -13,6 +13,8 @@
  *
  * 批量改状态是破坏性操作（虽然 DEPRECATED 可逆），
  * 必须显式确认才执行。
+ *
+ * @verify-kind: standalone — 技能下架预览（默认只预览不执行），依赖真实技能库状态
  */
 import { app, utilityProcess, safeStorage } from 'electron';
 import { join, dirname } from 'node:path';

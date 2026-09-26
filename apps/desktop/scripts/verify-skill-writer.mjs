@@ -18,6 +18,8 @@
  *
  * ## ⚠ 会消耗模型额度
  * 规划 + 写稿各一次（按章）。
+ *
+ * @verify-kind: needs-model — 技能对 Writer 的影响需真实模型才能观察
  */
 import { app, utilityProcess, safeStorage } from 'electron';
 import { existsSync, readFileSync } from 'node:fs';

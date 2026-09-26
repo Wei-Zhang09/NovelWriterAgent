@@ -18,6 +18,8 @@
  *   而这个面板是渲染进程代码（依赖 document）。与其为它改全局测试环境，
  *   不如用一个只实现所需 API 的最小替身 —— 这样测的是**面板的真实逻辑**，
  *   而不是某个 DOM 库的行为。
+ *
+ * @verify-kind: standalone — 针对轮询泄漏的反向验证脚本，只有 2 条断言，不适合混进聚合批次
  */
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';

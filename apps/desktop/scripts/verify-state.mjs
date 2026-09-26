@@ -21,6 +21,8 @@
  *
  * 状态提取要真的读正文、引文要真的能在正文里定位。
  * 不真写就只能测"表能建"，证明不了"从正文提取的状态真的进了 Canon"。
+ *
+ * @verify-kind: needs-model — 状态结算需真实正文才能抽取
  */
 import { app, utilityProcess, safeStorage } from 'electron';
 import { mkdirSync, rmSync } from 'node:fs';

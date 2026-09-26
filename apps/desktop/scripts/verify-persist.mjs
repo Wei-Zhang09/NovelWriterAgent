@@ -14,6 +14,8 @@
  * ## ⚠ 会消耗模型额度
  *
  * 默认只跑 2 章（约 6 个场景）。要跑全量请显式传 `--chapters=108`。
+ *
+ * @verify-kind: needs-model — 必须真实模型产出后可验证落库
  */
 import { app, utilityProcess, safeStorage } from 'electron';
 import { readFileSync, readdirSync } from 'node:fs';

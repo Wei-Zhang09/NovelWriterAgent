@@ -21,6 +21,8 @@
  *
  * 密钥经 safeStorage 加密（Windows 上 DPAPI 绑定 userData 路径），
  * 只有 Electron main 能解；让用户贴明文密钥是不可接受的。
+ *
+ * @verify-kind: needs-model — 必须真实模型写多章，才能验证上下文预算与长程记忆
  */
 import { app, utilityProcess, safeStorage } from 'electron';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';

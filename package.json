@@ -26,13 +26,13 @@
     "check:boundary": "node scripts/check-boundaries.mjs",
     "check:storage": "node scripts/check-storage-exec.mjs",
     "check:gates": "node scripts/self-test-gates.mjs",
-    "check": "pnpm typecheck && pnpm lint && pnpm check:gates && pnpm check:boundary && pnpm check:storage && pnpm test",
+    "check": "pnpm typecheck && pnpm lint && pnpm check:gates && pnpm check:boundary && pnpm check:storage && pnpm check:verify && pnpm test",
     "verify": "pnpm check && pnpm verify:smoke && pnpm verify:gui && pnpm verify:flow && pnpm verify:model && pnpm verify:simulate",
     "clean": "pnpm -r exec node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build:packages": "pnpm -r --filter \"!@nwa/desktop\" build",
     "verify:flow": "node apps/desktop/scripts/verify-gui-flow.mjs",
     "verify:model": "node scripts/run-model-e2e.mjs",
-    "verify:all": "pnpm check && pnpm verify:smoke && pnpm verify:gui && pnpm verify:flow && pnpm verify:model && pnpm verify:simulate",
+    "verify:all": "pnpm check && pnpm verify:smoke && pnpm verify:gui && pnpm verify:flow && pnpm verify:model && pnpm verify:simulate && pnpm verify:standalone",
     "typecheck:incremental": "tsc -b --pretty",
     "verify:simulate": "tsx scripts/simulate-chapters.ts --count=20",
     "verify:writing": "electron apps/desktop/scripts/verify-writing-e2e.mjs",
@@ -57,7 +57,9 @@
     "verify:summary-gate": "electron apps/desktop/scripts/verify-summary-gate.mjs",
     "verify:workflow-panel": "node apps/desktop/scripts/verify-workflow-panel.mjs",
     "verify:manuscript-editor": "node apps/desktop/scripts/verify-manuscript-editor.mjs",
-    "verify:autosave-scheduler": "node apps/desktop/scripts/verify-autosave-scheduler.mjs"
+    "verify:autosave-scheduler": "node apps/desktop/scripts/verify-autosave-scheduler.mjs",
+    "verify:standalone": "node scripts/run-verify-standalone.mjs",
+    "check:verify": "node scripts/check-verify-coverage.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

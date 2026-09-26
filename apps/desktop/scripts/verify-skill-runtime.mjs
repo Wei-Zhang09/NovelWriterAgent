@@ -15,6 +15,8 @@
  * 7. ⚠ **落选有原因** —— "某技能从未被用到"必须能查出原因
  *
  * ⚠ 本脚本**不调模型**（除最后一步），纯检索验证，免费且可重复。
+ *
+ * @verify-kind: needs-model — 技能运行时需真实模型验证注入效果
  */
 import { app, utilityProcess, safeStorage } from 'electron';
 import { join, dirname } from 'node:path';

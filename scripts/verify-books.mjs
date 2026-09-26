@@ -23,6 +23,8 @@
  * 该说明写入导入报告的 `license.basis`，便于日后审计。
  *
  * ⚠ 这只是**记录用户的判断**，不是系统在替用户做法律认定。
+ *
+ * @verify-kind: needs-model — 真实语料一次性导入（硬编码用户语料路径，设计上非幂等）
  */
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';

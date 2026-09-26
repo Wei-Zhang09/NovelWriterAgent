@@ -17,6 +17,8 @@
  *    本脚本同时是它的回归测试
  *
  * ⚠ 全程用隔离的临时目录，不碰用户真实语料库与项目。
+ *
+ * @verify-kind: standalone — 语料三阶段导入失败语义，走真实 IPC，需 NWA_CORPUS_ROOT 隔离
  */
 import { app, utilityProcess, safeStorage } from 'electron';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
