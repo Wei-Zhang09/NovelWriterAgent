@@ -109,18 +109,45 @@ function finish() {
     console.log('失败项：');
     for (const f of failed) console.log(`  ✗ ${f.name}${f.detail ? ' — ' + f.detail : ''}`);
   }
-  try {
-    if (child) child.kill();
-  } catch {
-    /* 已退出 */
+  // ⚠ 先杀 core、**等它真的退出**再删目录。
+  //
+  //   踩过：直接 `child.kill()` 紧接 `rmSync` —— kill 是异步的，
+  //   core 还持有 project.db 的文件锁，rmSync 抛 EPERM 被 catch 吞掉，
+  //   于是每次运行都在 %TEMP% 留下一个隔离目录（实测累积 6 个）。
+  //   "catch 掉就算了"正是这类泄漏看不见的原因。
+  const cleanup = () => {
+    try {
+      rmSync(ISOLATED_ROOT, { recursive: true, force: true });
+    } catch (e) {
+      // 删不掉要**说出来** —— 静默吞掉会让泄漏永远无人发现
+      console.error(`⚠ 隔离目录未能删除（${e?.code ?? e}）：${ISOLATED_ROOT}`);
+    }
+    app.exit(failed.length ? 1 : 0);
+  };
+
+  if (!child) {
+    cleanup();
+    return;
   }
-  // ⚠ 清掉隔离目录：历史上验证脚本自己不清，%TEMP% 累积过 17 个
-  try {
-    rmSync(ISOLATED_ROOT, { recursive: true, force: true });
-  } catch {
-    /* 文件锁 —— 下次运行会带新 pid，不阻塞 */
+  // 已退出就立即清；否则等 exit 事件（带超时兜底，不让脚本挂死）
+  if (child.exitCode !== undefined || child.killed) {
+    cleanup();
+    return;
   }
-  app.exit(failed.length ? 1 : 0);
+  const guard = setTimeout(() => {
+    console.error('⚠ core 进程未在 5s 内退出，仍尝试清理');
+    cleanup();
+  }, 5000);
+  child.once('exit', () => {
+    clearTimeout(guard);
+    cleanup();
+  });
+  try {
+    child.kill();
+  } catch {
+    clearTimeout(guard);
+    cleanup();
+  }
 }
 
 app.on('window-all-closed', () => {});
