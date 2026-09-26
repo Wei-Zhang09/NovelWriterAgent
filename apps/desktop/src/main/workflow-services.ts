@@ -650,7 +650,6 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
       async generateConcept(input) {
         const model = needModel(deps, '生成选题方向');
         const book = deps.repos.books.get(input.bookId);
-        // ⚠ 注入：改用未导入的生成器名（模拟"生成器没有生产入口"）
         const gen = new ConceptGenerator({
           structured: (req) => model.structured('architect', req) as never,
           logger: log.child('concept'),

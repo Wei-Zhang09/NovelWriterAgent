@@ -16,6 +16,7 @@ import { renderManuscriptEditor } from './manuscript-editor.js';
 import { renderPipeline } from './pipeline.js';
 import { renderTimelineView } from './timeline-view.js';
 import { renderForeshadowView } from './foreshadow-view.js';
+import { renderBlueprintWizard } from './blueprint-wizard.js';
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => {
@@ -263,7 +264,10 @@ function renderNav() {
   // ⚠ 两者都是"账目"视图（看已积累的事实），与章节列表的"工作对象"
   //   性质不同，所以单独分组而不是混进「章节」里。
   nav.append(el('div', 'nav-section', '设定与账目'));
+  // ⚠ 开书向导排在账目视图之前：它是**开写前**要做的事，
+  //   而时间线/伏笔是**写的过程中**积累的账。顺序本身就是提示。
   for (const [key, label, render] of [
+    ['blueprint', '开书向导', renderBlueprintWizard],
     ['timeline', '时间线', renderTimelineView],
     ['foreshadow', '伏笔', renderForeshadowView],
   ]) {
@@ -1432,14 +1436,25 @@ function renderView(render) {
   const ctr = $('center');
   ctr.replaceChildren();
   state.selectedChapterId = null;
-  ctr.append(
-    render({
-      el,
-      invoke: call,
-      state,
-      msg: el('div', 'form-msg'),
-    }),
-  );
+  // ⚠ 捕获视图渲染抛错并暴露到 window：
+  //   视图是**同步返回 DOM** 的，但内部会发起异步加载。抛错发生在
+  //   await 之后时，错误只进控制台 —— 界面表现为"面板整块缺失"，
+  //   而断言只能看到"按钮找不到"，查不出原因。
+  //   存到 window 上让验证脚本能读到真实原因。
+  try {
+    ctr.append(
+      render({
+        el,
+        invoke: call,
+        state,
+        msg: el('div', 'form-msg'),
+      }),
+    );
+    window.__wizardError = null;
+  } catch (e) {
+    window.__wizardError = e?.message ?? String(e);
+    ctr.append(el('div', 'callout callout--err', `视图渲染失败：${window.__wizardError}`));
+  }
   renderTopbar();
 }
 

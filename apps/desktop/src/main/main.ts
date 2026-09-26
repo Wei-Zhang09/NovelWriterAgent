@@ -1245,8 +1245,17 @@ function createWindow(): void {
             // ⚠ 检查的是"分组真的存在且默认状态正确"，而不是"渲染没报错" ——
             //   面板平铺时也不会报错，但用户体验是滚不到底。
             const groups = [...document.querySelectorAll('.panel-group')];
-            rec('⚠ 右栏已分组（不再是 14 个面板平铺）',
-                groups.length === 5, 'groups=' + groups.length);
+            const groupNames = groups.map(g => g.querySelector('summary')?.textContent ?? '');
+            // ⚠ 断言「必需的分组都在」而不是硬编码总数。
+            //   原来写的是 groups.length === 5，而「语料与蒸馏」是后加的
+            //   第 6 组 —— 断言没跟上，此后一直失败（实测：陈旧断言
+            //   与真缺陷混在一起，会让人以为新改动弄坏了什么）。
+            //   必需项是"用户找不到就等于功能不存在"的那几组。
+            const REQUIRED_GROUPS = ['模型', '写作流程', '语料与蒸馏', '系统诊断'];
+            const missingGroups = REQUIRED_GROUPS.filter(n => !groupNames.includes(n));
+            rec('⚠ 右栏已分组且必需分组齐全（不再是面板平铺）',
+                groups.length >= REQUIRED_GROUPS.length && missingGroups.length === 0,
+                'groups=' + groups.length + ' 缺=' + (missingGroups.join('/') || '无'));
 
             // ⚠ 默认展开「模型」与「写作流程」两组。
             //
@@ -1256,9 +1265,13 @@ function createWindow(): void {
             //   写作流程是日常唯一会用的一组，保持展开。
             const openGroups = groups.filter(g => g.hasAttribute('open'));
             const openNames = openGroups.map(g => g.querySelector('summary')?.textContent ?? '');
-            rec('⚠ 默认展开「模型」与「写作流程」（模型配置必须看得见）',
-                openNames.length === 2 &&
-                openNames.includes('模型') && openNames.includes('写作流程'),
+            // ⚠ 断言的是**意图**（这几组必须展开），不是"恰好 2 个展开"。
+            //   后者在「语料与蒸馏」加入后就成了陈旧断言（实测失败），
+            //   而它想防的缺陷（模型配置被折叠到看不见）并没有复发。
+            const MUST_OPEN = ['模型', '写作流程', '语料与蒸馏'];
+            const closedButMustOpen = MUST_OPEN.filter(n => !openNames.includes(n));
+            rec('⚠ 默认展开「模型」「写作流程」「语料与蒸馏」（配置类必须看得见）',
+                closedButMustOpen.length === 0,
                 'open=' + openNames.join('、'));
 
             // ⚠ 原生 details 自带无障碍语义与键盘可达性 —— 断言用的是原生元素
@@ -1395,11 +1408,11 @@ function createWindow(): void {
 
               // ── 时间线 / 伏笔各自独立入口 ──
               const viewItems = [...document.querySelectorAll('.nav-item--view')];
-              rec('⚠ 左栏有时间线/伏笔独立入口（此前后端有、UI 无入口）',
-                  viewItems.length === 2, 'views=' + viewItems.length);
+              rec('⚠ 左栏有开书向导/时间线/伏笔独立入口（此前后端有、UI 无入口）',
+                  viewItems.length === 3, 'views=' + viewItems.length);
               const viewNames = viewItems.map(n => n.dataset.view);
-              rec('两个入口分别是 timeline 与 foreshadow',
-                  viewNames.join(',') === 'timeline,foreshadow', viewNames.join(' '));
+              rec('三个入口分别是 blueprint / timeline / foreshadow',
+                  viewNames.join(',') === 'blueprint,timeline,foreshadow', viewNames.join(' '));
 
               // 点进时间线：必须真的渲染出视图（不是空壳入口）
               const tlItem = viewItems.find(n => n.dataset.view === 'timeline');
@@ -1422,6 +1435,88 @@ function createWindow(): void {
               rec('⚠ 点「伏笔」真的渲染出视图（非空壳入口）',
                   fsText.includes('伏笔') && (fsText.includes('读取失败') || fsText.includes('还没有伏笔') || fsText.includes('总计')),
                   fsText.slice(0, 50).replace(/\s+/g, ' '));
+
+              // 回到章节详情，避免影响后续断言
+              chapterItems[0]?.click();
+              await sleep(700);
+            }
+
+            // 6f) 开书向导（W8）
+            //     ⚠ 本区块内禁止出现反引号（工程约定 1）。
+            //     ⚠ 断言查**下游终点**：不只看元素在不在 DOM 里，
+            //       要查它显示的是不是后端的真实状态。
+            {
+              const bpItem = [...document.querySelectorAll('.nav-item--view')]
+                .find(n => n.dataset.view === 'blueprint');
+              rec('⚠ 左栏有开书向导入口', Boolean(bpItem));
+              bpItem?.click();
+              await sleep(1200);
+
+              const bpText = $('center')?.textContent ?? '';
+              rec('⚠ 点「开书向导」真的渲染出视图（非空壳入口）',
+                  bpText.includes('开书向导'), bpText.slice(0, 60).replace(/\s+/g, ' '));
+
+              // ⚠ 诊断：渲染中途抛错会让后面的面板整块缺失，而界面上
+              //   看不出"少了什么" —— 只看到按钮找不到。把错误文本抓出来。
+              const bpErr = window.__wizardError ?? null;
+              rec('⚠ 向导渲染未抛错（抛错会让后面的面板整块缺失）',
+                  !bpErr, bpErr ? String(bpErr).slice(0, 120) : '无错误');
+
+              // ⚠ 门禁状态必须显示 —— 用户选了"允许跳过"，
+              //   界面不显示门禁状态会让人以为"必须走完向导才能写"。
+              rec('⚠ 显示门禁状态（用户选了可跳过，必须如实告知）',
+                  bpText.includes('向导门禁'));
+
+              // ⚠ 四个步骤名来自后端 steps[]，不是界面硬编码 ——
+              //   查的是"界面是否如实反映了后端返回的步骤"
+              const stepLabels = ['选题方向', '核心设定与角色', '卷级大纲', '逐章细纲'];
+              const shownSteps = stepLabels.filter(l => bpText.includes(l));
+              rec('⚠ 四个步骤全部显示（来自后端 steps[]，非硬编码）',
+                  shownSteps.length === 4, '显示=' + shownSteps.join('/'));
+
+              // ⚠ 与后端独立对账：界面显示的步骤数必须等于 IPC 返回的步骤数。
+              //   只断言"有 4 个"是硬编码预期 —— 后端加了第五步就查不出来了。
+              // ⚠ bookId 在这个脚本里没有变量 —— 从 IPC 现取，不用界面上
+              //   显示的章节号去反推（反推不可靠：书名可能重复、可能被改）
+              const pi = await window.nwa.invoke('project.info', {});
+              const pid = (pi && pi.ok) ? (pi.data.projects ?? [])[0]?.id : null;
+              const bl = pid ? await window.nwa.invoke('book.list', { projectId: pid }) : null;
+              const bid = (bl && bl.ok) ? (bl.data.books ?? [])[0]?.id : null;
+              const st = bid
+                ? await window.nwa.invoke('blueprint.status', { bookId: bid })
+                : null;
+              const backendSteps = (st && st.ok) ? (st.data.steps ?? []).length : -1;
+              const domStepCount = [...document.querySelectorAll('#center .issue-row')]
+                .filter(r => stepLabels.some(l => (r.textContent ?? '').includes(l))).length;
+              rec('⚠ 界面步骤数 == 后端步骤数（独立对账，非硬编码 4）',
+                  backendSteps > 0 && domStepCount === backendSteps,
+                  '后端=' + backendSteps + ' 界面=' + domStepCount);
+
+              // ⚠ 每个生成按钮都要在（缺一个流程就走不完）
+              for (const label of ['生成 2-3 个方向', '生成设定与角色', '生成卷级大纲', '生成这一段细纲']) {
+                const b = [...document.querySelectorAll('#center button')]
+                  .find(x => (x.textContent ?? '').includes(label));
+                rec('向导含按钮「' + label + '」', Boolean(b));
+              }
+
+              // ⚠⚠ 诚实失败：本验证环境**没有配模型**（NWA_USER_MODELS_PATH 指向
+              //   不存在的文件）。点生成必须给出明确错误，不能静默什么都不发生。
+              //   这是"下游终点"断言：查的是错误真的渲染到了界面上。
+              const genBtn = [...document.querySelectorAll('#center button')]
+                .find(x => (x.textContent ?? '').includes('生成 2-3 个方向'));
+              genBtn?.click();
+              await sleep(2500);
+              const afterText = $('center')?.textContent ?? '';
+              rec('⚠ 未配模型时点生成 → 界面明确报错（不静默失败）',
+                  afterText.includes('生成失败') || afterText.includes('模型'),
+                  afterText.slice(0, 80).replace(/\s+/g, ' '));
+
+              // ⚠ 修改面板：步骤下拉必须覆盖全部步骤（否则作者改不了某一步）
+              const sel = [...document.querySelectorAll('#center select')]
+                .find(x => [...x.options].some(o => (o.textContent ?? '').includes('选题方向')));
+              rec('⚠ 修改面板的步骤下拉覆盖全部步骤',
+                  Boolean(sel) && sel.options.length === backendSteps,
+                  sel ? '选项=' + sel.options.length : '无下拉');
 
               // 回到章节详情，避免影响后续断言
               chapterItems[0]?.click();
