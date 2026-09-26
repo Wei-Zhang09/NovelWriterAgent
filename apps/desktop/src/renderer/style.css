@@ -721,3 +721,30 @@ body {
   padding: 8px 10px;
 }
 .versions__content--err { color: var(--err); font-style: italic; }
+
+/* ── M8：审阅问题面板（点条目定位正文）──────────────────── */
+.issues { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+.issues__head { display: flex; align-items: center; gap: 10px; }
+.issues__head h3 { margin: 0; font-size: 14px; }
+.issues__list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.issue-row {
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 4px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* 阻断项用 err 色：作者最需要先看到"不修完提交不了" */
+.issue-row--blocking { border-left-color: var(--err); }
+.issue-row--major { border-left-color: var(--warn); }
+.issue-row--minor { border-left-color: var(--border); }
+.issue-row__top { display: flex; align-items: center; gap: 8px; }
+.issue-row__sev { font-size: 11px; font-weight: 600; }
+.issue-row--blocking .issue-row__sev { color: var(--err); }
+.issue-row--major .issue-row__sev { color: var(--warn); }
+.issue-row--minor .issue-row__sev { color: var(--muted); }
+.issue-row__cat { font-size: 11px; color: var(--muted); }
+.issue-row__claim { font-size: 13px; line-height: 1.6; }
+.issue-row__sug { margin: 0; padding-left: 18px; font-size: 12px; color: var(--muted); }

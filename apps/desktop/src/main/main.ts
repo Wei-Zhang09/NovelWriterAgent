@@ -1666,6 +1666,174 @@ function createWindow(): void {
               await sleep(700);
             }
 
+            // 6i) M8：Review Issue → 编辑器定位联动
+            //     ⚠ 本区块内禁止出现反引号（工程约定 1）。
+            //     ⚠⚠ 断言查**下游终点**：不是"点了按钮没报错"，
+            //        而是**编辑器的选区真的落在那句话上**。
+            //
+            // ⚠ 整块包 try/catch：区块里抛错会让整个流程脚本挂掉，
+            //   现象是"判定 0/0"，完全看不出哪一步炸了（工程约定 13）。
+            try {
+              chapterItems[0]?.click();
+              await sleep(1200);
+
+              // ⚠⚠ 编辑器元素必须**在重开章节之后**再取。
+              //   下面会点一次 chapterItems[0] 重新打开章节（让 Issue 面板
+              //   加载到刚注入的结论），那会**重建**整个编辑器 DOM ——
+              //   提前取到的 textarea 引用会变成游离节点：
+              //   setSelectionRange 对它无效，读 selectionStart 也只得到旧值。
+              //   实测症状：选区恒为空、selStart 恒等于正文长度。
+              const ed0 = document.querySelector('.editor');
+              const ar0 = ed0 ? ed0.querySelector('.editor__area') : null;
+              const bodyText = ar0 ? ar0.value : '';
+
+              // ⚠ 先注入一份审阅结论。GUI 验证刻意不连模型（避免配额与超时），
+              //   所以流程里永远产不出结论 —— 没有它 M8 整块断言都会空转通过。
+              //   注入走生产仓储，注入后所有读取路径都是真的。
+              //
+              //   三条 Issue 各测一层回落：
+              //     ① offset 正确         → via=offset
+              //     ② offset 故意指错位置 → 必须回落到 excerpt（施工计划点名的证伪测试）
+              //     ③ 只有 paragraph      → 回落到整段
+              const cid = chapterItems[0]?.dataset.chapterId;
+              // 取正文里真实存在的一句作为 excerpt（不能编造，否则测的是"找不到"）
+              const line1 = bodyText.split('\\n').filter(s => s.trim().length > 0)[0] ?? '';
+              const frag = line1.slice(0, 4);
+              const seed = await window.nwa.invoke('review.__seed', {
+                chapterId: cid,
+                status: 'PASS',
+                review: {
+                  overallStatus: 'PASS',
+                  issues: [
+                    {
+                      id: 'iss-offset',
+                      severity: 'MINOR',
+                      category: 'PACING',
+                      claim: '第一段节奏偏慢（offset 正确）',
+                      evidence: [],
+                      location: { paragraph: 1, offset: 0, excerpt: frag },
+                      suggestions: ['把第一句缩短'],
+                    },
+                    {
+                      id: 'iss-drift',
+                      severity: 'MAJOR',
+                      category: 'PACING',
+                      claim: '第二句与前文衔接生硬（offset 故意指错）',
+                      evidence: [],
+                      // ⚠⚠ offset 必须**真的错**：第一版写的 offset: 0
+                      //   恰好等于片段的真实位置（片段就在段首），于是
+                      //   offset 校验通过、根本没走 excerpt 回落 ——
+                      //   "证伪测试"成了假绿。改成一个明显错的位置，
+                      //   才能真验证回落逻辑。
+                      location: { paragraph: 1, offset: 8, excerpt: frag },
+                      suggestions: ['补一句过渡'],
+                    },
+                    {
+                      id: 'iss-para',
+                      severity: 'BLOCKING',
+                      category: 'DESCRIPTION',
+                      claim: '本段描写与人物状态不符（只有段号）',
+                      evidence: [],
+                      location: { paragraph: 1 },
+                      suggestions: ['重写本段'],
+                    },
+                  ],
+                },
+              });
+              rec('⚠ 审阅结论已注入（走生产仓储，非绕过读取路径）',
+                  seed && seed.ok, seed && seed.ok ? 'ok' : JSON.stringify(seed && seed.error));
+
+              // 重新打开章节，让 Issue 面板加载到刚注入的结论
+              chapterItems[0]?.click();
+              await sleep(1500);
+
+              const ip = [...document.querySelectorAll('.issues')][0];
+              rec('⚠ 审阅问题面板已渲染在编辑器内', Boolean(ip));
+
+              // ⚠ 重新取一次（编辑器已被上一步的重开重建）
+              const ar = document.querySelector('.editor__area');
+              rec('重开后拿到的是**当前**编辑器元素（非游离节点）',
+                  Boolean(ar) && document.contains(ar),
+                  ar ? ('值长=' + ar.value.length) : '无');
+
+              if (ip) {
+                const rows = [...ip.querySelectorAll('.issue-row')];
+                rec('⚠ 三条问题都列出来了', rows.length === 3, 'rows=' + rows.length);
+
+                // ⚠ 阻断项必须排最前 —— 作者最需要先看到"不修完提交不了"
+                rec('⚠ 阻断项排在最前（不是按注入顺序）',
+                    rows.length > 0 && rows[0].className.includes('issue-row--blocking'),
+                    'first=' + (rows[0] ? rows[0].className : '无'));
+
+                const btns = [...ip.querySelectorAll('button')]
+                  .filter(b => (b.textContent ?? '').trim() === '定位到正文');
+                rec('⚠ 每条问题都有「定位到正文」入口', btns.length === 3,
+                    'btns=' + btns.length);
+
+                // ⚠⚠ 真点「定位到正文」→ 断言编辑器选区命中
+                //
+                // ⚠ 按 **claim 文本**找按钮，不按 index：
+                //   面板把阻断项排在最前（与注入顺序不同），按 index 取会点到
+                //   另一条问题上 —— 第一版就是这么错的，断言失败而实现是对的。
+                const rowOf = (kw) => rows.find(r => (r.textContent ?? '').includes(kw));
+                const btnOf = (kw) => {
+                  const r = rowOf(kw);
+                  return r ? [...r.querySelectorAll('button')]
+                    .find(b => (b.textContent ?? '').trim() === '定位到正文') : null;
+                };
+
+                if (ar) {
+                  // ① offset 正确的那条（MINOR / iss-offset）
+                  const b1 = btnOf('offset 正确');
+                  rec('按 claim 找到「offset 正确」那条的按钮', Boolean(b1));
+                  if (b1) {
+                    b1.click();
+                    await sleep(900);
+                    const sel = ar.value.slice(ar.selectionStart, ar.selectionEnd);
+                    rec('⚠⚠ 点 Issue 后编辑器选区 == 该问题的原文片段（下游终点）',
+                        frag.length > 0 && sel === frag,
+                        '选区=' + JSON.stringify(sel) + ' 期望=' + JSON.stringify(frag) +
+                          ' selStart=' + ar.selectionStart + ' selEnd=' + ar.selectionEnd);
+                  }
+
+                  // ② offset 故意指错的那条（MAJOR / iss-drift）——
+                  //   施工计划点名的证伪测试：必须回落到 excerpt 仍能定位
+                  const b2 = btnOf('offset 故意指错');
+                  rec('按 claim 找到「offset 故意指错」那条的按钮', Boolean(b2));
+                  if (b2) {
+                    b2.click();
+                    await sleep(900);
+                    const sel2 = ar.value.slice(ar.selectionStart, ar.selectionEnd);
+                    rec('⚠⚠ offset 漂移时回落到 excerpt 仍能定位（证伪测试）',
+                        frag.length > 0 && sel2 === frag,
+                        '选区=' + JSON.stringify(sel2) + ' 期望=' + JSON.stringify(frag));
+                    // ⚠ 漂移必须被如实报告，否则作者不知道"这份审阅的定位已不准"
+                    const msgTxt = (ip.textContent ?? '');
+                    rec('⚠ 漂移被如实告知（不静默按 excerpt 定位了事）',
+                        msgTxt.includes('对不上'), msgTxt.slice(-70));
+                  }
+
+                  // ③ 只有段号的那条（BLOCKING / iss-para）→ 选中整段
+                  const b3 = btnOf('只有段号');
+                  rec('按 claim 找到「只有段号」那条的按钮', Boolean(b3));
+                  if (b3) {
+                    b3.click();
+                    await sleep(900);
+                    const sel3 = ar.value.slice(ar.selectionStart, ar.selectionEnd);
+                    rec('⚠⚠ 只有段号时选中整段（并如实说明未精确到句子）',
+                        sel3.length > 0 && sel3.length >= frag.length,
+                        '选区=' + JSON.stringify(sel3.slice(0, 24)));
+                  }
+                }
+              }
+
+              chapterItems[0]?.click();
+              await sleep(700);
+            } catch (e) {
+              rec('M8 区块抛错（下面的断言全部未执行）', false,
+                  String((e && e.message) || e).slice(0, 200));
+            }
+
             // 6f) 开书向导（W8）
             //     ⚠ 本区块内禁止出现反引号（工程约定 1）。
             //     ⚠ 断言查**下游终点**：不只看元素在不在 DOM 里，
@@ -1867,6 +2035,17 @@ function createWindow(): void {
   win.webContents.on('render-process-gone', (_e, details) => {
     logger.error('渲染进程异常退出，立即 flush 自动保存', details);
     void flushAutosave();
+  });
+
+  // ⚠ 渲染进程里抛的错**不会**自动出现在主进程日志里，而
+  //   executeJavaScript 失败时 Electron 只给一句
+  //   "Script failed to execute ... Check the renderer console"。
+  //   不转发 console 的话，验证脚本挂掉时完全查不到原因
+  //   （实测：区块里一个语法陷阱就让判定变成 0/0，没有任何线索）。
+  win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    if (level >= 2) {
+      logger.error('渲染进程报错', { message, line, sourceId });
+    }
   });
 
   win.on('closed', () => {

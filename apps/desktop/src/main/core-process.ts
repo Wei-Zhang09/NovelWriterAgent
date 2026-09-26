@@ -4633,7 +4633,51 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       },
     };
   },
+
+  /** ⚠ 仅测试用（见下方注释）：GUI 验证流程注入审阅结论 */
+  'review.__seed': (params: { chapterId: string; review: unknown; status: string }) =>
+    seedReviewForFlow(params),
 };
+
+/**
+ * ⚠ 仅测试用：注入一份审阅结论（**只允许在 GUI 验证流程里启用**）。
+ *
+ * ## 为什么必须有这个口子
+ *
+ * M8（点 Issue 定位到正文）的验收要求"真点 Issue → 断言编辑器选区命中"。
+ * 但审阅结论只能由 `review.run` 产出，而它要真实调用模型 ——
+ * GUI 验证脚本刻意把模型路径指向不存在的文件（避免消耗配额、
+ * 拖慢、引入超时假失败），所以流程里**永远拿不到**一份带 location 的结论。
+ *
+ * 两条死路都试过，都不通：
+ *   ① 直接改 `window.nwa` 注入假数据 —— preload 用 `contextBridge`，
+ *      暴露的对象在页面里是冻结的（改不动，静默失败）。
+ *   ② 直接写 project.db 的 `chapters.review_json` —— 库开着 WAL，
+ *      外部进程的写不一定被运行中的应用看见，结果不稳定。
+ *
+ * 所以走这条路：由主进程自己写。它不是"测试后门绕过生产路径"——
+ * 写入用的是生产仓储 `chapters.saveReview`（与 `review.run` 同一个方法），
+ * 写入之后**所有读取路径都是真的**：`review.get` → 渲染 → 点击 → 定位。
+ * 被替换掉的只有"模型产出一份结论"这一步，而那一步与 M8 无关。
+ *
+ * ⚠ 用 `NWA_GUI_FLOW` 而不是另立环境变量：这个能力**只在验证流程里**有意义，
+ *   复用一个开关就少一个能被误开的口子。生产启动时该变量不存在。
+ */
+function seedReviewForFlow(params: { chapterId: string; review: unknown; status: string }): {
+  ok: true;
+} {
+  if (process.env['NWA_GUI_FLOW'] !== '1') {
+    throw new AppError(
+      ErrorCode.TOOL_VALIDATION_ERROR,
+      'review.__seed 仅在 GUI 验证流程（NWA_GUI_FLOW=1）中可用',
+    );
+  }
+  const p = requireProject();
+  // ⚠ 用生产仓储写入，不直接写库 —— 否则"写入成功但读取路径不认"
+  //   这类问题会被验证掩盖
+  p.repos.chapters.saveReview(params.chapterId, params.review, params.status);
+  return { ok: true };
+}
 
 async function handle(req: CoreRequest): Promise<void> {
   const fn = handlers[req.method];

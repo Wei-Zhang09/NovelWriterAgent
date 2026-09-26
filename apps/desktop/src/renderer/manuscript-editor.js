@@ -70,6 +70,7 @@ const SAVE_STATUS = {
  */
 import { renderDiffPanel } from './manuscript/diff-view.js';
 import { renderVersionPanel } from './manuscript/version-panel.js';
+import { renderIssuePanel } from './manuscript/issue-panel.js';
 
 export function renderManuscriptEditor({ el, invoke, msg, chapter }) {
   const box = el('div', 'editor');
@@ -179,6 +180,40 @@ export function renderManuscriptEditor({ el, invoke, msg, chapter }) {
   //   作者看到的还是旧内容，接着一按「保存」就把刚恢复的版本又覆盖回去 ——
   //   恢复功能看似生效、实际被下一次保存抹掉。
   // ─────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────
+  // M8：审阅问题列表 + 点条目定位到正文（§十八 / §三十八）
+  //
+  // ⚠ 定位必须用**编辑器当前文本**而不是磁盘正文：
+  //   作者可能改了还没保存，用磁盘正文算出来的区间会对不上眼前看到的字。
+  // ─────────────────────────────────────────────────────────
+  const issuePanel = renderIssuePanel({
+    el,
+    invoke,
+    msg,
+    chapter,
+    getText: () => area.value,
+    locateAndFocus: (range) => {
+      // ⚠ 编辑器可能停在预览态 —— 预览态下 textarea 是 hidden，
+      //   setSelectionRange 不会滚动到可见位置，作者看不到任何变化。
+      if (view !== 'edit') setView('edit');
+      try {
+        area.focus();
+        area.setSelectionRange(range.start, range.end);
+        // ⚠ 必须手动滚动：setSelectionRange 只移动光标，
+        //   浏览器不会自动把它滚进视口（textarea 尤其如此）。
+        scrollSelectionIntoView(area, range.start);
+      } catch {
+        return false;
+      }
+      // ⚠ 光标位置是 autosave 快照的一部分：不推快照的话，
+      //   作者点了几条 Issue 再切章回来，恢复出的光标停在旧位置。
+      pushSnapshot();
+      updateSelection();
+      return true;
+    },
+  });
+  box.append(issuePanel);
+
   const versionPanel = renderVersionPanel({
     el,
     invoke,
@@ -265,8 +300,16 @@ export function renderManuscriptEditor({ el, invoke, msg, chapter }) {
     }
   }
 
-  function toggleView() {
-    view = view === 'edit' ? 'preview' : 'edit';
+  /**
+   * 切视图。
+   *
+   * ⚠ 从"取反"改成"显式设目标"：定位联动需要**确保**处于编辑态
+   *   （在预览态下 setSelectionRange 不会让作者看到任何变化）。
+   *   用取反的话，调用方无法表达"我要编辑态"这个意图 ——
+   *   预览态下调用会切到编辑态，编辑态下调用反而切到预览态。
+   */
+  function setView(target) {
+    view = target === 'preview' ? 'preview' : 'edit';
     const editing = view === 'edit';
     area.hidden = !editing;
     preview.hidden = editing;
@@ -278,6 +321,29 @@ export function renderManuscriptEditor({ el, invoke, msg, chapter }) {
       selInfo.textContent = '';
       renderPreview();
     }
+  }
+
+  function toggleView() {
+    setView(view === 'edit' ? 'preview' : 'edit');
+  }
+
+  /**
+   * 把某个字符位置滚进视口。
+   *
+   * ⚠ `setSelectionRange` 只移动光标，**不会**自动滚动（textarea 尤其如此）。
+   *   不滚动的话作者看到的是"点了没反应" —— 光标其实已经移过去了，
+   *   但在视口外。所以按行高估算目标行并设置 scrollTop。
+   */
+  function scrollSelectionIntoView(areaEl, index) {
+    const lineHeight = parseFloat(getComputedStyle(areaEl).lineHeight) || 22;
+    // ⚠ 只数目标位置之前的换行数。用 value.length 算整篇行数会
+    //   把滚动位置算到文档末尾。
+    const before = areaEl.value.slice(0, index);
+    const lineNo = (before.match(/\n/g) ?? []).length;
+    const target = lineNo * lineHeight;
+    const viewH = areaEl.clientHeight || 0;
+    // 让目标行落在视口上方 1/3 处，留出上下文
+    areaEl.scrollTop = Math.max(0, target - viewH / 3);
   }
 
   // ─────────────────────────────────────────────────────────
