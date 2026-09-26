@@ -1957,6 +1957,194 @@ function createWindow(): void {
               if (after === 'light') { btn?.click(); await new Promise((r) => setTimeout(r, 300)); }
             }
 
+            // 6j) M9：提交前检查面板
+            //     ⚠ 本区块内禁止出现反引号（工程约定 1）。
+            //     ⚠⚠ 断言查**下游终点**：不只查面板渲染出来了，
+            //        要查七项的判定结果与后端独立算出来的一致。
+            try {
+              chapterItems[0]?.click();
+              await sleep(1500);
+
+              const pc = [...document.querySelectorAll('.precheck')][0];
+              rec('⚠ 提交前检查面板已渲染在编辑器内', Boolean(pc));
+
+              if (pc) {
+                const rows = [...pc.querySelectorAll('.precheck__row')];
+                const cid = chapterItems[0]?.dataset.chapterId;
+                const pk = cid
+                  ? await window.nwa.invoke('commit.precheck', { chapterId: cid })
+                  : null;
+
+                rec('⚠ 后端 commit.precheck 可用（M1 的 stale 判定此前零生产调用）',
+                    Boolean(pk && pk.ok), pk && pk.ok ? 'ok' : JSON.stringify(pk && pk.error));
+
+                if (pk && pk.ok) {
+                  // ⚠ 七项必须齐 —— §31 明列七项，少一项就是漏检
+                  rec('⚠⚠ 面板列出七项检查（§31 明列）',
+                      rows.length === 7 && pk.data.checks.length === 7,
+                      '界面=' + rows.length + ' 后端=' + pk.data.checks.length);
+
+                  // ⚠ 界面显示的通过/失败必须与后端判定**逐项一致**
+                  //   （独立对账，不是看界面自己说了什么）
+                  const uiState = rows.map(r => ({
+                    id: r.dataset.checkId,
+                    ok: r.className.includes('precheck__row--ok'),
+                  }));
+                  const beState = pk.data.checks.map(c => ({ id: c.id, ok: c.ok }));
+                  const same = uiState.length === beState.length &&
+                    uiState.every((u, i) => u.id === beState[i].id && u.ok === beState[i].ok);
+                  rec('⚠⚠ 界面逐项判定 == 后端判定（独立对账）', same,
+                      '界面=' + JSON.stringify(uiState.map(u => u.id + ':' + (u.ok ? '✓' : '✗'))) +
+                      ' 后端=' + JSON.stringify(beState.map(u => u.id + ':' + (u.ok ? '✓' : '✗'))));
+
+                  // ⚠ 每项都要有说人话的说明
+                  const msgs = [...pc.querySelectorAll('.precheck__msg')].map(m => (m.textContent ?? '').trim());
+                  rec('⚠ 七项都有说明文字（不只是一个叉）',
+                      msgs.length === 7 && msgs.every(m => m.length > 0),
+                      'msgs=' + msgs.length);
+
+                  // ⚠ 失败项必须给"下一步做什么"
+                  // ⚠ 判据按**项**算（每个失败项自己的行里有 hint），
+                  //   不是数 hint 总数 —— 有的项可能没有 hint，
+                  //   总数相等是巧合而不是意图（工程约定 12：别数个数）
+                  const failRows = rows.filter(r => !r.className.includes('precheck__row--ok'));
+                  const missingHint = failRows.filter(
+                    r => !(r.querySelector('.precheck__hint') || (r.textContent ?? '').includes('→'))
+                  );
+                  rec('⚠ 每个失败项都给出下一步提示',
+                      missingHint.length === 0,
+                      '失败项=' + failRows.length + ' 缺提示=' + missingHint.length +
+                        (missingHint.length ? ' 缺的是：' + missingHint.map(r => r.dataset.checkId).join(',') : ''));
+
+                  // ⚠⚠⚠ 施工计划点名的证伪测试：
+                  //   「改一个字的正文（使 hash 变）→ 断言 Review/Continuity/State
+                  //     三项**同时**变 STALE，且提交被拒」
+                  //
+                  //   三项必须**同时**变 —— 只变一两项说明有的判定漏了
+                  //   （比如只比了审阅、没比 continuity），而那正是
+                  //   "一个入口三处复用"要防的缺陷。
+                  {
+                    const ar2 = document.querySelector('.editor__area');
+                    // ⚠⚠ 先把三个锚点对齐到**当前正文**，否则测不出 STALE：
+                    //   本流程不连模型，三个产物要么不存在（MISSING）、
+                    //   要么是老数据没锚点（NO_ANCHOR）——
+                    //   而"改一个字 → 变 STALE"要求前置是 FRESH。
+                    //   实测第一次就是 NO_ANCHOR，证伪测试压根没进 STALE 分支。
+                    const seedA = await window.nwa.invoke('commit.__seedAnchors',
+                      { chapterId: cid, verified: true });
+                    rec('⚠ 锚点已对齐到当前正文（证伪测试的前置：三份结论都是 FRESH）',
+                        Boolean(seedA && seedA.ok),
+                        seedA && seedA.ok ? 'hash=' + String(seedA.data.hash).slice(0, 8)
+                          : JSON.stringify(seedA && seedA.error));
+
+                    // ⚠ 前置校验：先确认现在是"七项全绿、可提交"，
+                    //   否则"改字后变 STALE"可能只是原本就不通过
+                    const pkFresh = await window.nwa.invoke('commit.precheck',
+                      { chapterId: cid, editorText: ar2 ? ar2.value : '' });
+                    rec('⚠⚠ 前置：锚点对齐后预检通过（可提交）',
+                        Boolean(pkFresh && pkFresh.ok && pkFresh.data.canCommit),
+                        pkFresh && pkFresh.ok
+                          ? ('failed=' + pkFresh.data.failedCount + ' ' +
+                             JSON.stringify(pkFresh.data.checks.filter(c => !c.ok).map(c => c.id)))
+                          : JSON.stringify(pkFresh && pkFresh.error));
+
+                    const before = ar2 ? ar2.value : '';
+                    // 只改一个字符
+                    const mutated = before.replace('青石板', '石板路');
+                    rec('证伪前置：改动确实改变了文本（否则 hash 不变）',
+                        mutated !== before, 'len ' + before.length + ' → ' + mutated.length);
+
+                    if (ar2 && mutated !== before) {
+                      ar2.value = mutated;
+                      ar2.dispatchEvent(new Event('input', { bubbles: true }));
+                      await sleep(500);
+
+                      // ⚠ 不保存 —— 检查的就是"编辑器有未保存改动"这一状态
+                      const pk2 = await window.nwa.invoke('commit.precheck',
+                        { chapterId: cid, editorText: mutated });
+                      if (pk2 && pk2.ok) {
+                        rec('⚠⚠ 改一个字后提交被拒', pk2.data.canCommit === false,
+                            'canCommit=' + pk2.data.canCommit);
+
+                        const stMap = {};
+                        for (const s2 of pk2.data.staleness) stMap[s2.artifact] = s2.status;
+                        rec('⚠⚠ Review/Continuity/State 三项同时变 STALE（证伪测试）',
+                            stMap.review === 'STALE' &&
+                            stMap.continuity === 'STALE' &&
+                            stMap.proposed_state === 'STALE',
+                            'review=' + stMap.review + ' continuity=' + stMap.continuity +
+                            ' proposed_state=' + stMap.proposed_state);
+
+                        // ⚠ 未保存时锚点项必须失败：作者改了 3000 字没保存，
+                        //   面板却显示"对应当前版本"的话，检查就是假的
+                        const savedRow = pk2.data.checks.find(c => c.id === 'saved');
+                        rec('⚠⚠ 有未保存改动时「Manuscript 已保存」判失败',
+                            savedRow && savedRow.ok === false,
+                            'saved.ok=' + (savedRow ? savedRow.ok : '无'));
+
+                        // ⚠ 三项的哈希必须**都不等于**当前正文哈希
+                        //   （否则就是"拿旧哈希当新哈希"，永远 FRESH）
+                        const allDiffer = pk2.data.staleness
+                          .filter(s3 => s3.artifact !== 'saved')
+                          .every(s3 => s3.anchoredHash !== s3.currentHash);
+                        rec('⚠⚠ 三项锚点与当前正文哈希都不同（不是假比对）', allDiffer,
+                            JSON.stringify(pk2.data.staleness));
+
+                        // ⚠⚠⚠ 不变量：**任何非 FRESH 的产物，其对应检查项必须失败**。
+                        //   这条是把「原始判定」与「门禁结果」绑起来的那一根钉子 ——
+                        //   少了它，判定算得再对也可能**没被用来拦人**
+                        //   （实测：把 ok 改成恒 true 后，前面所有断言全绿，
+                        //    因为它们只验了"报告内容"与"界面与后端一致"，
+                        //    没验"报告真的决定了通过与否"）。
+                        const violations = pk2.data.staleness
+                          .filter(s3 => s3.status !== 'FRESH')
+                          .filter(s3 => {
+                            const c = pk2.data.checks.find(x => x.id === s3.artifact);
+                            return !c || c.ok !== false;
+                          });
+                        rec('⚠⚠ 非 FRESH 的产物其检查项必须失败（判定真的被用来拦人）',
+                            violations.length === 0,
+                            '违例=' + JSON.stringify(violations.map(v => v.artifact + ':' + v.status)));
+
+                        // ⚠ 反向：全部 FRESH 时那三项必须通过（否则门禁过严，
+                        //   作者会遇到"检查全绿但提交被拒"）
+                        const freshOk = pkFresh && pkFresh.ok &&
+                          pkFresh.data.staleness.every(s3 => s3.status === 'FRESH');
+                        const freshChecksPass = pkFresh && pkFresh.ok &&
+                          pkFresh.data.checks
+                            .filter(c => ['review', 'continuity', 'proposed_state'].includes(c.id))
+                            .every(c => c.ok === true);
+                        rec('⚠ 全部 FRESH 时三项检查通过（门禁不过严）',
+                            freshOk && freshChecksPass,
+                            'fresh=' + freshOk + ' checksPass=' + freshChecksPass);
+                      } else {
+                        rec('证伪测试：commit.precheck 调用成功', false,
+                            JSON.stringify(pk2 && pk2.error));
+                      }
+
+                      // ⚠ 清理注入写下的工作区文件（夹具的现场还原）：
+                      //   不清的话，页面外那条「进度条 == 磁盘真实产物」的
+                      //   独立验算会看到流程之后多出来的 continuity.json，
+                      //   断言失败而原因与被测代码无关（实测撞到过）。
+                      const cleaned = await window.nwa.invoke('commit.__seedAnchors',
+                        { chapterId: cid, cleanup: true });
+                      rec('注入的 continuity.json 已清理（夹具还原现场）',
+                          Boolean(cleaned && cleaned.ok && cleaned.data.cleaned),
+                          JSON.stringify(cleaned && (cleaned.ok ? cleaned.data : cleaned.error)));
+
+                      // 还原正文，避免影响后续断言
+                      ar2.value = before;
+                      ar2.dispatchEvent(new Event('input', { bubbles: true }));
+                      await sleep(400);
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+              rec('M9 区块抛错（下面的断言全部未执行）', false,
+                  String((e && e.message) || e).slice(0, 200));
+            }
+
             return { steps, pipelineDone, pipelineLabels };
           })()`;
 

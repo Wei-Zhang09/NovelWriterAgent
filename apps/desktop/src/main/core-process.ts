@@ -13,7 +13,7 @@
  */
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import {
   Logger,
   AppError,
@@ -26,6 +26,7 @@ import {
   BLUEPRINT_STEP_LABELS,
   measureText,
   sha256Text,
+  stalenessReport,
   chapterRel,
   type ErrorCodeValue,
 } from '@nwa/core';
@@ -2225,6 +2226,213 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       /** 完成了几个（含 Commit）—— 给调用方做进度概览 */
       doneCount: list.filter((s) => s.done).length,
       total: list.length,
+    };
+  },
+
+  /**
+   * M9：提交前检查（§三十一 / §三十二）。
+   *
+   * ## ⚠ 这是 `stalenessReport` 的**唯一生产调用点**
+   *
+   * M1 交付了 stale 判定（`packages/core/src/staleness.ts`），但它此前
+   * **零生产调用** —— 只有单测在调。也就是说：判定逻辑是对的，
+   * 却没有任何地方在提交前真的用它拦人（与 W7 那条「定义存在 ≠ 被调用」
+   * 是同一类缺陷）。
+   *
+   * ## 七项检查与判据
+   *
+   * | 项 | 判据 |
+   * |---|---|
+   * | Manuscript 已保存 | 磁盘正文存在且与编辑器文本一致（编辑器没传就只判磁盘） |
+   * | Review 对应当前版本 | stale 判定（锚点 = 审阅结论的 sourceHash） |
+   * | Continuity 对应当前版本 | stale 判定（锚点 = continuity.json 的 sourceHash） |
+   * | State Proposal 对应当前版本 | stale 判定（锚点 = 提议的 sourceHash） |
+   * | State 已验证 | 最新提议 status === VERIFIED |
+   * | Summary 已确认 | chapters.summary_approved === 1 |
+   * | 无 Blocking | 审阅里没有 BLOCKING 级别问题 |
+   *
+   * ⚠ 前三项都走 `stalenessReport` 这**一个入口**（施工计划 M1 明确要求
+   *   「提交前检查（M9 用）调用同一入口，**不另写比对逻辑**」）——
+   *   另写一遍就等于同一个判断有两处实现，迟早分叉。
+   *
+   * ## ⚠ 为什么要传编辑器文本
+   *
+   * stale 判定必须用**作者眼前那一份**。作者改了字还没保存时，磁盘正文
+   * 还是旧的 —— 只比磁盘的话三项都会显示"对应当前版本"，
+   * 而实际提交用的是编辑器里那份，等于检查了个寂寞。
+   *
+   * ## ⚠ 「未保存」为什么会让锚点项也失败
+   *
+   * 编辑器有未保存改动时，我们**无法知道提交时会用哪一份内容**，
+   * 所以锚点项一并判失败并说明原因。这不是过度严格：M1 的 `stalenessOf`
+   * 对 `NO_ANCHOR` 就是「宁严不宽」（拒绝但如实说明），此处同一取向。
+   */
+  'commit.precheck': (params: { chapterId: string; editorText?: string }) => {
+    const p = requireProject();
+    const chapter = p.repos.chapters.get(params.chapterId);
+    const repo = manuscriptRepo();
+
+    const diskText = repo.get(chapter.book_id, chapter.chapter_number);
+    const editorText = typeof params.editorText === 'string' ? params.editorText : null;
+
+    // ⚠ 编辑器没传文本时只判磁盘（调用方明确表示"我就问磁盘这份"）
+    const dirty = editorText !== null && diskText !== null && editorText !== diskText;
+    // 提交会用的那一份：编辑器给了就用它，否则用磁盘
+    const effectiveText = editorText ?? diskText;
+    const currentHash = effectiveText === null ? null : sha256Text(effectiveText);
+
+    // ── 读三个产物的锚点 ──
+    const review = p.repos.chapters.readReview<{
+      sourceHash?: string | null;
+      issues?: readonly { severity?: string }[];
+    }>(chapter.id);
+    const reviewAnchor = review?.sourceHash ?? null;
+
+    let continuityAnchor: string | null = null;
+    const ws = new ChapterWorkspace({
+      rootDir: p.dir,
+      bookId: chapter.book_id,
+      chapterNumber: chapter.chapter_number,
+      logger: logger.child('workspace'),
+    });
+    if (ws.has('continuity')) {
+      try {
+        const raw = readFileSync(ws.pathOf('continuity'), 'utf8');
+        const parsed = JSON.parse(raw) as { sourceHash?: string | null };
+        continuityAnchor = parsed.sourceHash ?? null;
+      } catch {
+        // ⚠ 文件在但解析失败：锚点判 null（走 NO_ANCHOR，拒绝提交并说明
+        //   "没有版本锚点"）。不把解析失败当成"没有这份报告"——
+        //   两者对作者的下一步动作不同。
+        continuityAnchor = null;
+      }
+    }
+
+    const proposalRepo = new StateProposalRepository(p.db, logger.child('state'));
+    const proposal = proposalRepo.latestByChapter(chapter.id);
+    const proposalAnchor = proposal?.sourceHash ?? null;
+
+    // ── 三项锚点判定（同一个入口，不另写比对）──
+    const report = stalenessReport([
+      { artifact: 'review', anchoredHash: reviewAnchor, currentHash },
+      { artifact: 'continuity', anchoredHash: continuityAnchor, currentHash },
+      { artifact: 'proposed_state', anchoredHash: proposalAnchor, currentHash },
+    ]);
+
+    const checks: {
+      id: string;
+      label: string;
+      ok: boolean;
+      message: string;
+      hint?: string;
+    }[] = [];
+
+    // ① Manuscript 已保存
+    checks.push({
+      id: 'saved',
+      label: 'Manuscript 已保存',
+      ok: diskText !== null && !dirty,
+      message:
+        diskText === null
+          ? '正文还不存在（磁盘上没有这一章的内容）'
+          : dirty
+            ? '编辑器里有未保存的改动 —— 提交会用编辑器里的内容，先保存'
+            : '磁盘正文与编辑器一致',
+      ...(dirty ? { hint: '点「保存」后再提交' } : {}),
+    });
+
+    // ②③④ 三项锚点判定
+    for (const v of report.all) {
+      // ⚠ 未保存时**无法知道提交会用哪一份内容**，所以锚点项一并失败。
+      //   不这样做的话，作者改了 3000 字没保存，面板却显示三项全绿。
+      const ok = v.usableForCommit && !dirty;
+      // ⚠ 失败必须给"下一步做什么"：只说"未通过"等于让作者自己猜
+      //   该重跑什么。三种原因对应三种不同的动作，不能合并成一句。
+      const hint = dirty
+        ? '先保存，再重新检查'
+        : v.status === 'STALE'
+          ? '正文改过了，这一项需要重跑'
+          : v.status === 'NO_ANCHOR'
+            ? '这份结论没有版本锚点，请重跑一次'
+            : v.status === 'MISSING'
+              ? '这一项还没有结论，先跑一次'
+              : undefined;
+      checks.push({
+        id: v.artifact,
+        label: v.label + '对应当前版本',
+        ok,
+        message: dirty ? '编辑器有未保存改动，无法确认提交时会用哪一版正文' : v.message,
+        ...(ok || hint === undefined ? {} : { hint }),
+      });
+    }
+
+    // ⑤ State 已验证
+    const stateOk = proposal !== null && proposal.status === 'VERIFIED';
+    checks.push({
+      id: 'state_verified',
+      label: 'State 已验证',
+      ok: stateOk,
+      message:
+        proposal === null
+          ? '本章还没有状态提议（先跑一次状态结算）'
+          : proposal.status === 'VERIFIED'
+            ? '状态提议已通过验证'
+            : proposal.status === 'REJECTED'
+              ? '状态提议被拒（有依据不成立的条目），需修正后重跑'
+              : '状态提议尚未验证',
+      ...(stateOk ? {} : { hint: '到右栏「写作流程」跑一次状态结算' }),
+    });
+
+    // ⑥ Summary 已确认
+    const summaryOk = chapter.summary_approved === 1;
+    checks.push({
+      id: 'summary_approved',
+      label: 'Summary 已确认',
+      ok: summaryOk,
+      message: summaryOk
+        ? '摘要已确认'
+        : chapter.summary
+          ? '摘要已生成但**未经作者确认**'
+          : '本章还没有摘要',
+      ...(summaryOk ? {} : { hint: '确认摘要后才允许提交' }),
+    });
+
+    // ⑦ 无 Blocking
+    const hasBlocking = p.repos.chapters.hasBlockingReview(chapter.id);
+    const blockingCount = (review?.issues ?? []).filter(
+      (i) => i.severity === 'BLOCKING',
+    ).length;
+    checks.push({
+      id: 'no_blocking',
+      label: '无 Blocking 问题',
+      ok: !hasBlocking,
+      message: hasBlocking
+        ? blockingCount > 0
+          ? '审阅有 ' + blockingCount + ' 条阻断级问题'
+          : '本章尚未审阅（未审阅视为不可提交）'
+        : '没有阻断级问题',
+      ...(hasBlocking ? { hint: '先修完阻断问题并重跑审阅' } : {}),
+    });
+
+    const failed = checks.filter((c) => !c.ok);
+    return {
+      chapterId: chapter.id,
+      chapterNumber: chapter.chapter_number,
+      canCommit: failed.length === 0,
+      checks,
+      failedCount: failed.length,
+      /**
+       * ⚠ 把 stale 的原始判定一并带出去：面板除了"不通过"，
+       *   还要能说清"哪一版 vs 哪一版"（anchor 与 current 的前 8 位），
+       *   否则作者只知道"过期了"却不知道该重跑什么。
+       */
+      staleness: report.all.map((v: (typeof report.all)[number]) => ({
+        artifact: v.artifact,
+        status: v.status,
+        anchoredHash: v.anchoredHash === null ? null : v.anchoredHash.slice(0, 8),
+        currentHash: v.currentHash === null ? null : v.currentHash.slice(0, 8),
+      })),
+      dirty,
     };
   },
 
@@ -4637,6 +4845,10 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
   /** ⚠ 仅测试用（见下方注释）：GUI 验证流程注入审阅结论 */
   'review.__seed': (params: { chapterId: string; review: unknown; status: string }) =>
     seedReviewForFlow(params),
+
+  /** ⚠ 仅测试用：把三个结论的锚点对齐到当前正文（见下方注释） */
+  'commit.__seedAnchors': (params: { chapterId: string; verified?: boolean }) =>
+    seedAnchorsForFlow(params),
 };
 
 /**
@@ -4677,6 +4889,130 @@ function seedReviewForFlow(params: { chapterId: string; review: unknown; status:
   //   这类问题会被验证掩盖
   p.repos.chapters.saveReview(params.chapterId, params.review, params.status);
   return { ok: true };
+}
+
+/**
+ * ⚠ 仅测试用：把三个 stale 追踪产物的锚点**对齐到当前正文**。
+ *
+ * ## 为什么需要它
+ *
+ * M9 的验收里有一条施工计划点名的证伪测试：
+ * 「改一个字的正文 → 断言 Review/Continuity/State 三项**同时**变 STALE」。
+ *
+ * 要测出 STALE，前置状态必须是 FRESH —— 而 GUI 验证刻意不连模型，
+ * 三个产物要么不存在（MISSING），要么是老数据没有锚点（NO_ANCHOR），
+ * **永远到不了 STALE 分支**。测不到 STALE 就等于没测 stale 判定本身
+ * （只测出了"没有结论"这种平凡情形）。
+ *
+ * 这个 handler 做的是"假装三份分析都在当前正文上跑过"：
+ * 锚点写成当前正文的哈希。它不绕过任何生产判定 —— 写入之后
+ * `commit.precheck` 的读取、比对、判定全是真的。
+ *
+ * ⚠ 与 `review.__seed` 同一个开关（`NWA_GUI_FLOW`），理由相同。
+ */
+function seedAnchorsForFlow(params: {
+  chapterId: string;
+  verified?: boolean;
+  /**
+   * ⚠ 清理本次注入写下的工作区文件。
+   *
+   * 为什么必须清：§43 的进度条断言比较「流程中途报的完成步」与
+   * 「流程结束后磁盘上的产物文件」，两者必须对应同一时点。
+   * 注入发生在流程**之后**，留下的 continuity.json 会让那个比较
+   * 看到"进度条没报 Continuity，磁盘却有 continuity.json" ——
+   * 断言失败，而原因与被测代码无关（实测就撞上了）。
+   *
+   * 注入是测试夹具，夹具用完要还原现场，这是它自己的责任。
+   */
+  cleanup?: boolean;
+}): {
+  ok: true;
+  hash: string;
+  cleaned?: boolean;
+} {
+  if (process.env['NWA_GUI_FLOW'] !== '1') {
+    throw new AppError(
+      ErrorCode.TOOL_VALIDATION_ERROR,
+      'commit.__seedAnchors 仅在 GUI 验证流程（NWA_GUI_FLOW=1）中可用',
+    );
+  }
+  const p = requireProject();
+  const chapter = p.repos.chapters.get(params.chapterId);
+
+  // ⚠ cleanup 必须是**独立分支且最先处理**：它只负责删掉夹具写下的文件。
+  //   若放在 seed 之后，seed 抛错（例如重复建同 id 的提议撞 UNIQUE）
+  //   就永远走不到清理 —— 现场还原不了，还会连带弄挂后面的断言。
+  //   夹具的清理路径不该依赖夹具的写入路径成功。
+  if (params.cleanup === true) {
+    const ws0 = new ChapterWorkspace({
+      rootDir: p.dir,
+      bookId: chapter.book_id,
+      chapterNumber: chapter.chapter_number,
+      logger: logger.child('workspace'),
+    });
+    const f = ws0.pathOf('continuity');
+    if (existsSync(f)) rmSync(f, { force: true });
+    return { ok: true, hash: '', cleaned: true };
+  }
+
+  const repo = manuscriptRepo();
+  const text = repo.get(chapter.book_id, chapter.chapter_number) ?? '';
+  const hash = sha256Text(text);
+
+  // ① Review：走生产仓储，锚点 = 当前正文哈希
+  p.repos.chapters.saveReview(
+    chapter.id,
+    { overallStatus: 'PASS', issues: [], sourceHash: hash },
+    'PASS',
+  );
+
+  // ② Continuity：写工作区报告文件（与真实流程同一路径）
+  const ws = new ChapterWorkspace({
+    rootDir: p.dir,
+    bookId: chapter.book_id,
+    chapterNumber: chapter.chapter_number,
+    logger: logger.child('workspace'),
+  });
+  writeFileSync(
+    ws.pathOf('continuity'),
+    JSON.stringify({ ok: true, blockingCount: 0, warningCount: 0, issues: [], sourceHash: hash }),
+    'utf8',
+  );
+
+  // ③ State Proposal：走生产仓储建提议；verified=true 时再走生产 verify()
+  const propRepo = new StateProposalRepository(p.db, logger.child('state'));
+  const prop = propRepo.create({
+    id: 'prop_' + chapter.id + '_seed_' + String(Date.now()),
+    chapterId: chapter.id,
+    bookId: chapter.book_id,
+    sourceHash: hash,
+  });
+  if (params.verified === true) {
+    // ⚠ 走生产 verify()（只允许 PROPOSED → VERIFIED），不直接改库
+    propRepo.verify(
+      prop.id,
+      {
+        verifiedCount: 0,
+        rejectedCount: 0,
+        byKind: {},
+        verdicts: [],
+        draftLength: text.length,
+        verifiedAt: new Date().toISOString(),
+      },
+      'VERIFIED',
+    );
+  }
+
+  // ④ Summary 也一并确认，让"七项全绿"这条路径可测。
+  //   ⚠ 必须先有摘要候选 —— approveSummary 对没有摘要的章节会抛错
+  //     （这是对的：确认一条不存在的摘要没有意义），
+  //     所以这里先写候选再确认，两步都走生产方法。
+  if (params.verified === true) {
+    p.repos.chapters.setSummaryCandidate(chapter.id, '雨夜，他没有回头。');
+    p.repos.chapters.approveSummary(chapter.id);
+  }
+
+  return { ok: true, hash };
 }
 
 async function handle(req: CoreRequest): Promise<void> {

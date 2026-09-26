@@ -71,6 +71,7 @@ const SAVE_STATUS = {
 import { renderDiffPanel } from './manuscript/diff-view.js';
 import { renderVersionPanel } from './manuscript/version-panel.js';
 import { renderIssuePanel } from './manuscript/issue-panel.js';
+import { renderCommitPrecheck } from './manuscript/precheck-panel.js';
 
 export function renderManuscriptEditor({ el, invoke, msg, chapter }) {
   const box = el('div', 'editor');
@@ -186,6 +187,18 @@ export function renderManuscriptEditor({ el, invoke, msg, chapter }) {
   // ⚠ 定位必须用**编辑器当前文本**而不是磁盘正文：
   //   作者可能改了还没保存，用磁盘正文算出来的区间会对不上眼前看到的字。
   // ─────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────
+  // M9：提交前检查面板（§三十一 / §三十二）
+  // ─────────────────────────────────────────────────────────
+  const precheckPanel = renderCommitPrecheck({
+    el,
+    invoke,
+    msg,
+    chapter,
+    getText: () => area.value,
+  });
+  box.append(precheckPanel);
+
   const issuePanel = renderIssuePanel({
     el,
     invoke,
@@ -463,6 +476,9 @@ export function renderManuscriptEditor({ el, invoke, msg, chapter }) {
 
     recomputeStatus();
     await refreshMetrics();
+    // ⚠ 正文加载完成后再跑预检 —— 面板构造时 area.value 还是空的，
+    //   那时跑会把"还没加载"误判成"有未保存改动"。
+    void precheckPanel.refreshPrecheck();
   }
 
   async function doRestore() {
@@ -541,13 +557,18 @@ export function renderManuscriptEditor({ el, invoke, msg, chapter }) {
   btnDiscard.addEventListener('click', () => void doDiscard());
 
   btnCommit.addEventListener('click', () => {
-    // ⚠ M4 只做入口与说明，真正的提交链路在 M9（提交前检查面板）。
-    //   这里**不**直接调 workspace.commit —— 那会绕过 §三十一 要求的
-    //   提交前检查（Review / Continuity / State Settlement）。
-    statusLine.className = 'form-msg form-msg--warn';
-    statusLine.textContent =
-      '提交前检查面板尚未接入（M9）。当前请先点「保存」，' +
-      '再到右栏「写作流程」跑完整工作流完成提交。';
+    // ⚠ 这个按钮**不直接提交** —— 它跑一次 §三十一 的七项检查并把结果
+    //   摆出来。真正的提交由「写作流程」跑完整工作流完成。
+    //
+    //   不让它调 commit 是刻意的：§三十一 要求提交必须经过这七项，
+    //   而"绕过检查的提交入口"本身就是个缺陷 —— 留一个在这里，
+    //   作者迟早会用它，检查就白做了。
+    statusLine.className = 'form-msg';
+    statusLine.textContent = '正在跑提交前检查…';
+    void precheckPanel.refreshPrecheck().then(() => {
+      statusLine.textContent =
+        '检查结果见下方「提交前检查」。真正的提交请到右栏「写作流程」跑完整工作流。';
+    });
   });
 
   /**

@@ -748,3 +748,25 @@ body {
 .issue-row__cat { font-size: 11px; color: var(--muted); }
 .issue-row__claim { font-size: 13px; line-height: 1.6; }
 .issue-row__sug { margin: 0; padding-left: 18px; font-size: 12px; color: var(--muted); }
+
+/* ── M9：提交前检查面板 ─────────────────────────────────── */
+.precheck { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+.precheck__head { display: flex; align-items: center; gap: 10px; }
+.precheck__head h3 { margin: 0; font-size: 14px; }
+.precheck__list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.precheck__row {
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 4px;
+  padding: 7px 10px;
+}
+.precheck__row--ok { border-left-color: var(--ok); }
+.precheck__row--fail { border-left-color: var(--err); }
+.precheck__top { display: flex; align-items: center; gap: 8px; }
+.precheck__mark { font-weight: 700; font-size: 13px; }
+.precheck__row--ok .precheck__mark { color: var(--ok); }
+.precheck__row--fail .precheck__mark { color: var(--err); }
+.precheck__label { font-size: 13px; }
+.precheck__msg { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.precheck__hint { font-size: 12px; color: var(--warn); margin-top: 3px; }
+.precheck__hash { font-family: monospace; font-size: 11px; color: var(--muted); margin-top: 3px; }
