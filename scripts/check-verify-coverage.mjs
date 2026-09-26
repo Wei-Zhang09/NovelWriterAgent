@@ -79,6 +79,7 @@ const CLASSIFY = {
   'verify:summary-gate': 'needs-model',
   'verify:books': 'needs-model',
   'verify:chain': 'needs-model',
+  'verify:deslop-calib': 'needs-model',
 };
 
 const ALLOWED_KINDS = new Set(['aggregate', 'standalone', 'needs-model']);

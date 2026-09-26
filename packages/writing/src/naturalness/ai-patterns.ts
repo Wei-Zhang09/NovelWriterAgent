@@ -40,6 +40,23 @@ import {
   findTrailerEndings,
   findVoiceContrast,
 } from './ported-detectors.js';
+import {
+  findAbstractSummaryTic,
+  findActionListTic,
+  findClicheDensityTic,
+  findFormulaicParallelism,
+  findLongParagraphs,
+  findLowConnectiveDensityTic,
+  findMetaphorDensityTic,
+  findMicroActionTic,
+  findNoticeFormalityTic,
+  findOvercompressedProseTic,
+  findPeriodStutter,
+  findQuoteEmphasisTic,
+  findReasoningChainTic,
+  findStockReactionTic,
+  type AdvisoryHit,
+} from './advisory-detectors.js';
 
 export type AiPatternCode =
   // ── 本项目自研（ADR-0007 双层设计的段级布尔判定）──
@@ -59,7 +76,26 @@ export type AiPatternCode =
   | 'negation_parade'
   | 'trailer_ending'
   | 'trailer_summary'
-  | 'em_dash';
+  | 'em_dash'
+  // ── 移植自 oh-story-claudecode 的 14 类 advisory（ADR-0009）──
+  // ⚠ 与上面 7 类 blocking 的区别是**检测形状**：
+  //   blocking 逐处报（一处命中=一个问题）；
+  //   advisory 大多是**分布级**（全文只报一条，问的是"整章分布像不像机器写的"）。
+  //   详见 advisory-detectors.ts 顶部注释。
+  | 'long_paragraph'
+  | 'formulaic_parallelism'
+  | 'action_list_tic'
+  | 'period_stutter'
+  | 'micro_action_tic'
+  | 'stock_reaction_tic'
+  | 'cliche_density_tic'
+  | 'metaphor_density_tic'
+  | 'reasoning_chain_tic'
+  | 'system_notice_formality_tic'
+  | 'overcompressed_prose_tic'
+  | 'low_connective_density_tic'
+  | 'abstract_summary_tic'
+  | 'quote_emphasis_tic';
 
 export interface AiPatternHit {
   readonly code: AiPatternCode;
@@ -450,6 +486,86 @@ export function detectAiPatterns(paragraphs: readonly string[]): AiPatternHit[] 
       if (seen.has(key)) continue;
       seen.add(key);
       hits.push({ code, excerpt: f.excerpt, paragraph: f.paragraph, detail, severity: 'blocking', offset: -1 });
+    }
+  }
+
+  // ── 移植的 14 类 advisory（ADR-0009）──
+  //
+  // ⚠ 两类**检测形状**必须区别对待，混用会毁掉正文：
+  //
+  //   · 逐段型（long_paragraph / formulaic_parallelism / action_list_tic /
+  //     period_stutter）：一处命中就是一处问题 → 逐条报。
+  //   · 分布型（其余 10 类）：问的是"**整章分布**像不像机器写的"
+  //     （比喻密度、功能词密度、短段占比…）。单个比喻、单个"了"都不是问题，
+  //     所以**全文只报一条**，报的是分布指纹。
+  //
+  //   把分布型当逐处问题让作者改，等于要求他删掉正文里所有比喻 ——
+  //   上游对每条都写明"修法是通读后补断裂处，不是为凑阈值全局加的/了/就"。
+  //
+  // ⚠ severity 一律 advisory：ADR-0009 明确「所有命中先以 advisory 上线，
+  //   只有经真实语料验证的类别才升为 blocking」—— 上游的 blocking/advisory
+  //   分级是它在**网文语料**上的校准结论，本项目语料未必相同。
+  //   本模块如实保留上游分级供参考（见 PORTED_RULES / ADVISORY_RULES），
+  //   但下游 reviewer 默认按 advisory 处理：数据不失真，行为取保守。
+  const advisoryGroups: readonly (readonly [AiPatternCode, string, readonly AdvisoryHit[]])[] = [
+    ['long_paragraph',
+      '段落过长：按镜头/新动作/新线索/视线切换断段，别一段到底',
+      findLongParagraphs(paragraphs)],
+    ['formulaic_parallelism',
+      '工整排比框架：「至于X不X」「不V A，不V B」「不是…/也不是…/只是…」；可能承担辩解或悬念排除，通读语境后只在重复细纲或拖慢画面时改写',
+      findFormulaicParallelism(paragraphs)],
+    ['action_list_tic',
+      '监控摄像头式动作清单：合并琐碎步骤，只保留有情绪/情节功能的动作，必要时用角色犹豫、误判或环境反馈做缓冲',
+      findActionListTic(paragraphs)],
+    ['period_stutter',
+      '碎句号：连续短句无呼吸；按目标句长把碎句合并成中长句、补回画面与连接',
+      findPeriodStutter(paragraphs)],
+    ['micro_action_tic',
+      '微动作复读：「了下/了一下」式轻量补语高密度复现是机械指纹；合并动作 beat、换具体细节，别每个动作都补一个轻反应尾巴',
+      findMicroActionTic(paragraphs)],
+    ['stock_reaction_tic',
+      '套式反应细节：指尖/指节/喉结/眼圈/声音放轻等通用反应或"平静得像在念"式语气比喻；逐处做删除测试，只标注情绪、不改变选择/关系/物件或动作结果的删掉',
+      findStockReactionTic(paragraphs)],
+    ['cliche_density_tic',
+      '套词密度过高：不要同义词轮换，改成角色当下可见的动作、物件、对话和具体后果',
+      findClicheDensityTic(paragraphs)],
+    ['metaphor_density_tic',
+      '比喻密度过高：保留最有叙事功能的少数比喻，其余回到具体动作、物件、声音或后果，不要换成新比喻',
+      findMetaphorDensityTic(paragraphs)],
+    ['reasoning_chain_tic',
+      '解释链密度过高：像逻辑报告时，把判断落到角色当下可见的动作、物件、对话和现场反馈',
+      findReasoningChainTic(paragraphs)],
+    ['system_notice_formality_tic',
+      '系统公告公文腔过密：保留为角色看见的屏幕/公告/规则载体，只在载体内部白话化部分硬词，或补角色当场看懂的具体后果',
+      findNoticeFormalityTic(paragraphs)],
+    ['overcompressed_prose_tic',
+      '过度精炼短段：先通读判断，确有提纲感再补断裂处和必要结构虚词，有意短镜头可留，别机械注水',
+      findOvercompressedProseTic(paragraphs)],
+    ['low_connective_density_tic',
+      '低连接密度：容易像提纲/电报体。通读后补必要连接和中长句群，别机械注水',
+      findLowConnectiveDensityTic(paragraphs)],
+    ['abstract_summary_tic',
+      '抽象总结复读：命运/棋局/这一刻终于明白等作者总结；回到角色当下可见的文件、动作、对话或物理后果，别替读者盖章',
+      findAbstractSummaryTic(paragraphs)],
+    ['quote_emphasis_tic',
+      '引号强调滥用：只留真正反讽/转述必要的一两处，其余去掉引号直接写，或换成具体动作让读者自己品',
+      findQuoteEmphasisTic(paragraphs)],
+  ];
+
+  for (const [code, detail, found] of advisoryGroups) {
+    for (const f of found) {
+      const key = `${f.paragraph}:${code}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      hits.push({
+        code,
+        excerpt: f.excerpt,
+        paragraph: f.paragraph,
+        detail,
+        severity: 'advisory',
+        // ⚠ 分布型检测报的是"首次命中所在段"，给不出段内偏移 → 如实用 -1
+        offset: -1,
+      });
     }
   }
 

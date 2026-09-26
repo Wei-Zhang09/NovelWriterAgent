@@ -9,6 +9,24 @@
 export * from './naturalness/detectors.js';
 export { detectAiPatterns, AI_RULES } from './naturalness/ai-patterns.js';
 export type { AiPatternCode, AiPatternHit } from './naturalness/ai-patterns.js';
+export {
+  ADVISORY_RULES,
+  findAbstractSummaryTic,
+  findActionListTic,
+  findClicheDensityTic,
+  findFormulaicParallelism,
+  findLongParagraphs,
+  findLowConnectiveDensityTic,
+  findMetaphorDensityTic,
+  findMicroActionTic,
+  findNoticeFormalityTic,
+  findOvercompressedProseTic,
+  findPeriodStutter,
+  findQuoteEmphasisTic,
+  findReasoningChainTic,
+  findStockReactionTic,
+} from './naturalness/advisory-detectors.js';
+export type { AdvisoryHit, AdvisoryRuleCode } from './naturalness/advisory-detectors.js';
 
 // ── Prompt 模块化（§31） ─────────────────────────────────────
 export * from './prompts/index.js';

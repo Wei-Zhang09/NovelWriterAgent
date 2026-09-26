@@ -60,7 +60,8 @@
     "verify:autosave-scheduler": "node apps/desktop/scripts/verify-autosave-scheduler.mjs",
     "verify:standalone": "node scripts/run-verify-standalone.mjs",
     "check:verify": "node scripts/check-verify-coverage.mjs",
-    "verify:chain": "electron apps/desktop/scripts/verify-full-chain.mjs"
+    "verify:chain": "electron apps/desktop/scripts/verify-full-chain.mjs",
+    "verify:deslop-calib": "node apps/desktop/scripts/verify-deslop-calibration.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
