@@ -108,6 +108,9 @@ try {
     });
     const report = engine.commit({
       chapterId: chapter.id,
+      // ⚠ 必须显式传 bookId（P0-1 按书隔离）：落盘路径与 FTS 的隔离键都由它决定。
+      //   漏传会在 `chapterRel()` 里抛 "bookId 不能为空"，本脚本此前因此整跑失败。
+      bookId: bid,
       chapterNumber: n,
       body,
       summary,
@@ -239,7 +242,10 @@ try {
   void chapterDir;
   check('无缺失的正式章节文件', orphans.length === 0, `缺失 ${orphans.length} 个`);
 } catch (e) {
-  check('未捕获异常', false, e instanceof Error ? e.message : String(e));
+  // ⚠ 打印 stack（不只 message）：异常可能来自深层调用，只有 message
+  //   会让人无从定位（此前只印 message，排查时得靠猜）。
+  const detail = e instanceof Error ? (e.stack ?? e.message) : String(e);
+  check('未捕获异常', false, detail.split('\n').slice(0, 8).join(' | '));
 } finally {
   try {
     db?.close();

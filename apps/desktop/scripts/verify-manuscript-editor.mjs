@@ -29,9 +29,8 @@
  * 而不是查界面上的文字。
  */
 
-import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const editorPath = join(here, '..', 'src', 'renderer', 'manuscript-editor.js');
@@ -143,10 +142,13 @@ globalThis.document = {
 // ─────────────────────────────────────────────────────────
 // 载入编辑器模块（真实源码，不是替身）
 // ─────────────────────────────────────────────────────────
-const src = readFileSync(editorPath, 'utf8');
-const mod = await import(
-  `data:text/javascript;base64,${Buffer.from(src, 'utf8').toString('base64')}`
-);
+// ⚠ 必须按**真实文件路径**导入，不能用 data: URL。
+//
+// 实测踩到：M6/M7/M8/M9 给本模块加了相对导入（./manuscript/diff-view.js 等），
+// 而 data: URL 的 base 不是层级 URL —— 相对说明符无法解析，直接抛
+// ERR_UNSUPPORTED_RESOLVE_REQUEST，整个脚本 exit 1。
+// 症状有误导性：报错里刷出整个文件的 base64，看不出是哪一步坏的。
+const mod = await import(pathToFileURL(editorPath).href);
 const { renderManuscriptEditor } = mod;
 
 const el = (tag, cls, text) => {

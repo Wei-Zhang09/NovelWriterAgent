@@ -4124,7 +4124,6 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     return { runId: params.runId, events: p.events.list(params.runId) };
   },
 
-  /** 最近一次 checkpoint（恢复入口） */
   /**
    * 暂停一个 Run（补缺口：Pause 的 UI 入口）。
    *
