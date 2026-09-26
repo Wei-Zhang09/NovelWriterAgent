@@ -133,18 +133,34 @@ export class Reviewer {
       }
 
       // §34 的 AI 味模式（模板化过渡 / 连接词堆叠 / 机械排比 …）
+      // + ADR-0009 移植的检测器（AI 高频对比句式 / 否定排比 / 章末体 …）
       //
-      // ⚠ 全部标 MINOR，**没有 BLOCKING** —— 这些是风格判断，
-      //   用它们阻断提交等于把风格偏好当硬约束（§34 只说"减少"）。
+      // ⚠⚠ 全部标 MINOR，**含移植来的 blocking 类别也一样**。
+      //
+      //   上游把这些标为 blocking，是**上游的**门禁语义。本项目不照搬，
+      //   因为 ADR-0009 的风险缓解写得很明确：
+      //     「所有命中先以 advisory 上线，只有经真实语料验证的类别才升为
+      //       blocking」—— 上游阈值是在**网文语料**上校准的，
+      //       本项目语料可能偏严，照搬会让误报率升高。
+      //   而 §34 的目标是"减少模板化表达"，不是"命中越多越好"。
+      //
+      //   数据侧不失真：`h.severity` 如实保留上游分级（供后续校准与统计），
+      //   行为侧取保守：一律 MINOR，不阻断提交。两者的区别是有意的。
       const paras = splitParagraphs(text);
       for (const h of detectAiPatterns(paras)) {
         out.push({
           id: `ai_${h.code}_p${h.paragraph}`,
           severity: 'MINOR',
           category: 'NATURALNESS',
-          claim: `${h.detail}（AI 味模式）`,
+          claim: `${h.detail}（AI 味模式${h.severity === 'blocking' ? '，上游标 blocking' : ''}）`,
           evidence: [],
-          location: { paragraph: h.paragraph, excerpt: h.excerpt },
+          location: {
+            paragraph: h.paragraph,
+            excerpt: h.excerpt,
+            // ⚠ 移植检测器能给出段内精确偏移（自研那 8 类是段级布尔，为 -1）。
+            //   带上它，M8 的「点 Issue 跳到正文」才能落到具体那一段的那一处。
+            ...(h.offset >= 0 ? { offset: h.offset } : {}),
+          },
           suggestions: [],
         });
       }

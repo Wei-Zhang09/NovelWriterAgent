@@ -31,7 +31,18 @@
  */
 
 /** AI 味模式的代码 */
+import {
+  type PortedHit,
+  findEmDashes,
+  findNegationParade,
+  findNotIsComparisons,
+  findReverseNotIs,
+  findTrailerEndings,
+  findVoiceContrast,
+} from './ported-detectors.js';
+
 export type AiPatternCode =
+  // ── 本项目自研（ADR-0007 双层设计的段级布尔判定）──
   | 'ai_connective_stack'
   | 'ai_template_transition'
   | 'ai_adjective_pile'
@@ -39,7 +50,16 @@ export type AiPatternCode =
   | 'ai_summary_tail'
   | 'ai_parallel_enumeration'
   | 'ai_vague_scenery'
-  | 'ai_explained_again';
+  | 'ai_explained_again'
+  // ── 移植自 oh-story-claudecode（ADR-0009）──
+  // ⚠ 命名保留其 kebab-case 语义（转下划线），便于与上游对照
+  | 'not_is_comparison'
+  | 'reverse_not_is'
+  | 'voice_contrast'
+  | 'negation_parade'
+  | 'trailer_ending'
+  | 'trailer_summary'
+  | 'em_dash';
 
 export interface AiPatternHit {
   readonly code: AiPatternCode;
@@ -48,6 +68,34 @@ export interface AiPatternHit {
   /** 段落序号（1-based） */
   readonly paragraph: number;
   readonly detail: string;
+  /**
+   * 严重级别（ADR-0009 §2 要求：统一到本项目契约，不新建并行结构）。
+   *
+   * ⚠ 上游的 `blocking` / `advisory` 分级是它最有价值的部分 ——
+   *   但**上游说 blocking 不等于本项目就该阻断提交**。
+   *   ADR-0009 的风险缓解明确写着：
+   *     「所有命中先以 advisory 上线，只有经真实语料验证的类别才升为 blocking」
+   *   因为上游阈值是在**网文语料**上校准的，本项目语料可能偏严，
+   *   照搬阈值会让误报率升高 —— 而 §34 的目标是"减少模板化表达"，
+   *   不是"命中越多越好"。
+   *
+   *   所以这里**如实保留上游的 severity 供参考与后续校准**，
+   *   但下游（reviewer）默认按 advisory 处理。两者的区别是有意的：
+   *   数据不失真，行为取保守。
+   */
+  readonly severity: 'blocking' | 'advisory';
+  /**
+   * 命中位置在**该段内**的字符偏移（0-based）。
+   *
+   * ⚠ 与 `paragraph` 配对使用：`paragraph` 定位到段，`offset` 定位到段内。
+   *   移植的检测器是**字符级**的（正则 exec 给出 index），
+   *   而自研的 8 类是**段级布尔**判定，给不出精确偏移 ——
+   *   那些规则此字段为 `-1`。
+   *
+   * ⚠ 用 `-1` 而不是 `null` 或 `0` 表示"无偏移"：
+   *   0 是合法偏移（段首），用 0 会让 UI 把"整段命中"画在段首。
+   */
+  readonly offset: number;
 }
 
 interface AiRule {
@@ -308,6 +356,9 @@ export function detectAiPatterns(paragraphs: readonly string[]): AiPatternHit[] 
           excerpt: p.slice(0, 60),
           paragraph: idx + 1,
           detail: rule.detail,
+          // ⚠ 自研规则是**段级布尔**判定，没有精确偏移 —— 用 -1 如实表示
+          severity: 'advisory',
+          offset: -1,
         });
       }
     }
@@ -325,7 +376,80 @@ export function detectAiPatterns(paragraphs: readonly string[]): AiPatternHit[] 
         excerpt: paragraphs[i]!.slice(0, 60),
         paragraph: i + 1,
         detail: `重复解释同一情绪（「${dup}」在相邻段落被再次说明）`,
+        severity: 'advisory',
+        offset: -1,
       });
+    }
+  }
+
+  // ── 移植的检测器（ADR-0009）──────────────────────────────
+  //
+  // ⚠ 与自研的 8 类**并存**而不是替换：自研那 8 类是段级布尔判定，
+  //   覆盖"整段像不像 AI"；移植这些是字符级正则，覆盖"这一句是不是
+  //   AI 高频模板"。两者命中的东西不同，替换会丢掉一半覆盖。
+  //
+  // ⚠ 去重：同一段落同一 code 只报一次（正则可能在同一段命中多处，
+  //   逐处报会让作者看到一屏重复提示，反而忽略真正的问题）
+  const seen = new Set(hits.map((h) => `${h.paragraph}:${h.code}`));
+  const addPorted = (
+    paragraph: number,
+    code: AiPatternCode,
+    severity: 'blocking' | 'advisory',
+    detail: string,
+    found: readonly PortedHit[],
+  ): void => {
+    for (const f of found) {
+      const key = `${paragraph}:${code}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      hits.push({
+        code,
+        excerpt: f.excerpt,
+        paragraph,
+        detail,
+        severity,
+        offset: typeof f.start === 'number' ? f.start : -1,
+      });
+    }
+  };
+
+  paragraphs.forEach((p, idx) => {
+    const para = idx + 1;
+    addPorted(para, 'not_is_comparison', 'blocking',
+      '高频 AI 对比句式；删掉否定铺垫，直接写后项，或改成动作/细节呈现',
+      findNotIsComparisons(p));
+    addPorted(para, 'reverse_not_is', 'blocking',
+      '反序对比腔：「是A，不是B」与「不是A，是B」同族；删掉后置否定，直接写 A 的具体表现',
+      findReverseNotIs(p));
+    addPorted(para, 'voice_contrast', 'blocking',
+      '音量反差腔：「声音不大…却/但…」是 AI 高频反差模板；直接写声音落进场子的具体效果',
+      findVoiceContrast(p));
+    addPorted(para, 'negation_parade', 'blocking',
+      '否定排比：「没有X，没有Y…」是 AI 高频排比模板；直接写现场实际有什么',
+      findNegationParade(p));
+    addPorted(para, 'em_dash', 'blocking',
+      '破折号按功能改写：打断→动作 beat/短句，拖长音→省略或动作，插入说明→逗号/冒号',
+      findEmDashes(p));
+  });
+
+  // ── 章末体：只在**结尾窗口**里查 ──
+  //
+  // ⚠ 必须限定窗口：全文查的话，正文中间出现的「殊不知」也会被报成
+  //   "章末预告体"，而作者会以为自己结尾写坏了 —— 定位完全错误。
+  const trailer = findTrailerEndings(paragraphs);
+  for (const [code, list, detail] of [
+    ['trailer_ending', trailer.endings,
+      '章末预告体：「没人知道…」「才刚刚开始…」是 AI 收尾模板；用具体细节收，不预告'],
+    ['trailer_summary', trailer.summaries,
+      '章末总结体：「这一夜注定…」是 AI 收尾模板；用具体细节收，不总结'],
+  ] as const) {
+    for (const f of list) {
+      // ⚠ 段号用**检测器报的实际段号**，不是循环变量 ——
+      //   章末体命中的是结尾窗口里那一段，不是第 1 段
+      const key = `${f.paragraph}:${code}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      hits.push({ code, excerpt: f.excerpt, paragraph: f.paragraph, detail, severity: 'blocking', offset: -1 });
     }
   }
 
