@@ -204,6 +204,14 @@ export function createAllTools(
     /** 解析当前书 id（Continuity 检查需要）；缺省时用第一个书 */
     resolveBookId?: () => string;
     logger?: import('@nwa/core').Logger;
+    /**
+     * 计划工具的门禁（W6 开书向导）。
+     *
+     * ⚠ 单独一项而不是复用 `commit.assertGateOpen`：commit 工具在
+     *   `project.open` 时才注册（需要项目目录），而计划工具随时可用。
+     *   复用它会让"未打开项目时计划门禁静默失效"。
+     */
+    planGate?: { readonly assertGateOpen?: (bookId: string) => void };
     /** Commit 相关依赖：缺省时不注册 commit 工具（测试与无项目场景） */
     commit?: {
       readonly db: import('@nwa/storage').Database;
@@ -248,7 +256,7 @@ export function createAllTools(
     ...createProjectTools(repos),
     ...createChapterTools(repos),
     // STEP 6：计划相关工具（chapter.plan / chapter.getPlan）
-    ...createPlanTools(repos),
+    ...createPlanTools(repos, opts?.planGate),
     // STEP 8：审阅（review.run / review.get / review.categories）
     ...createReviewTools(repos),
     // STEP 9：事实与证据（fact.* / evidence.*）

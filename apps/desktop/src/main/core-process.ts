@@ -22,6 +22,8 @@ import {
   perSceneWords,
   evaluateSettingsGate,
   hashSettings,
+  evaluateBlueprintGate,
+  BLUEPRINT_STEP_LABELS,
   measureText,
   sha256Text,
   chapterRel,
@@ -34,6 +36,9 @@ import {
   canProcess,
   confirmBookSettings,
   createRepositories,
+  evaluateBookBlueprintGate,
+  blueprintStateOf,
+  confirmBookBlueprint,
   ensureBookDirs,
   filterSkillsByGenre,
   migrateLegacyLayout,
@@ -174,7 +179,29 @@ let opened: OpenProject | null = null;
  */
 let encryptionAvailable: boolean | null = null;
 
-/** main 在启动时通过 event 告知加密可用性 */
+/** main 在启动时通过 event 告知加密可用性 *//**
+ * 计划工具的门禁断言（W6 开书向导）。
+ *
+ * ⚠ 与 `workflow-services` 里的 `assertBlueprintGate` **同一判定**，
+ *   但**不能共用** —— 那一份是闭包在 services 里的私有函数，
+ *   而工具层在 `@nwa/harness`，不该依赖 `@nwa/storage` 的门禁装配细节。
+ *   所以这里注入一个薄回调，判定逻辑仍是 `evaluateBookBlueprintGate`
+ *   （唯一实现），只是由 app 层负责调用。
+ *
+ * ⚠ 用传入的 bookId，**不做"当前书"解析** ——
+ *   P0-4 记录过：按 created_at 取 [0] 会拿到最旧的书，
+ *   导致"给 B 书写的计划被 A 书的门禁放行"。
+ */
+function assertBlueprintGateForTool(repos: Repositories, bookId: string): void {
+  const verdict = evaluateBookBlueprintGate(repos, bookId);
+  if (!verdict.allowed) {
+    throw new AppError(ErrorCode.BLUEPRINT_NOT_CONFIRMED, verdict.message, {
+      details: { bookId, reason: verdict.reason, unfinished: verdict.unfinished },
+    });
+  }
+}
+
+
 function setEncryptionAvailable(v: boolean): void {
   encryptionAvailable = v;
 }
@@ -923,6 +950,8 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     // ⚠ commit 工具需要项目目录（写 chapters/ 等），只能在 project.open 注册
     for (const tool of createAllTools(repos, {
       logger: logger.child('tools'),
+      // ⚠ 计划工具直接写库，绕过服务层门禁 —— 必须在这里也拦（W6）
+      planGate: { assertGateOpen: (bookId) => assertBlueprintGateForTool(repos, bookId) },
       commit: {
         db,
         rootDir: dir,
@@ -1143,6 +1172,68 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     const row = p.repos.books.setSettingsGate(params.bookId, params.enabled);
     logger.info('设定门禁已切换', { bookId: params.bookId, enabled: params.enabled });
     return { bookId: row.id, gateEnabled: row.settings_gate_enabled === 1 };
+  },
+
+  // ── 开书向导（W6 统一确认门禁）──────────────────────────────
+  //
+  // ⚠ 这四个 handler 是「最后确认一切前置信息」这句诉求的**唯一入口**。
+  //   W1–W5 建好了数据层与生成层，但没有任何 IPC —— 也就是说
+  //   作者在界面上**够不着**统一确认。规则 30：没入口的能力等于不存在。
+
+  /**
+   * 查询向导状态（供 UI 显示"走到哪一步、还差什么"）。
+   *
+   * ⚠ 返回**判定结果**而不只是原始字段：UI 不该自己重算门禁逻辑 ——
+   *   两处实现迟早分叉，分叉的后果是"界面说能写、后端拒绝"。
+   */
+  'blueprint.status': (params: { bookId: string }) => {
+    const p = requireProject();
+    const state = blueprintStateOf(p.repos, params.bookId);
+    const verdict = evaluateBlueprintGate(state);
+    return {
+      bookId: params.bookId,
+      gateEnabled: state.gateEnabled,
+      confirmedAt: p.repos.blueprint.blueprintOf(params.bookId).confirmed_at,
+      steps: state.steps.map((st) => ({
+        step: st.step,
+        label: BLUEPRINT_STEP_LABELS[st.step],
+        status: st.status,
+      })),
+      allowed: verdict.allowed,
+      reason: verdict.reason,
+      message: verdict.message,
+      unfinished: verdict.unfinished,
+    };
+  },
+
+  /**
+   * 统一确认全部前置信息（用户说的「最后确认一切前置信息」）。
+   *
+   * ⚠ 走 `confirmBookBlueprint` 这个**唯一实现**（与测试同一条路径），
+   *   不在 IPC 里重写序列 —— 否则"IPC 里写错了"测试照样绿
+   *   （`confirmBookSettings` 的注释记着这个教训）。
+   */
+  'blueprint.confirmAll': (params: { bookId: string }) => {
+    const p = requireProject();
+    const { hash, steps } = confirmBookBlueprint(p.repos, params.bookId);
+    logger.info('开书向导前置信息已统一确认', { bookId: params.bookId, steps, hash });
+    return { bookId: params.bookId, confirmed: true, steps, hash };
+  },
+
+  /** 撤回统一确认（前置内容改动后重新走一遍） */
+  'blueprint.revokeConfirm': (params: { bookId: string }) => {
+    const p = requireProject();
+    p.repos.blueprint.revokeConfirm(params.bookId);
+    logger.info('开书向导统一确认已撤回', { bookId: params.bookId });
+    return { bookId: params.bookId, confirmed: false };
+  },
+
+  /** 开关向导门禁（与 settings 门禁分开，理由见 0022 迁移注释） */
+  'blueprint.setGate': (params: { bookId: string; enabled: boolean }) => {
+    const p = requireProject();
+    const row = p.repos.books.setBlueprintGate(params.bookId, params.enabled);
+    logger.info('开书向导门禁已切换', { bookId: params.bookId, enabled: params.enabled });
+    return { bookId: row.id, gateEnabled: row.blueprint_gate_enabled === 1 };
   },
 
   // ── 通过 Tool Registry 调用（统一走权限与校验门禁） ────────
@@ -4382,7 +4473,10 @@ function bootstrap(): void {
   const tools = new ToolRegistry(logger.child('tools'));
   // bootstrap 阶段还没有项目目录，故不注册 commit 工具
   // （commit 工具在 project.open 时随 dir 一起注册）
-  for (const tool of createAllTools(repos, { logger: logger.child('tools') })) {
+  for (const tool of createAllTools(repos, {
+      logger: logger.child('tools'),
+      planGate: { assertGateOpen: (bookId) => assertBlueprintGateForTool(repos, bookId) },
+    })) {
       tools.register(tool);
     }
   const events = new EventBus({ runs: repos.runs, logger: logger.child('events') });

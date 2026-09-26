@@ -29,6 +29,14 @@ export interface BookRow extends Timestamped {
   /** 确认设定时记录的内容指纹；`null` = 从未确认 / 确认后又被改动 */
   readonly settings_confirmed_hash: string | null;
   readonly settings_confirmed_at: string | null;
+  /**
+   * 开书向导门禁是否启用（W6，默认 1）。
+   *
+   * ⚠ 与 `settings_gate_enabled` **分开**：两道门禁管不同的事
+   *   （见 `0022_blueprint_gate.sql` 的文件头注释）。
+   *   合成一个开关会让"想关其中一道"变成"两道都关"。
+   */
+  readonly blueprint_gate_enabled: number;
 }
 
 export interface CreateProjectInput {
@@ -226,6 +234,17 @@ export class BookRepository {
   setSettingsGate(bookId: string, enabled: boolean): BookRow {
     this.db.run(
       'UPDATE books SET settings_gate_enabled = ?, updated_at = ? WHERE id = ?',
+      enabled ? 1 : 0,
+      now(),
+      bookId,
+    );
+    return this.get(bookId);
+  }
+
+  /** 开书向导门禁开关（W6）。与 setSettingsGate 分开，理由见 BookRow 注释 */
+  setBlueprintGate(bookId: string, enabled: boolean): BookRow {
+    this.db.run(
+      'UPDATE books SET blueprint_gate_enabled = ?, updated_at = ? WHERE id = ?',
       enabled ? 1 : 0,
       now(),
       bookId,

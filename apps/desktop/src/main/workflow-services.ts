@@ -40,6 +40,7 @@ import {
   chapterRel,
 } from '@nwa/core';
 import type { Repositories, Database } from '@nwa/storage';
+import { evaluateBookBlueprintGate } from '@nwa/storage';
 import { ManuscriptRepository } from '@nwa/storage';
 import type { ManuscriptVersionSource } from '@nwa/storage';
 import type { ToolRegistry, NovelWorkflowServices } from '@nwa/harness';
@@ -256,6 +257,7 @@ function buildWorldContext(deps: WorkflowServicesDeps, bookId: string): string {
  *   只拦 write 的话，作者可以在设定未确认时先规划 —— 而计划一旦落库，
  *   Writer 就会按它写。门禁必须在"开始动脑"那一步就生效。
  */
+
 function assertSettingsGate(deps: WorkflowServicesDeps, bookId: string): void {
   let book;
   try {
@@ -277,6 +279,45 @@ function assertSettingsGate(deps: WorkflowServicesDeps, bookId: string): void {
       verdict.message,
       { details: { bookId, reason: verdict.reason, entryCount: entries.length } },
     );
+  }
+}
+
+/**
+ * 断言开书向导门禁已通过（W6）。
+ *
+ * ⚠ 这是**硬门禁**（用户决策：「最后确认一切前置信息后，再开始写作」）。
+ *   判定逻辑本身在 `@nwa/core` 的 `evaluateBlueprintGate`（纯函数、可穷举单测），
+ *   状态装配在 `@nwa/storage` 的 `blueprintStateOf`（唯一实现，与统一确认共用），
+ *   这里只负责：读当前状态 → 判定 → 不通过时抛错。
+ *
+ * ⚠ 与 `assertSettingsGate` **并存不替代**：两道门禁管不同的事 ——
+ *   那个拦"世界设定改了没确认"，这个拦"向导用了但没走完统一确认"。
+ *
+ * ⚠ 与 settings 门禁同样在 **plan 与 write 两处**都调用：
+ *   只拦 write 的话，作者可以在前置未确认时先规划 —— 而计划一旦落库，
+ *   Writer 就会按它写。门禁必须在"开始动脑"那一步就生效。
+ */
+function assertBlueprintGate(deps: WorkflowServicesDeps, bookId: string): void {
+  let verdict;
+  try {
+    verdict = evaluateBookBlueprintGate(deps.repos, bookId);
+  } catch (e) {
+    // ⚠ 读状态失败是存储问题，不是门禁问题 —— 交给后续步骤报真正的错。
+    //   在这里抛错会把"数据库坏了"报成"前置没确认"，指错方向。
+    deps.logger.warn('开书向导门禁状态读取失败（本次不拦）', {
+      bookId,
+      error: e instanceof Error ? e.message : String(e),
+    });
+    return;
+  }
+  if (!verdict.allowed) {
+    throw new AppError(ErrorCode.BLUEPRINT_NOT_CONFIRMED, verdict.message, {
+      details: {
+        bookId,
+        reason: verdict.reason,
+        unfinished: verdict.unfinished,
+      },
+    });
   }
 }
 
@@ -559,6 +600,10 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
       const ch = needChapter(deps, input.chapterId);
       // ⚠ 设定门禁（P2-3）：在"开始动脑"这一步就拦，而不是等写完再拦
       assertSettingsGate(deps, ch.book_id);
+      // ⚠ 开书向导门禁（W6）：前置内容未统一确认 → 不许开始规划。
+      //   与 settings 门禁同处调用，理由相同：计划一旦落库，
+      //   Writer 就会按它写 —— 门禁必须在"开始动脑"那一步生效。
+      assertBlueprintGate(deps, ch.book_id);
       const model = needModel(deps, '生成章节计划');
       const planner = new Planner({
         structured: (req) => model.plannerStructured(req) as never,
@@ -693,6 +738,9 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
       const chapterNumber = ch.chapter_number;
       // ⚠ 设定门禁（P2-3）：与 plan 一样要拦 —— 计划可能是门禁前就落库的
       assertSettingsGate(deps, ch.book_id);
+      // ⚠ 开书向导门禁（W6）：与 plan 处同因 —— 两道都拦，
+      //   否则"先规划再绕开"仍能写出与前置不符的正文。
+      assertBlueprintGate(deps, ch.book_id);
       const model = needModel(deps, '生成正文');
       const plan = deps.repos.chapters.readPlan<unknown>(ch.id);
       if (!plan) {

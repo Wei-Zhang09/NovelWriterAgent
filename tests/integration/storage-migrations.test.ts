@@ -69,6 +69,7 @@ describe('迁移', () => {
       '0019_book_blueprint',
       '0020_volumes',
       '0021_chapter_outlines',
+      '0022_blueprint_gate',
     ]);
   });
 
@@ -178,6 +179,7 @@ describe('迁移', () => {
       '0019_book_blueprint',
       '0020_volumes',
       '0021_chapter_outlines',
+      '0022_blueprint_gate',
     ]);
   });
 

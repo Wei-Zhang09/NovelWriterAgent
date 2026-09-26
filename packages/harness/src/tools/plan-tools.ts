@@ -15,7 +15,21 @@ import type { Repositories } from '@nwa/storage';
  * ⚠ 注意：这里保存的是**章节计划**（chapters.plan_json），不是正文。
  *   正文路径 body_path 由 STEP 11 的 Commit 流程独占，本工具无权触碰。
  */
-export function createPlanTools(repos: Repositories): AnyToolDefinition[] {
+export function createPlanTools(
+  repos: Repositories,
+  opts?: {
+    /**
+     * 门禁检查（由调用方注入，与 commit-tools 同一形状）。
+     *
+     * ⚠ 必须注入：本工具**直接写库**（`repos.chapters.savePlan`），
+     *   不经过 workflow-services 的服务层门禁。若不在这里拦，
+     *   Agent 可以绕开开书向导门禁把计划写进去 ——
+     *   而计划一旦落库，Writer 就会按它写。
+     *   这是"同一件事有两条写入路径，只拦了一条"的典型。
+     */
+    readonly assertGateOpen?: (bookId: string) => void;
+  },
+): AnyToolDefinition[] {
   const chapterPlan: ToolDefinition<
     { chapterId: string; plan?: unknown; expectedChapterNumber?: number },
     { chapterId: string; chapterNumber: number; sceneCount: number; saved: true }
@@ -90,6 +104,11 @@ export function createPlanTools(repos: Repositories): AnyToolDefinition[] {
           { details: { chapterId: chapter.id, status: chapter.status } },
         );
       }
+
+      // ⚠ 开书向导门禁（W6）：这条路径**绕过服务层**，必须在这里拦。
+      //   用 chapter 自己的 book_id，不用任何"当前书"解析 ——
+      //   那正是 P0-4 记录过的"给 B 书写、拦的是 A 书"。
+      if (opts?.assertGateOpen) opts.assertGateOpen(chapter.book_id);
 
       repos.chapters.savePlan(input.chapterId, parsed.data);
 

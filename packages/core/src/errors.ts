@@ -40,6 +40,15 @@ export const ErrorCode = {
    */
   SETTINGS_NOT_CONFIRMED: 'SETTINGS_NOT_CONFIRMED',
   /**
+   * 开书向导前置内容未统一确认 / 确认后又被改动（W6）。
+   *
+   * recoverable=true：作者在向导里确认前置信息后即可继续。
+   * 与 SETTINGS_NOT_CONFIRMED **分开**：两者的下一步动作不同 ——
+   * 那个去"确认世界设定"，这个去"走完向导的统一确认"。
+   * 合成一个码会让 UI 指错地方。
+   */
+  BLUEPRINT_NOT_CONFIRMED: 'BLUEPRINT_NOT_CONFIRMED',
+  /**
    * 产物（Review / Continuity / State）与当前正文版本不一致（M1 / §19–§22）。
    *
    * recoverable=true：重新跑一遍对应的检查即可，不需要改代码或重试。
@@ -116,6 +125,7 @@ const ERROR_SEMANTICS: Record<ErrorCodeValue, { recoverable: boolean; retryable:
   EVIDENCE_NOT_FOUND: { recoverable: true, retryable: false },
   EVIDENCE_QUOTE_MISMATCH: { recoverable: true, retryable: false },
   SETTINGS_NOT_CONFIRMED: { recoverable: true, retryable: false },
+  BLUEPRINT_NOT_CONFIRMED: { recoverable: true, retryable: false },
   ARTIFACT_STALE: { recoverable: true, retryable: false },
 
   COMMIT_FAILED: { recoverable: true, retryable: true },

@@ -30,6 +30,13 @@ export type { WorldEntityRow, CreateWorldEntityInput } from './repositories/worl
 export { TimelineRepository, toComparableHours } from './repositories/timeline.js';
 export type { CreateTimelineEventInput, TimelineQuery, TimelineEventRow } from './repositories/timeline.js';
 export type { Repositories } from './repositories/index.js';
+
+// ── W6 开书向导门禁的状态装配（唯一实现，门禁与确认共用）──
+export {
+  blueprintStateOf,
+  evaluateBookBlueprintGate,
+  confirmBookBlueprint,
+} from './blueprint-state.js';
 // M3：用户正文仓储（§四/§十/§三十五）
 export { ManuscriptRepository, MANUSCRIPT_VERSION_SOURCES } from './repositories/manuscript.js';
 export type {
