@@ -202,8 +202,11 @@ function freshIsolatedRoot() {
         `    ${ISOLATED_ROOT}\n` +
         `    原因：${e instanceof Error ? e.message : String(e)}\n` +
         `    处理：先结束残留进程再重跑 ——\n` +
-        `      powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name='electron.exe'\\" | ` +
-        `Where-Object { \$_.CommandLine -like '*NovelWriterAgent*' } | Stop-Process -Force"\n`,
+        `      powershell -NoProfile -Command "Get-CimInstance Win32_Process | ` +
+        `Where-Object { \$_.Name -in @('electron.exe','node.exe') -and ` +
+        `\$_.CommandLine -like '*NovelWriterAgent*' } | Stop-Process -Force"\n` +
+        `    说明：只杀本项目的 electron/node —— 本机可能同时跑着其他 Electron 应用，\n` +
+        `          不可用 taskkill /IM electron.exe 一把杀（会误伤别人）。\n`,
     );
     app.exit(2);
     return false;
