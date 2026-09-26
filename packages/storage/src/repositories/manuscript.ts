@@ -127,6 +127,21 @@ export const MANUSCRIPT_VERSION_SOURCES = [
   'AI_REVISION',
   'USER_EDIT',
   'RESTORED_AUTOSAVE',
+  /**
+   * 从**历史版本**恢复（§十三）。
+   *
+   * ⚠ 与 `RESTORED_AUTOSAVE` 是两件事，不能合并：
+   *   `RESTORED_AUTOSAVE` = 把旁路 autosave 副本载入编辑器（**未落盘**）
+   *   `RESTORED_VERSION`  = 把某个历史版本写回正文（**已落盘**）
+   * 两者的来源、是否落盘、能否撤回都不同。此前 `restoreVersion()`
+   * 复用 `RESTORED_AUTOSAVE` 是**错标**：版本列表会把一次历史回退
+   * 显示成"恢复了自动保存"，作者据此判断"这是刚才没保存的内容"，
+   * 而实际正文已被改写。
+   *
+   * ⚠ 加这个值**不需要迁移**：0017 的 `source_type` 刻意不加 CHECK 约束，
+   *   正是为了新增来源类型时不改表（见该迁移注释）。
+   */
+  'RESTORED_VERSION',
 ] as const;
 export type ManuscriptVersionSource = (typeof MANUSCRIPT_VERSION_SOURCES)[number];
 
@@ -670,7 +685,7 @@ export class ManuscriptRepository {
       chapterId: source.chapterId,
       chapterNumber: source.chapterNumber,
       text,
-      sourceType: 'RESTORED_AUTOSAVE',
+      sourceType: 'RESTORED_VERSION',
       note: `恢复到 v${String(source.seq).padStart(3, '0')}`,
     });
 

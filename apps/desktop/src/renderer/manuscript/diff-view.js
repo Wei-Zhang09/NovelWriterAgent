@@ -259,7 +259,7 @@ function option(el, value, label) {
   return o;
 }
 
-function fmtTime(iso) {
+export function fmtTime(iso) {
   if (!iso) return '—';
   // ⚠ 只取到分钟：秒级精度对作者没有意义，且会让下拉选项宽得看不全
   return String(iso).replace('T', ' ').slice(0, 16);

@@ -40,6 +40,7 @@
   /* M7 Diff：词级高亮底/字。⚠ 必须两套主题各给一组 ——
      浅色下用深底亮字会变成"深底深字"，而高亮正是要让人看见的地方。 */
   --diff-hl-bg: #4a3a12;  --diff-hl-fg: #ffd88a;
+  --ver-bg: rgba(255, 255, 255, 0.04);
   --diff-add-bd: #1c4029; --diff-del-bd: #5c1f1f; --diff-mod-bd: #4a3a12;
 }
 [data-theme="light"] {
@@ -70,6 +71,7 @@
   --tag-warn-bg: #9a6515; --tag-warn-fg: #fff;
   --perm-ok-fg: #24704a;  --perm-err-fg: #a43b42;
   --diff-hl-bg: #ffe9a8;  --diff-hl-fg: #5c4300;
+  --ver-bg: rgba(0, 0, 0, 0.035);
   --diff-add-bd: #a9d8b8; --diff-del-bd: #e5b3b3; --diff-mod-bd: #e8d18a;
 }
 * { box-sizing: border-box; }
@@ -689,3 +691,33 @@ body {
   border-radius: 2px;
   padding: 0 1px;
 }
+
+/* ── M6 补漏：版本历史面板 ──────────────────────────────── */
+.versions { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+.versions__head h3 { margin: 0 0 4px; font-size: 14px; }
+.versions__list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.versions__row {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.versions__line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.versions__seq { font-family: monospace; font-size: 12px; color: var(--accent); }
+.versions__src { font-size: 12px; }
+.versions__time, .versions__chars, .versions__note { font-size: 11px; color: var(--muted); }
+/* 版本内容预览：等宽 + 限高，避免一个长章节把面板撑得看不见按钮 */
+.versions__content {
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+  background: var(--ver-bg);
+  border-radius: 3px;
+  padding: 8px 10px;
+}
+.versions__content--err { color: var(--err); font-style: italic; }

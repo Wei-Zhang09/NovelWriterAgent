@@ -69,6 +69,7 @@ const SAVE_STATUS = {
  * @param {object}   opts.chapter —— 章节行（id / chapterNumber / title / status）
  */
 import { renderDiffPanel } from './manuscript/diff-view.js';
+import { renderVersionPanel } from './manuscript/version-panel.js';
 
 export function renderManuscriptEditor({ el, invoke, msg, chapter }) {
   const box = el('div', 'editor');
@@ -166,6 +167,38 @@ export function renderManuscriptEditor({ el, invoke, msg, chapter }) {
   //   还得在入口里再选一次章节 —— 多一步且容易选错。
   // ─────────────────────────────────────────────────────────
   box.append(renderDiffPanel({ el, invoke, chapter, msg }));
+
+  // ─────────────────────────────────────────────────────────
+  // M6 补漏：版本历史（查看某版内容 / 恢复到某版）
+  //
+  // ⚠ 必须在编辑器**内部**，与 Diff 同理：版本的对象就是这一章的正文。
+  //   放在全局入口的话还要再选一次章节，多一步且容易选错。
+  //
+  // ⚠⚠ 关键：恢复版本是**后端直接改写磁盘正文**，编辑器的文本源
+  //   （text / area.value / savedText）不会自动跟着变。不回调同步的话，
+  //   作者看到的还是旧内容，接着一按「保存」就把刚恢复的版本又覆盖回去 ——
+  //   恢复功能看似生效、实际被下一次保存抹掉。
+  // ─────────────────────────────────────────────────────────
+  const versionPanel = renderVersionPanel({
+    el,
+    invoke,
+    msg,
+    chapter,
+    onTextReplaced: (newText) => {
+      text = newText;
+      // ⚠ 恢复后的正文**已经落盘**，所以 savedText 也要跟上 ——
+      //   否则状态显示 DIRTY，作者会以为"还需要保存"，
+      //   而再点一次保存只会写回同一份内容（并多建一个无意义的版本节点）。
+      savedText = newText;
+      diskText = newText;
+      area.value = newText;
+      // ⚠ autosave 副本对应的是**恢复前**的内容，不能再拿它做跳过判据
+      lastAutosavedText = null;
+      recomputeStatus();
+      void refreshMetrics();
+    },
+  });
+  box.append(versionPanel);
 
   // ─────────────────────────────────────────────────────────
   // 度量：**必须**用 core 的 measureText 口径（否则与 Writer 数字对不上）
@@ -319,6 +352,10 @@ export function renderManuscriptEditor({ el, invoke, msg, chapter }) {
     //   即使在 renderer 里写 `text.length` 也不该做：那是第二套口径的开端，
     //   而 M4 的全部意义就是让编辑器与 Writer 用同一个数字。
     await refreshMetrics();
+    // ⚠ 保存会建版本节点（§十三：手动保存且 hash 变化时），
+    //   所以版本列表必须跟着刷新 —— 不刷新的话作者刚保存完，
+    //   版本历史里还看不到这一版，会以为保存没生效。
+    void versionPanel.refreshVersions?.();
     statusLine.className = 'form-msg form-msg--ok';
     statusLine.textContent = r.data.changed
       ? '已保存 ' + metaChars.textContent + '（未提交，不影响正史）'

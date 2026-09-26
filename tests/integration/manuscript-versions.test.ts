@@ -55,7 +55,7 @@ describe('⑤ 版本节点（M6 / §十三 §十四）', () => {
     ctx.t.cleanup();
   });
 
-  const v = (text: string, sourceType: 'AI_DRAFT' | 'AI_REVISION' | 'USER_EDIT' | 'RESTORED_AUTOSAVE') =>
+  const v = (text: string, sourceType: 'AI_DRAFT' | 'AI_REVISION' | 'USER_EDIT' | 'RESTORED_AUTOSAVE' | 'RESTORED_VERSION') =>
     ctx.repo.createVersion({
       bookId: ctx.bookId,
       chapterId: ctx.chapterId,
@@ -259,8 +259,19 @@ describe('⑤ 版本节点（M6 / §十三 §十四）', () => {
       // ① 正文确实变成第一版
       expect(ctx.repo.get(ctx.bookId, ctx.chapterNumber)).toBe('第一版正文。');
       // ② 建了新节点记录这次恢复
+      //
+      // ⚠⚠ 必须是 RESTORED_VERSION 而不是 RESTORED_AUTOSAVE。
+      //   两者是**不同的事实**：
+      //     RESTORED_AUTOSAVE = 把 autosave 副本载入编辑器（未落盘）
+      //     RESTORED_VERSION  = 把历史版本写回正文（已落盘）
+      //   此前 restoreVersion() 复用 RESTORED_AUTOSAVE 是**错标** ——
+      //   版本列表会把一次历史回退显示成"恢复了自动保存"，作者据此
+      //   以为"这是刚才没保存的内容"，而正文其实已经被改写了。
+      //   旧断言把这个错标固化下来（断言与实现一起错），
+      //   所以这里同时钉住"不是什么"。
       const list = ctx.repo.listVersions(ctx.chapterId);
-      expect(list[0]!.sourceType).toBe('RESTORED_AUTOSAVE');
+      expect(list[0]!.sourceType).toBe('RESTORED_VERSION');
+      expect(list[0]!.sourceType).not.toBe('RESTORED_AUTOSAVE');
       expect(list[0]!.note).toContain('v001');
     });
 

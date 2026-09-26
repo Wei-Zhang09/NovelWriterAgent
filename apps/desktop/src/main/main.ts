@@ -1547,6 +1547,125 @@ function createWindow(): void {
               await sleep(700);
             }
 
+            // 6h) M6 补漏：版本历史面板（查看某版内容 / 恢复到某版）
+            //     ⚠ 本区块内禁止出现反引号（工程约定 1）。
+            //     ⚠⚠ 断言查**下游终点**：恢复版本的终点不是"弹了个成功提示"，
+            //        而是**编辑器的文本源真的变成了那一版的内容**。
+            //        只查提示的话，后端改了磁盘而编辑器还显示旧内容
+            //        （作者一按保存就把恢复结果覆盖回去）这种缺陷查不出来。
+            {
+              chapterItems[0]?.click();
+              await sleep(1200);
+
+              const vp = [...document.querySelectorAll('.versions')][0];
+              rec('⚠ 版本历史面板已渲染在编辑器内（M6 能力此前界面够不到）',
+                  Boolean(vp));
+
+              if (vp) {
+                const rows = [...vp.querySelectorAll('.versions__row')];
+                const cid = chapterItems[0]?.dataset.chapterId;
+                const vl = cid
+                  ? await window.nwa.invoke('manuscript.listVersions', { chapterId: cid })
+                  : null;
+                const backendVers = (vl && vl.ok) ? (vl.data.versions ?? []) : [];
+
+                // ⚠ 独立对账：界面行数必须等于后端版本数（非硬编码）
+                rec('⚠ 版本行数 == 后端版本数（独立对账）',
+                    backendVers.length > 0 && rows.length === backendVers.length,
+                    '后端=' + backendVers.length + ' 界面=' + rows.length);
+
+                // ⚠ 每个版本行都要有"查看内容"和"恢复此版本"两个入口 ——
+                //   只有列表没有操作，等于还是够不到能力
+                const readBtns = [...vp.querySelectorAll('button')]
+                  .filter(b => (b.textContent ?? '').trim() === '查看内容');
+                const restBtns = [...vp.querySelectorAll('button')]
+                  .filter(b => (b.textContent ?? '').trim() === '恢复此版本');
+                rec('⚠ 每个版本都有「查看内容」入口', readBtns.length === rows.length,
+                    'read=' + readBtns.length + ' rows=' + rows.length);
+                rec('⚠ 每个版本都有「恢复此版本」入口', restBtns.length === rows.length,
+                    'restore=' + restBtns.length + ' rows=' + rows.length);
+
+                // ⚠ 真点「查看内容」→ 断言显示的是后端 readVersion 的真实内容
+                if (readBtns.length > 0 && backendVers.length > 0) {
+                  readBtns[0].click();
+                  await sleep(1200);
+                  const holder = vp.querySelector('.versions__content');
+                  const shown = (holder?.textContent ?? '').replace(/\s+/g, '');
+                  const rv = await window.nwa.invoke('manuscript.readVersion',
+                    { versionId: backendVers[0].id });
+                  const real = rv && rv.ok ? String(rv.data.text ?? '') : '';
+                  const realNorm = real.replace(/\s+/g, '');
+                  rec('⚠⚠ 「查看内容」显示的是后端该版本的真实正文（非占位）',
+                      realNorm.length > 0 && shown === realNorm,
+                      '界面=' + shown.length + ' 后端=' + realNorm.length);
+                }
+
+                // ⚠⚠ 真点「恢复此版本」→ 断言编辑器文本源真的变成那一版
+                //   取**最旧**那一版（列表按 seq DESC，所以最后一行）：
+                //   只有最旧版与当前内容不同，"文本源变了"才是有效断言。
+                if (restBtns.length > 0 && backendVers.length >= 2) {
+                  const oldest = backendVers[backendVers.length - 1];
+                  const rvOld = await window.nwa.invoke('manuscript.readVersion',
+                    { versionId: oldest.id });
+                  const expectText = rvOld && rvOld.ok ? String(rvOld.data.text ?? '') : '';
+
+                  const edBefore = document.querySelector('.editor__area');
+                  const beforeVal = edBefore ? edBefore.value : '';
+                  rec('恢复前编辑器内容与目标版本不同（否则断言无效）',
+                      beforeVal.replace(/\s+/g, '') !== expectText.replace(/\s+/g, ''),
+                      'before=' + beforeVal.length + ' target=' + expectText.length);
+
+                  // confirm 在真实 Electron 里会弹原生模态并阻塞脚本，
+                  // 这里临时替换成自动确认（只影响本区块）
+                  const origConfirm = window.confirm;
+                  window.confirm = () => true;
+                  const restCountBefore = backendVers.length;
+                  restBtns[restBtns.length - 1].click();
+                  await sleep(2500);
+                  window.confirm = origConfirm;
+
+                  const edAfter = document.querySelector('.editor__area');
+                  const afterVal = edAfter ? edAfter.value : '';
+                  // ⚠⚠ 这是本区块的核心断言：编辑器的文本源必须变成那一版
+                  // ⚠ 详情必须印**内容前缀**而不是长度：两边长度相同时
+                  //   "after=16 expect=16" 看着像通过，实际内容不同 ——
+                  //   失败信息本身必须能定位问题，否则等于没报。
+                  rec('⚠⚠ 恢复后编辑器文本源 == 该版本正文（下游终点）',
+                      expectText.length > 0 &&
+                        afterVal.replace(/\s+/g, '') === expectText.replace(/\s+/g, ''),
+                      '编辑器=' + JSON.stringify(afterVal.slice(0, 18)) +
+                        ' 版本=' + JSON.stringify(expectText.slice(0, 18)));
+
+                  // ⚠ 恢复要建新节点，且来源必须是 RESTORED_VERSION 而不是
+                  //   RESTORED_AUTOSAVE（后者是"载入 autosave 副本、未落盘"，
+                  //   两者后果完全不同，错标会让作者误判正文是否已被改写）
+                  const vl2 = await window.nwa.invoke('manuscript.listVersions',
+                    { chapterId: cid });
+                  const v2 = (vl2 && vl2.ok) ? (vl2.data.versions ?? []) : [];
+                  rec('⚠ 恢复后版本数 +1（记录这次回退）',
+                      v2.length === restCountBefore + 1,
+                      'before=' + restCountBefore + ' after=' + v2.length);
+                  rec('⚠⚠ 恢复节点的来源是 RESTORED_VERSION（不是 RESTORED_AUTOSAVE）',
+                      v2.length > 0 && v2[0].sourceType === 'RESTORED_VERSION',
+                      'sourceType=' + (v2[0] ? v2[0].sourceType : '无'));
+
+                  // ⚠ 恢复是**已落盘**的：重新打开章节，磁盘正文必须就是那一版
+                  chapterItems[0]?.click();
+                  await sleep(1200);
+                  const edReopen = document.querySelector('.editor__area');
+                  const reopenVal = edReopen ? edReopen.value : '';
+                  rec('⚠⚠ 恢复已落盘（重开章节后磁盘正文即该版本）',
+                      expectText.length > 0 &&
+                        reopenVal.replace(/\s+/g, '') === expectText.replace(/\s+/g, ''),
+                      '磁盘=' + JSON.stringify(reopenVal.slice(0, 18)) +
+                        ' 版本=' + JSON.stringify(expectText.slice(0, 18)));
+                }
+              }
+
+              chapterItems[0]?.click();
+              await sleep(700);
+            }
+
             // 6f) 开书向导（W8）
             //     ⚠ 本区块内禁止出现反引号（工程约定 1）。
             //     ⚠ 断言查**下游终点**：不只看元素在不在 DOM 里，
