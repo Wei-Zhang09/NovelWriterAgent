@@ -37,6 +37,10 @@
   --tag-err-bg: #7f1d1d;  --tag-err-fg: #fecaca;
   --tag-warn-bg: #78350f; --tag-warn-fg: #fed7aa;
   --perm-ok-fg: #4ade80;  --perm-err-fg: #fca5a5;
+  /* M7 Diff：词级高亮底/字。⚠ 必须两套主题各给一组 ——
+     浅色下用深底亮字会变成"深底深字"，而高亮正是要让人看见的地方。 */
+  --diff-hl-bg: #4a3a12;  --diff-hl-fg: #ffd88a;
+  --diff-add-bd: #1c4029; --diff-del-bd: #5c1f1f; --diff-mod-bd: #4a3a12;
 }
 [data-theme="light"] {
   --bg: #f7f8fa;
@@ -65,6 +69,8 @@
   --tag-err-bg: #a43b42;  --tag-err-fg: #fff;
   --tag-warn-bg: #9a6515; --tag-warn-fg: #fff;
   --perm-ok-fg: #24704a;  --perm-err-fg: #a43b42;
+  --diff-hl-bg: #ffe9a8;  --diff-hl-fg: #5c4300;
+  --diff-add-bd: #a9d8b8; --diff-del-bd: #e5b3b3; --diff-mod-bd: #e8d18a;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -646,4 +652,40 @@ body {
   font-size: 12px;
   color: var(--muted);
   min-height: 26px;
+}
+
+/* ── M7 Diff（§十六 §十七 §三十七）─────────────────────────────
+   ⚠ 左右双栏：内联标记（在正文里插 del/ins）读起来像"改错了的稿子"，
+     而作者要看的是"这一版相对上一版动了哪些地方"。 */
+.diff__body { display: flex; flex-direction: column; gap: 10px; }
+.diff__list { display: flex; flex-direction: column; gap: 8px; }
+.diff__para {
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--pane-2);
+}
+/* ⚠ 三种变更用**左边框颜色**区分，不是整块底色 ——
+   整块底色会把词级高亮淹没（底色之上再叠底色，对比度全失） */
+.diff__para--insert { border-left-color: var(--ok); }
+.diff__para--delete { border-left-color: var(--err); }
+.diff__para--modify { border-left-color: var(--warn); }
+.diff__tag { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.diff__idx { font-size: 11px; color: var(--muted); }
+.diff__cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 900px) {
+  /* ⚠ 窄屏改单列：两栏挤在一起时每栏只剩几十像素，
+     正文会碎成竖排单字，比单列还难读 */
+  .diff__cols { grid-template-columns: 1fr; }
+}
+.diff__col { min-width: 0; }
+.diff__text { font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+.diff__absent { font-size: 12px; color: var(--muted); font-style: italic; }
+/* 词级高亮：只覆盖真正变化的片段 */
+.diff__hl {
+  background: var(--diff-hl-bg);
+  color: var(--diff-hl-fg);
+  border-radius: 2px;
+  padding: 0 1px;
 }

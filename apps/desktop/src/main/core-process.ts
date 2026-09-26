@@ -2229,6 +2229,66 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
   },
 
   /** 读某个版本的正文（用户点开某一版时调用） */
+  /**
+   * M7：取两个版本（或当前正文）的文本，供渲染层做段落对齐 + 词级染色。
+   *
+   * ## ⚠ 为什么返回**原文**而不是算好的 hunk
+   *
+   * diff 算法是**纯函数**，放在渲染层（`renderer/manuscript/diff.js`）。
+   * 这样它可以被穷举测试（施工计划指定的验收方式），而 IPC 只负责取文本。
+   * 若把算法搬到主进程，测试就得拉起整个 core 进程 —— 穷举测试会变得很贵，
+   * 于是没人写，于是"只改一个词却被整段标红"（F7）这类缺陷查不出来。
+   *
+   * ## ⚠ `from` 的三形态
+   *
+   *   `{ versionId }` —— 与某个历史版本比
+   *   `'current'`     —— 与**当前正文**比（最常见的用法：我这轮改了哪些）
+   *   省略            —— 同 'current'
+   *
+   * `to` 同理。两边都可以是 versionId 或 'current'，所以能对比
+   * 「v001 vs v003」「v002 vs 当前」等任意组合。
+   *
+   * ## ⚠ 文件缺失必须如实报告，不能当成空文本
+   *
+   * 版本文件可能被人工清理（§十四 明确版本可丢弃）。若把缺失当成空串，
+   * diff 会显示成"整个版本被删光了" —— 而实际是文件不在了。
+   * 两者对作者的含义完全不同：一个是"我改没了"，一个是"文件丢了"。
+   */
+  'manuscript.getDiff': (params: {
+    chapterId: string;
+    from?: string;
+    to?: string;
+  }) => {
+    const p = requireProject();
+    const chapter = p.repos.chapters.get(params.chapterId);
+    const repo = manuscriptRepo();
+
+    const readSide = (ref: string | undefined) => {
+      if (!ref || ref === 'current') {
+        return {
+          ref: 'current',
+          text: repo.get(chapter.book_id, chapter.chapter_number),
+          missing: false,
+        };
+      }
+      const text = repo.readVersion(ref);
+      return { ref, text, missing: text === null };
+    };
+
+    const from = readSide(params.from);
+    const to = readSide(params.to);
+
+    return {
+      chapterId: chapter.id,
+      chapterNumber: chapter.chapter_number,
+      from: { ref: from.ref, text: from.text, missing: from.missing },
+      to: { ref: to.ref, text: to.text, missing: to.missing },
+      // ⚠ 任一侧缺失时**不假装**成空文本 —— 界面据此显示"文件缺失"
+      //   而不是"内容被删光了"
+      usable: !from.missing && !to.missing,
+    };
+  },
+
   'manuscript.readVersion': (params: { versionId: string }) => {
     requireProject();
     const text = manuscriptRepo().readVersion(params.versionId);

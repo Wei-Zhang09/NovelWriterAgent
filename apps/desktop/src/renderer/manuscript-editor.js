@@ -68,6 +68,8 @@ const SAVE_STATUS = {
  * @param {Function} opts.msg     —— 消息行工厂
  * @param {object}   opts.chapter —— 章节行（id / chapterNumber / title / status）
  */
+import { renderDiffPanel } from './manuscript/diff-view.js';
+
 export function renderManuscriptEditor({ el, invoke, msg, chapter }) {
   const box = el('div', 'editor');
 
@@ -155,6 +157,15 @@ export function renderManuscriptEditor({ el, invoke, msg, chapter }) {
   const selInfo = el('span', 'editor__stat', '');
   foot.append(selInfo);
   box.append(foot);
+
+  // ─────────────────────────────────────────────────────────
+  // M7：版本对比（Diff）
+  //
+  // ⚠ 放在编辑器内部而不是独立入口：Diff 的对象就是"这一章的正文"，
+  //   作者要先打开章节才谈得上对比。做成全局入口的话，
+  //   还得在入口里再选一次章节 —— 多一步且容易选错。
+  // ─────────────────────────────────────────────────────────
+  box.append(renderDiffPanel({ el, invoke, chapter, msg }));
 
   // ─────────────────────────────────────────────────────────
   // 度量：**必须**用 core 的 measureText 口径（否则与 Writer 数字对不上）

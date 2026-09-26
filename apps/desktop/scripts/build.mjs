@@ -17,6 +17,15 @@
  * 现在改为**拷贝 renderer 目录下的全部资源**（白名单排除 .map 之类），
  * 这样新增前端文件不需要记得改构建脚本 —— 依赖"记得改"的约定
  * 迟早会被漏掉。
+ *
+ * ## ⚠ 第二次复发：子目录被静默跳过
+ *
+ * M7 把 Diff 放进 `renderer/manuscript/`（算法与渲染分离），
+ * 而上面那句 `if (!statSync(src).isFile()) continue; // 子目录暂不处理`
+ * 把整个子目录**静默丢掉** —— 渲染进程 import 404，
+ * **整个界面白屏**，失败现象同样是"tools=0 / 找不到表单"。
+ *
+ * 所以改成**递归拷贝**：约定必须由代码保证，不能靠"记得别用子目录"。
  */
 import { mkdirSync, copyFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { dirname, join, extname } from 'node:path';
@@ -30,16 +39,29 @@ const srcRenderer = join(appRoot, 'src', 'renderer');
 /** 需要拷贝的前端资源扩展名（其余如 .map/.ts 不拷） */
 const ASSET_EXT = new Set(['.html', '.css', '.js', '.mjs', '.svg', '.png', '.ico', '.woff2']);
 
-mkdirSync(join(dist, 'renderer'), { recursive: true });
-
 let copied = 0;
-for (const entry of readdirSync(srcRenderer)) {
-  const src = join(srcRenderer, entry);
-  if (!statSync(src).isFile()) continue; // 子目录（如有）暂不处理
-  if (!ASSET_EXT.has(extname(entry))) continue;
-  copyFileSync(src, join(dist, 'renderer', entry));
-  copied++;
+
+/**
+ * 递归拷贝（保持相对目录结构）。
+ *
+ * ⚠ 保持结构是必需的：`import './manuscript/diff-view.js'` 里的路径
+ *   是相对于源文件的，把子目录文件拍平到 renderer/ 根下会让 import 404。
+ */
+function copyTree(srcDir, dstDir) {
+  mkdirSync(dstDir, { recursive: true });
+  for (const entry of readdirSync(srcDir)) {
+    const src = join(srcDir, entry);
+    if (statSync(src).isDirectory()) {
+      copyTree(src, join(dstDir, entry));
+      continue;
+    }
+    if (!ASSET_EXT.has(extname(entry))) continue;
+    copyFileSync(src, join(dstDir, entry));
+    copied++;
+  }
 }
+
+copyTree(srcRenderer, join(dist, 'renderer'));
 console.log(`[build] renderer 资源已拷贝：${copied} 个文件`);
 
 const migDst = join(appRoot, '..', '..', 'packages', 'storage', 'dist', 'migrations');

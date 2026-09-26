@@ -1441,6 +1441,112 @@ function createWindow(): void {
               await sleep(700);
             }
 
+            // 6g) M7 版本对比（Diff）
+            //     ⚠ 本区块内禁止出现反引号（工程约定 1）。
+            //     ⚠ 断言查**下游终点**：不只看面板在不在，
+            //       要查它真的把两个版本的差异算出来并染色了。
+            {
+              // ⚠⚠ 必须先制造一个**真实的差异**，否则"完全一致"会让
+              //   词级高亮断言整个不执行 —— 而那条断言正是 M7 存在的理由
+              //   （缺陷 F7：整段标红等于没做 Diff）。
+              //   做法：改一个词 → 保存（建新版本）→ 重新打开章节 → 对比。
+              chapterItems[0]?.click();
+              await sleep(1000);
+              {
+                const ed = document.querySelector('.editor');
+                const ar = ed?.querySelector('.editor__area');
+                if (ar) {
+                  // 在原文基础上改一个词：把第一句里的词换掉
+                  const before = ar.value ?? '';
+                  const after = before.replace('青石板', '石板路');
+                  ar.value = after;
+                  ar.dispatchEvent(new Event('input', { bubbles: true }));
+                  await sleep(400);
+                  const sb = [...(ed?.querySelectorAll('.editor__bar button') ?? [])]
+                    .find(b => (b.textContent ?? '').trim() === '保存');
+                  sb?.click();
+                  await sleep(1500);
+                }
+              }
+              // 重新打开章节：Diff 面板的版本下拉是**挂载时**读的，
+              // 不重开会看不到刚建的新版本
+              chapterItems[0]?.click();
+              await sleep(1200);
+
+              const diffPanel = [...document.querySelectorAll('.diff')][0];
+              rec('⚠ Diff 面板已渲染在编辑器内', Boolean(diffPanel));
+
+              if (diffPanel) {
+                // ⚠ 版本下拉必须列出真实版本 —— M6 建了版本能力，
+                //   但渲染层此前 0 处调用（后端有、界面够不到）。
+                const sels = [...diffPanel.querySelectorAll('select')];
+                rec('Diff 面板有两个选择器（基准 / 目标）', sels.length === 2, 'sels=' + sels.length);
+                const optCount = sels[0] ? sels[0].options.length : 0;
+                rec('⚠ 版本下拉列出了真实版本（含"当前正文"）',
+                    optCount >= 2, 'options=' + optCount);
+
+                // ⚠ 与后端独立对账：下拉里的版本数必须等于 IPC 报的版本数 + 1（当前正文）
+                const cid = chapterItems[0]?.dataset.chapterId;
+                const vl = cid
+                  ? await window.nwa.invoke('manuscript.listVersions', { chapterId: cid })
+                  : null;
+                const backendVer = (vl && vl.ok) ? (vl.data.versions ?? []).length : -1;
+                rec('⚠ 下拉版本数 == 后端版本数 + 1（独立对账，非硬编码）',
+                    backendVer >= 0 && optCount === backendVer + 1,
+                    '后端=' + backendVer + ' 下拉=' + optCount);
+
+                // ⚠⚠ 关键：真的点「对比」，且**内容确实不同**时必须显示改动段。
+                //   本环境这一章已存过正文并有版本，所以应有差异可查。
+                const goBtn = [...diffPanel.querySelectorAll('button')]
+                  .find(b => (b.textContent ?? '').includes('对比'));
+                goBtn?.click();
+                await sleep(1500);
+
+                const dt = diffPanel.textContent ?? '';
+                // 三种结局都是"诚实"的：有改动 / 完全一致 / 文件缺失。
+                // 但不许出现"对比失败"或空白无响应
+                const honest = dt.includes('改动') || dt.includes('完全一致') || dt.includes('文件缺失');
+                rec('⚠ 点「对比」得到明确结果（不静默无响应）', honest,
+                    dt.slice(0, 90).replace(/\s+/g, ' '));
+
+                // ⚠ 若确实有改动，必须真的渲染出改动段（不是只报个数字）
+                if (dt.includes('改动') && !dt.includes('完全一致')) {
+                  const paras = [...diffPanel.querySelectorAll('.diff__para')];
+                  rec('⚠ 有改动时真的渲染出改动段（不是只报数字）',
+                      paras.length > 0, 'paras=' + paras.length);
+
+                  // ⚠⚠ 词级染色必须存在：这是 M7 存在的理由（缺陷 F7：
+                  //   整段标红等于没做 Diff）。
+                  //
+                  //   ⚠ 只断言"有 mark"是**弱断言**：整段标红同样产出 mark，
+                  //     实测注入 F7（diffWords 直接返回整段 changed）后
+                  //     这条断言照样通过 —— 假绿。
+                  //   真正的判据是：**被高亮的字数必须远小于整段**。
+                  //     词级 → 高亮 2 个字；整段标红 → 高亮整段 20+ 字。
+                  const marks = [...diffPanel.querySelectorAll('.diff__hl')];
+                  rec('⚠⚠ 段内有词级高亮（F7：整段标红等于没做 Diff）',
+                      marks.length > 0, 'marks=' + marks.length);
+
+                  const hlChars = marks.reduce((n, m) => n + (m.textContent ?? '').length, 0);
+                  const paraTexts = [...diffPanel.querySelectorAll('.diff__text')];
+                  const totalChars = paraTexts.reduce((n, t) => n + (t.textContent ?? '').length, 0);
+                  // ⚠ 高亮占比必须小于一半 —— 整段标红时占比接近 100%
+                  rec('⚠⚠ 高亮只覆盖局部（高亮字数远小于正文，防整段标红）',
+                      totalChars > 0 && hlChars < totalChars / 2,
+                      '高亮=' + hlChars + ' 正文=' + totalChars);
+                }
+
+                // ⚠ 文件缺失时必须明说，不能显示成"内容被删光了"
+                if (dt.includes('文件缺失')) {
+                  rec('文件缺失时明确说明（不显示成内容被删光）', true);
+                }
+              }
+
+              // 回到章节详情，避免影响后续断言
+              chapterItems[0]?.click();
+              await sleep(700);
+            }
+
             // 6f) 开书向导（W8）
             //     ⚠ 本区块内禁止出现反引号（工程约定 1）。
             //     ⚠ 断言查**下游终点**：不只看元素在不在 DOM 里，
