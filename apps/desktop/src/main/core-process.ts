@@ -2072,6 +2072,11 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
       title: chapter.title,
       text: opened.text,
       sourceHash: opened.sourceHash,
+      // ⚠ 缺陷 A 修复后新增：编辑器**必须**据此如实告知
+      //   "当前显示的是 AI 稿，还没有你确认过的正文" ——
+      //   否则又变成 §十一 禁止的"我以为打开的是定稿"。
+      source: opened.source,
+      hasHumanManuscript: opened.hasHumanManuscript,
       recovery: opened.recovery,
       // §三十：UI 必须能一眼看出"这份正文是不是已经是正史"
       committed: repo.isCommitted(chapter.id),

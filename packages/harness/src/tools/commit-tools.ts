@@ -14,6 +14,11 @@
 import { z } from 'zod';
 import { AppError, ErrorCode, chapterRel, summaryRel } from '@nwa/core';
 import { commitOverrideId } from '@nwa/core';
+import {
+  MANUSCRIPT_SOURCE_ORDER,
+  MANUSCRIPT_SOURCE_FILE,
+  type ManuscriptSourceKey,
+} from '@nwa/core';
 import type { AnyToolDefinition, ToolDefinition } from '@nwa/shared';
 import type { Repositories, Database } from '@nwa/storage';
 import { CommitEngine } from '../commit/commit-engine.js';
@@ -27,18 +32,23 @@ import { CommitEngine } from '../commit/commit-engine.js';
  * 在此之前的提交源是 `revision ?? draft` —— **从不读用户正文**，
  * 用户改完点提交会被静默丢弃，且不报错（revision 总能取到值）。
  * 这是"看起来全绿、实际丢数据"，比直接失败危险得多。
+ *
+ * ⚠⚠ 这三个常量现在**从 `@nwa/core` re-export**，不再在本文件各写一份。
+ *
+ *   缺陷 A 的成因正是"提交侧与读取侧各有一套「当前正文」的定义"：
+ *   提交侧按优先级链取，读取侧（`manuscript.open`）硬读 `manuscript.md`。
+ *   工作流只写 `draft.md` → 作者看到空白、提交却命中了别的文件。
+ *
+ *   把定义收敛到一处后，两侧由**同一个常量**驱动；
+ *   任何一侧再想"自己定一套顺序"都必须先改 `@nwa/core`，改动可见。
  */
-export const COMMIT_SOURCE_ORDER = ['manuscript', 'revision', 'draft'] as const;
+export const COMMIT_SOURCE_ORDER = MANUSCRIPT_SOURCE_ORDER;
 
 /** 提交源的候选键 */
-export type CommitSourceKey = (typeof COMMIT_SOURCE_ORDER)[number];
+export type CommitSourceKey = ManuscriptSourceKey;
 
 /** 提交源对应的文件名（写入 manifest.source，可追溯"这次提交的是哪份稿"） */
-export const COMMIT_SOURCE_FILE: Readonly<Record<CommitSourceKey, string>> = {
-  manuscript: 'manuscript.md',
-  revision: 'revision.md',
-  draft: 'draft.md',
-};
+export const COMMIT_SOURCE_FILE = MANUSCRIPT_SOURCE_FILE;
 
 /**
  * 按优先级链取**当前正文**（ADR-0008）。

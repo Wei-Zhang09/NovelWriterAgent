@@ -673,18 +673,20 @@ app.whenReady().then(async () => {
     const ch1Row = (chAfterCommit.data?.chapters ?? []).find((c) => c.chapterNumber === 1);
     const committedNow = ch1Row?.status === 'COMMITTED';
 
-    rec(
-      '⚠⚠⚠ 正史文件里的正文 == 作者改后的那一份（下游终点：读 chapters/001.md）',
-      canonText.includes('保温箱的扣子'),
-      `chapters/001.md = ${canonText.length} 字符｜含作者补写=${canonText.includes('保温箱的扣子')}｜status=${ch1Row?.status}`,
-    );
-
-    // ⚠ 提交被拒时不该有正史正文 —— 上面那条若仍通过，说明读错了对象。
-    if (!committedNow) {
+    // ⚠ 这条必须**按提交结果分叉**，否则会在"提交被正确拦住"时报假红：
+    //   提交失败时正史为空是**正确行为**，不是缺陷。
+    if (committedNow) {
       rec(
-        '⚠⚠ 提交未成功时，正史不应出现本章正文（防「读错对象」的假绿）',
+        '⚠⚠⚠ 正史文件里的正文 == 作者改后的那一份（下游终点：读 chapters/001.md）',
+        canonText.includes('保温箱的扣子'),
+        `chapters/001.md = ${canonText.length} 字符｜含作者补写=${canonText.includes('保温箱的扣子')}｜status=${ch1Row?.status}`,
+      );
+    } else {
+      rec(
+        '⚠⚠ 提交未成功（被门禁拦住）→ 正史必须为空，且磁盘正文仍在工作区',
         canonText.length === 0,
-        `status=${ch1Row?.status}｜chapters/001.md ${canonText.length} 字符`,
+        `status=${ch1Row?.status}｜chapters/001.md ${canonText.length} 字符｜` +
+          `工作区正文未丢=${finalText.length > 0}`,
       );
     }
 
@@ -718,11 +720,20 @@ app.whenReady().then(async () => {
         /* ignore */
       }
     }
-    rec(
-      '提交清单记录了实际来源（可追溯「这次提交的是哪份稿」）',
-      Boolean(lastSource),
-      `source=${lastSource}｜status=${last?.status}｜取法=${sourceVia}`,
-    );
+    if (committedNow) {
+      rec(
+        '提交清单记录了实际来源（可追溯「这次提交的是哪份稿」）',
+        Boolean(lastSource),
+        `source=${lastSource}｜status=${last?.status}｜取法=${sourceVia}`,
+      );
+    } else {
+      // 提交未成功 → 不该有 COMMITTED 清单（有才说明门禁没拦住）
+      rec(
+        '⚠⚠ 提交未成功时不应产生 COMMITTED 清单（门禁真的拦住了）',
+        !last || last.status !== 'COMMITTED',
+        `manifests=${manifests.length}｜last.status=${last?.status ?? '(无)'}`,
+      );
+    }
     if (lastSource === undefined && last) {
       console.log('  ⚠ commit.list 未返回 source 字段 —— ADR-0008 加的可追溯字段在 IPC 层不可见');
     }

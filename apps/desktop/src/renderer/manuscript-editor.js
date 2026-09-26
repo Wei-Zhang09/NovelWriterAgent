@@ -467,6 +467,19 @@ export function renderManuscriptEditor({ el, invoke, msg, chapter }) {
       statusLine.textContent =
         `发现未恢复的编辑内容（${rec.autosaveChars ?? '?'} 字，${rec.autosaveAt ?? '时间未知'}）。` +
         '点「恢复自动保存」载入，或点「放弃自动保存」丢弃。当前显示的是磁盘正文。';
+    } else if (r.data.source && r.data.source !== 'manuscript') {
+      // ⚠⚠ 缺陷 A 修复后的如实告知：正文来自 AI 稿（draft / revision），
+      //   而不是作者确认过的那一份。
+      //
+      //   为什么必须说：读取侧现在会回退到 AI 稿，若界面不区分，
+      //   作者会把 AI 初稿当成"我上次的定稿" —— 那正是 §十一
+      //   明令禁止的「我以为打开的是定稿」。同时这解释了
+      //   "为什么我没有这份正文却能看到它"。
+      const fromLabel = r.data.source === 'revision' ? 'Agent 修订稿' : 'AI 初稿';
+      statusLine.className = 'form-msg form-msg--warn';
+      statusLine.textContent =
+        `当前显示的是${fromLabel}（AI 产出，你还没有确认过的正文）。` +
+        '修改并保存后，它才会成为你的正文。';
     } else {
       statusLine.className = 'form-msg';
       statusLine.textContent = r.data.committed

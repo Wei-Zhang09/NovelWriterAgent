@@ -19,3 +19,4 @@ export * from './staleness.js';
 export * from './editor-metrics.js';
 export * from './paths.js';
 export * from './blueprint-gate.js';
+export * from './manuscript-source.js';
