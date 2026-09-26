@@ -36,6 +36,7 @@ import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { FileSecretStore, defaultCredentialsPath } from '@nwa/harness';
+import { DatabaseSync } from 'node:sqlite';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = join(here, '..');
@@ -140,6 +141,20 @@ function failedStage(wf) {
   return `${bad.stageId}: ${String(err).slice(0, 140)}`;
 }
 
+/**
+ * 只读查库（脚本侧诊断用）。
+ *
+ * ⚠ 仅用于**只读**核对 IPC 是否暴露了某个字段 —— 产品代码的问题不在这里修。
+ */
+function dbAll(sql, ...args) {
+  const db = new DatabaseSync(join(ISOLATED_ROOT, 'project.db'));
+  try {
+    return db.prepare(sql).all(...args);
+  } finally {
+    db.close();
+  }
+}
+
 function startCore() {
   return new Promise((resolve, reject) => {
     child = utilityProcess.fork(coreEntry, [], { stdio: 'pipe' });
@@ -172,8 +187,34 @@ app.setPath('userData', join(app.getPath('appData'), '@nwa/desktop'));
 // ⚠ 强制隔离：走真实 IPC 而 IPC 的 PROJECTS_ROOT 默认是用户的
 //   ~/NovelWriterProjects。不隔离就会往真实创作目录写数据。
 const ISOLATED_ROOT = join(app.getPath('temp'), 'nwa-verify-chain');
-rmSync(ISOLATED_ROOT, { recursive: true, force: true });
-mkdirSync(ISOLATED_ROOT, { recursive: true });
+
+// ⚠ 清理失败必须给出**可操作**的提示，不能只抛 EPERM。
+//
+//   实测踩到：上一次运行被强杀后 SQLite 的 WAL 文件仍被占用，
+//   `rmSync` 抛 `EPERM ... nwa-verify-chain`，而错误信息里看不出
+//   "有残留进程占着" —— 排查成本很高（还白等了几分钟）。
+function freshIsolatedRoot() {
+  try {
+    rmSync(ISOLATED_ROOT, { recursive: true, force: true });
+  } catch (e) {
+    console.error(
+      `\n✗ 无法清空隔离目录（多半是上一次运行被强杀，仍有 Electron/Node 进程占着它）：\n` +
+        `    ${ISOLATED_ROOT}\n` +
+        `    原因：${e instanceof Error ? e.message : String(e)}\n` +
+        `    处理：先结束残留进程再重跑 ——\n` +
+        `      powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name='electron.exe'\\" | ` +
+        `Where-Object { \$_.CommandLine -like '*NovelWriterAgent*' } | Stop-Process -Force"\n`,
+    );
+    app.exit(2);
+    return false;
+  }
+  mkdirSync(ISOLATED_ROOT, { recursive: true });
+  return true;
+}
+if (!freshIsolatedRoot()) {
+  // app.exit 是异步的，这里显式停住后续初始化
+  throw new Error('隔离目录不可用');
+}
 process.env['NWA_PROJECTS_ROOT'] = ISOLATED_ROOT;
 
 // ── 都市题材的输入（作者视角的诉求，不是给模型的答案）────────
@@ -615,18 +656,80 @@ app.whenReady().then(async () => {
     const cm = await call('commit.run', { chapterId: ch1.id }, 600_000);
     rec('提交跑完', cm.ok, cm.ok ? `ok=${cm.data?.ok} artifacts=${(cm.data?.artifacts ?? []).length}` : `IPC：${cm.error?.code}：${cm.error?.message}`);
 
-    // ⚠⚠ 提交后：正文以**哪一份**为准（约定⑥：硬编码读 'draft' 的地方要逐个问）
-    const mo3 = await call('manuscript.open', { chapterId: ch1.id });
-    const finalText = mo3.data?.text ?? '';
+    // ⚠⚠⚠ 提交后：**正史里**的正文是哪一份。
+    //
+    //   实测踩到（本脚本自己的假绿，与 proc_e099bfe8f6c5 那次日志对照才发现）：
+    //   第一版读的是 `manuscript.open` 的文本 —— 那是**编辑器**的内容，
+    //   而作者刚才的保存已经把 manuscript.md 覆盖成含「保温箱的扣子」的文本。
+    //   于是这条断言**恒真**，连「提交被拒（ok=false）」时都照样通过。
+    //
+    //   必须读**正史文件本身**（chapters/NNN.md）+ 清单里记录的来源。
+    const canonPath = join(ISOLATED_ROOT, 'books', bookId, 'chapters', '001.md');
+    const canonText = existsSync(canonPath) ? readFileSync(canonPath, 'utf8') : '';
+    const chAfterCommit = await call('tool.invoke', { name: 'chapter.list', input: { bookId }, permission: 'ADMIN' });
+    const ch1Row = (chAfterCommit.data?.chapters ?? []).find((c) => c.chapterNumber === 1);
+    const committedNow = ch1Row?.status === 'COMMITTED';
+
     rec(
-      '⚠⚠ 提交进正史的是作者改后的那一份（不是旧 draft）',
-      finalText.includes('保温箱的扣子'),
-      `长度 ${finalText.length}｜含作者补写=${finalText.includes('保温箱的扣子')}`,
+      '⚠⚠⚠ 正史文件里的正文 == 作者改后的那一份（下游终点：读 chapters/001.md）',
+      canonText.includes('保温箱的扣子'),
+      `chapters/001.md = ${canonText.length} 字符｜含作者补写=${canonText.includes('保温箱的扣子')}｜status=${ch1Row?.status}`,
     );
+
+    // ⚠ 提交被拒时不该有正史正文 —— 上面那条若仍通过，说明读错了对象。
+    if (!committedNow) {
+      rec(
+        '⚠⚠ 提交未成功时，正史不应出现本章正文（防「读错对象」的假绿）',
+        canonText.length === 0,
+        `status=${ch1Row?.status}｜chapters/001.md ${canonText.length} 字符`,
+      );
+    }
 
     const chAfter = await call('tool.invoke', { name: 'chapter.list', input: { bookId }, permission: 'ADMIN' });
     const ch1After = (chAfter.data?.chapters ?? []).find((c) => c.chapterNumber === 1);
     rec('第 1 章最终为 COMMITTED', ch1After?.status === 'COMMITTED', `status=${ch1After?.status}`);
+
+    // ⚠⚠ 提交清单必须如实记录「这次提交的是哪份稿」（ADR-0008 决策 1）。
+    //   实测：它记录得**正确**（source='manuscript.md'）——
+    //   缺陷在于工作流从不写 manuscript.md，不是清单记错。
+    //   所以这条断言查的是"可追溯性"，同时把 source 摆出来作为缺陷 A 的证据。
+    // ⚠ `commit.list`（workspace.listCommits）的 outputSchema **不投影 source 列** ——
+    //   它的 SELECT 只取 id/chapter_id/status/phase/commit_mode。
+    //   `source` 是 ADR-0008 决策 1 专门加的可追溯字段，却拿不到 ——
+    //   这里直接读库（只读），并在脚本里如实标注该缺口。
+    const cmRec = await call('commit.list', { chapterId: ch1.id });
+    const manifests = cmRec.data?.manifests ?? [];
+    const last = manifests[0];
+    let sourceVia = 'commit.list';
+    let lastSource = last?.source;
+    if (lastSource === undefined) {
+      // 回退：直接查库（只读）
+      try {
+        const rows = dbAll(
+          'SELECT source FROM commit_manifests WHERE chapter_id = ? ORDER BY created_at DESC LIMIT 1',
+          ch1.id,
+        );
+        lastSource = rows[0]?.source;
+        sourceVia = '直接读库（commit.list 未投影 source）';
+      } catch {
+        /* ignore */
+      }
+    }
+    rec(
+      '提交清单记录了实际来源（可追溯「这次提交的是哪份稿」）',
+      Boolean(lastSource),
+      `source=${lastSource}｜status=${last?.status}｜取法=${sourceVia}`,
+    );
+    if (lastSource === undefined && last) {
+      console.log('  ⚠ commit.list 未返回 source 字段 —— ADR-0008 加的可追溯字段在 IPC 层不可见');
+    }
+    if (last?.source === 'manuscript.md' && canonText.length > 0 && draftSize > 0 && canonText.length * 3 < draftSize) {
+      console.log(
+        `  ⚠ 注意：来源是 manuscript.md（${canonText.length} 字符），` +
+          `而 draft.md 有 ${draftSize} 字节 —— 工作流写 draft 但从不写 manuscript，` +
+          `正史因此只收到作者那一段。`,
+      );
+    }
 
     // ═══ 步骤 10：多书隔离（用户硬要求）═════════════════════
     console.log('\n════════ 多书隔离核对 ════════');
