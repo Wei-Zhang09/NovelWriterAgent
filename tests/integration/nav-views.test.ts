@@ -123,7 +123,14 @@ describe('§41 / §42 时间线与伏笔：各自独立入口', () => {
   it('⚠ 进账目视图时清掉「当前章」（否则顶栏与中栏说的不是一件事）', () => {
     const i = RENDERER.indexOf('function renderView(render) {');
     expect(i).toBeGreaterThan(-1);
-    const seg = RENDERER.slice(i, i + 700);
+    // ⚠ 用**函数自身的结尾**界定窗口，不用固定字数。
+    //   原先是 `slice(i, i + 700)`，而 renderView 长 ~820 字符 ——
+    //   只要在函数中间加几行（本轮加了 refreshBooks 注入），
+    //   `renderTopbar()` 就被挤出窗口，断言变成假红。
+    //   窗口按结构取，长度变化才不会误伤。
+    const end = RENDERER.indexOf('\n}\n', i);
+    expect(end, '找不到 renderView 的结尾').toBeGreaterThan(i);
+    const seg = RENDERER.slice(i, end);
     expect(seg, 'renderView 应清空 selectedChapterId').toContain('state.selectedChapterId = null');
     expect(seg).toContain('renderTopbar()');
   });

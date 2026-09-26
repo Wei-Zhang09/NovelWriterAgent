@@ -1448,6 +1448,11 @@ function renderView(render) {
         invoke: call,
         state,
         msg: el('div', 'form-msg'),
+        // ⚠ 视图内部改了书目（比如向导里"先建一本书"）时需要刷新左栏。
+        //   不能直接给 `loadProjects` —— 那个函数末尾会 `renderCenter()`，
+        //   会把作者从当前视图（向导）里踢回项目主页。
+        //   这个只刷书目/章节/左栏，**不动中栏**。
+        refreshBooks,
       }),
     );
     window.__wizardError = null;
@@ -1455,6 +1460,22 @@ function renderView(render) {
     window.__wizardError = e?.message ?? String(e);
     ctr.append(el('div', 'callout callout--err', `视图渲染失败：${window.__wizardError}`));
   }
+  renderTopbar();
+}
+
+/**
+ * 只刷新书目与章节列表 + 左栏，**不重建中栏**。
+ *
+ * 给"在视图内部新建了书"的场合用（开书向导的「先建一本书」）。
+ * 与 `loadProjects` 的区别就是不动中栏 —— 否则作者刚建完书就被
+ * 踢出向导，得自己再点一次「开书向导」。
+ */
+async function refreshBooks() {
+  if (!state.project) return;
+  const b = await call('book.list', { projectId: state.project.id });
+  state.books = b.ok ? b.data.books : state.books;
+  await loadChapters();
+  renderNav();
   renderTopbar();
 }
 

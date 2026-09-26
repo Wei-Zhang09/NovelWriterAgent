@@ -150,7 +150,13 @@ export function evaluateSettingsGate(input: SettingsGateInput): SettingsGateResu
       reason: 'NEVER_CONFIRMED',
       message:
         `已登记 ${input.entryCount} 条设定但尚未确认。` +
-        '请先在「世界观设定」面板确认，Agent 才会按设定写作。',
+        // ⚠ 必须指向**导航里真的能找到**的位置。
+        //   原文案只说「世界观设定面板」，而那个面板**不是左栏导航项** ——
+        //   它只在「开始/项目主页」的中心视图里渲染。作者照做时找不到它，
+        //   只能卡死（2026-09-26 实测事故）。
+        //   现在优先指向开书向导（那里有统一确认按钮，且会一并确认设定）。
+        '请在「开书向导」页点「确认全部前置信息」，' +
+        '或在「开始」页的「世界观设定」卡片里确认 —— 确认后 Agent 才会按设定写作。',
     };
   }
   if (input.confirmedHash !== input.currentHash) {
@@ -159,7 +165,8 @@ export function evaluateSettingsGate(input: SettingsGateInput): SettingsGateResu
       reason: 'CHANGED_SINCE_CONFIRM',
       message:
         '设定在确认之后又被修改过，当前正文与设定可能已经分叉。' +
-        '请重新确认设定后再继续。',
+        // 同 NEVER_CONFIRMED：指向导航里真的能找到的位置
+        '请到「开书向导」页重新点「确认全部前置信息」（或「开始」页的设定卡片）。',
     };
   }
   return {

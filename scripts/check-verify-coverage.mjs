@@ -59,6 +59,15 @@ const CLASSIFY = {
   'verify:corpus': 'standalone',
   'verify:corpus-import': 'standalone',
   'verify:multibook': 'standalone',
+  /**
+   * 开书向导「走完就能开写」端到端（C1）。
+   *
+   * ⚠ 归 standalone 而不是 needs-model：它只验证门禁链路与工作流**启动**，
+   *   不调 LLM。用户实测卡住的那一步（plan 被 SETTINGS_NOT_CONFIRMED 拦）
+   *   恰好不需要模型就能复现 —— 归 needs-model 会让它每次验收都被跳过，
+   *   而这类"链路断在哪一层"的缺陷正是最容易漏的。
+   */
+  'verify:wizard': 'standalone',
   'verify:endpoint': 'standalone',
   'verify:backup': 'standalone',
   'verify:prune': 'standalone',

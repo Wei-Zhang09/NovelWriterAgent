@@ -38,6 +38,7 @@
     "verify:writing": "electron apps/desktop/scripts/verify-writing-e2e.mjs",
     "verify:plan": "electron apps/desktop/scripts/verify-plan-e2e.mjs",
     "verify:multibook": "electron apps/desktop/scripts/verify-multibook.mjs",
+    "verify:wizard": "electron apps/desktop/scripts/verify-wizard.mjs",
     "verify:corpus": "node scripts/verify-corpus.mjs",
     "verify:books": "node scripts/verify-books.mjs",
     "verify:annotate": "electron apps/desktop/scripts/verify-annotate.mjs",

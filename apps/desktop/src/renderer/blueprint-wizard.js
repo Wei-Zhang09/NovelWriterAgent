@@ -54,7 +54,7 @@ const DECISIONS = [
   ['keep_both', '两个都留', 'AI 的会改名后新建'],
 ];
 
-export function renderBlueprintWizard({ el, invoke, state, msg }) {
+export function renderBlueprintWizard({ el, invoke, state, msg, refreshBooks }) {
   const box = el('div', 'view');
   const body = el('div', 'view__body');
 
@@ -96,12 +96,86 @@ export function renderBlueprintWizard({ el, invoke, state, msg }) {
     }
   }
 
+  /**
+   * 没有书时：引导「新建书 → 进向导」。
+   *
+   * ⚠ 复用 `book.create` 这条**既有** IPC（与项目主页「新建书目」同一个），
+   *   不新建通道。区别只在于这里建完**立刻**把当前书切过去并刷新向导，
+   *   让作者一步进到步骤①。
+   */
+  function renderCreateBookPrompt() {
+    const c = el('div', 'card');
+    c.append(el('div', 'card__title', '先建一本书'));
+    c.append(
+      el(
+        'div',
+        'hint',
+        '开书向导是**按书**进行的：选题方向、核心设定、卷纲、细纲都记在某一本书名下。' +
+          '所以先建书，再进向导。',
+      ),
+    );
+
+    const row = el('div', 'btn-row');
+    const title = el('input', 'input');
+    title.placeholder = '书名（必填）';
+    const btn = el('button', 'btn btn--primary', '创建并进入向导');
+    row.append(title, btn);
+    const line = el('div', 'form-msg');
+    c.append(row, line);
+
+    btn.addEventListener('click', async () => {
+      const name = title.value.trim();
+      if (name.length === 0) {
+        line.className = 'form-msg form-msg--err';
+        line.textContent = '请填写书名';
+        return;
+      }
+      setBusy(btn, true, '创建中…');
+      const r = await invoke('book.create', { projectId: state.project.id, title: name });
+      setBusy(btn, false);
+      if (!r.ok) {
+        line.className = 'form-msg form-msg--err';
+        line.textContent = `${r.error.code}：${r.error.message}`;
+        return;
+      }
+      // ⚠ 切到新书 —— 不切的话向导仍绑在旧书上（或没有书），
+      //   作者会以为"创建了但向导还是空的"。
+      state.selectedBookId = r.data.id;
+      // ⚠ 让左栏书目列表跟着出现这本新书。`refreshBooks` 由 renderer.js
+      //   注入 —— 它只刷左栏，**不重建中栏**（否则作者会被踢出向导）。
+      await refreshBooks?.();
+      line.className = 'form-msg form-msg--ok';
+      line.textContent = `已创建「${r.data.title}」，正在进入向导…`;
+      await render();
+    });
+
+    return c;
+  }
+
   // ───────────────────────────────────────────────────────────
   // 门禁状态（首屏第一块 —— 见文件头注释）
   // ───────────────────────────────────────────────────────────
   async function loadStatus() {
     if (!bookId()) {
-      body.replaceChildren(el('div', 'empty', '先在左栏选一本书。'));
+      // ── 没有书时先引导「新建书 → 进向导」─────────────────────
+      //
+      // ⚠ 用户决策（2026-09-26）：
+      //   > 「没有书时，向导入口先引导「新建书 → 进向导」，
+      //   >    确认后这本书直接可写（不在向导里再建书）」
+      //
+      // 所以这里**只**给建书入口，不让作者在向导内部接着走四步 ——
+      // 向导是**按书**的（`bookId = state.selectedBookId`），没有书时
+      // 每一步生成都没有落点（`blueprint_steps.book_id` 非空外键）。
+      //
+      // ⚠ 原来的文案「先在左栏选一本书」在**一本书都没有**时是死胡同：
+      //   左栏书目区只会显示「还没有书」，没有可点的地方。
+      if (!state.project) {
+        body.replaceChildren(
+          el('div', 'empty', '还没有项目。请先在「开始」页创建项目。'),
+        );
+        return null;
+      }
+      body.replaceChildren(renderCreateBookPrompt());
       return null;
     }
     const r = await invoke('blueprint.status', { bookId: bookId() });
@@ -475,6 +549,93 @@ export function renderBlueprintWizard({ el, invoke, state, msg }) {
     out.append(tbl);
   }
 
+  /**
+   * 篇幅目标（每章目标字数 + 允许偏离）。
+   *
+   * ## ⚠ 为什么必须在向导里也有
+   *
+   * 用户反馈（2026-09-26）：「还有关于章节字数的设定也没有」。
+   *
+   * 这个设定原本**只**存在于项目主页（`renderWordTargetForm`）——
+   * 而作者走完向导后停在向导里，看不到它，就直接开写了。
+   * 于是细纲的 `wordTarget` 回退到 `books.target_words_per_chapter`
+   * 的默认值，作者的目标字数从未生效。
+   *
+   * ⚠ 与项目主页那份**共用同一个 IPC**（`book.setWordTarget`），
+   *   不新建通道 —— 两处各写一套迟早分叉。
+   *
+   * ⚠ 按**书**隔离（多书硬要求）：读写都用当前 `bookId`。
+   */
+  function renderWordTargetPanel() {
+    const c = el('div', 'card');
+    c.append(el('div', 'card__title', '篇幅目标（每章字数）'));
+
+    const book = state.books?.find((b) => b.id === bookId());
+
+    const target = el('input', 'input');
+    target.type = 'number';
+    target.min = '1';
+    target.placeholder = '如 2500';
+    target.value = book?.targetWordsPerChapter ? String(book.targetWordsPerChapter) : '';
+
+    const tol = el('input', 'input');
+    tol.type = 'number';
+    tol.min = '0';
+    tol.max = '200';
+    tol.value = String(book?.wordCountTolerancePct ?? 40);
+
+    const row = el('div', 'btn-row');
+    const saveBtn = el('button', 'btn btn--primary', '保存字数设定');
+    const clearBtn = el('button', 'btn', '清除');
+    row.append(saveBtn, clearBtn);
+
+    const line = el('div', 'form-msg');
+
+    c.append(
+      el('div', 'form-label', '每章目标字数'),
+      target,
+      el('div', 'form-label', '允许偏离（%）'),
+      tol,
+      row,
+      line,
+      el('div', 'hint', '字数只做提示，不阻断提交 —— 硬卡字数会让模型为凑数注水。'),
+    );
+
+    async function save(words) {
+      setBusy(saveBtn, true, '保存中…');
+      const r = await invoke('book.setWordTarget', {
+        bookId: bookId(),
+        targetWords: words,
+        tolerancePct: Number(tol.value) || 0,
+      });
+      setBusy(saveBtn, false);
+      if (!r.ok) {
+        line.className = 'form-msg form-msg--err';
+        line.textContent = `${r.error.code}：${r.error.message}`;
+        return;
+      }
+      line.className = 'form-msg form-msg--ok';
+      line.textContent = words === null ? '已清除字数设定' : `已保存：每章 ${words} 字`;
+    }
+
+    saveBtn.addEventListener('click', () => {
+      const n = Number(target.value);
+      if (!Number.isInteger(n) || n < 1) {
+        line.className = 'form-msg form-msg--err';
+        line.textContent = '目标字数必须是 ≥1 的整数';
+        return;
+      }
+      void save(n);
+    });
+
+    clearBtn.addEventListener('click', () => {
+      target.value = '';
+      void save(null);
+    });
+
+    return c;
+  }
+
   function renderDetailPanel() {
     const c = el('div', 'card');
     c.append(el('div', 'card__title', '④ 逐章细纲'));
@@ -644,6 +805,19 @@ export function renderBlueprintWizard({ el, invoke, state, msg }) {
       );
     }
 
+    // ⚠ 如实说明这次确认**同时**落实两道门禁（用户决策 2026-09-26）。
+    //   不写清楚的话，作者在别处看到「设定未确认」会以为是另一件事没做完，
+    //   而实际这次确认已经把它一起确认了 —— 那会让他重复找一个不存在的步骤。
+    c.append(
+      el(
+        'div',
+        'hint',
+        '点「确认全部前置信息」会同时确认两件事：① 向导四步（选题/设定/卷纲/细纲）；' +
+          '② 世界观设定（步骤②生成的那些条目）。' +
+          '两道门禁都通过后，下面会出现「开始写第 1 章」。',
+      ),
+    );
+
     const btnRow = el('div', 'btn-row');
 
     const gateBtn = el('button', 'btn', d.gateEnabled ? '关闭门禁' : '启用门禁');
@@ -696,14 +870,113 @@ export function renderBlueprintWizard({ el, invoke, state, msg }) {
           showMsg(`确认失败：${r.error.message}`, 'err');
           return;
         }
-        showMsg(`已确认 ${r.data.steps} 个步骤，指纹 ${String(r.data.hash).slice(0, 12)}…`, 'ok');
+        showMsg(
+          `已确认 ${r.data.steps} 个步骤，指纹 ${String(r.data.hash).slice(0, 12)}…` +
+            (r.data.settings ? `｜同时确认了 ${r.data.settings.count} 条世界观设定` : ''),
+          'ok',
+        );
         await render();
       });
       btnRow.append(confirm);
     }
 
     c.append(btnRow);
+
+    // ── 开始写第 1 章（确认后才出现）─────────────────────────
+    //
+    // ⚠ 用户决策（2026-09-26）：
+    //   > 「开书向导完成后应该直接创建一本新书籍，并且可以开始生成第一章，
+    //   >    至少得有个按钮吧」
+    //
+    // 确认之前**不显示**这个按钮：没确认就开写必然被门禁拦死，
+    // 让作者点一个注定失败的按钮比不给他按钮更糟。
+    if (d.confirmedAt) {
+      c.append(renderStartWriting());
+    }
+
     return c;
+  }
+
+  /**
+   * 「开始写第 1 章」—— 从向导直接启动整章工作流。
+   *
+   * ## 为什么这里要重复一遍门禁判定
+   *
+   * `d.confirmedAt` 只说明**向导**确认过了。开写实际要过**两道**门禁，
+   * 而另一道（世界观设定）可能在确认之后被改动 —— 那时哈希失配，
+   * 开写仍会被拦。
+   *
+   * 所以这里主动查一次 `settings.status`：不通过就**明说哪一道没过**，
+   * 而不是让作者点了按钮、等了十几秒、再收到一个后端报错。
+   */
+  function renderStartWriting() {
+    const box = el('div', 'start-writing');
+
+    // 是否已经写过：有章节就不再叫"第 1 章"
+    const hasChapters = (state.chapters?.length ?? 0) > 0;
+    const nextNo = hasChapters ? Math.max(...state.chapters.map((c) => c.chapterNumber)) + 1 : 1;
+
+    const title = el('div', 'card__title', '开始写作');
+    box.append(title);
+
+    const hint = el('div', 'hint', '前置信息已确认，可以直接开写。');
+    box.append(hint);
+
+    const btn = el(
+      'button',
+      'btn btn--primary btn--lg',
+      hasChapters ? `开始写第 ${nextNo} 章` : '开始写第 1 章',
+    );
+    const line = el('div', 'form-msg');
+    box.append(btn, line);
+
+    // ⚠ 按钮先禁用，等门禁查询回来再决定 —— 若查询期间作者点了，
+    //   会绕过下面这道检查（虽然后端还会拦，但那样作者看到的是
+    //   "工作流 FAILED"，而不是"设定没确认"这个可操作的原因）
+    btn.disabled = true;
+
+    void (async () => {
+      const r = await invoke('settings.status', { bookId: bookId() });
+      if (!r.ok) {
+        line.className = 'form-msg form-msg--err';
+        line.textContent = `无法确认设定门禁状态：${r.error.message}`;
+        return; // 保持禁用：状态不明时不开写
+      }
+      if (!r.data.allowed) {
+        line.className = 'form-msg form-msg--err';
+        line.textContent =
+          `还差一道门禁：${r.data.message}` +
+          '（世界观设定在确认之后又被改动过。请在项目主页的「世界观设定」卡片里重新确认。）';
+        return;
+      }
+      btn.disabled = false;
+      line.className = 'form-msg form-msg--ok';
+      line.textContent = `设定门禁已通过（${r.data.entryCount} 条设定）`;
+    })();
+
+    btn.addEventListener('click', async () => {
+      setBusy(btn, true, '正在启动…');
+      line.className = 'form-msg';
+      line.textContent = '正在启动工作流…';
+
+      // ⚠ 章号交给工作流自己决定（create_chapter 会建下一章）——
+      //   与运行面板同一约定，避免 UI 与工作流各算一套"下一章是几"。
+      const r = await invoke('workflow.start', { bookId: bookId() });
+      setBusy(btn, false);
+      if (!r.ok) {
+        line.className = 'form-msg form-msg--err';
+        line.textContent = `${r.error?.code}：${r.error?.message ?? ''}`;
+        return;
+      }
+      line.className = 'form-msg form-msg--ok';
+      line.textContent =
+        `已启动：${r.data?.workflowId}｜写完整章需数分钟，` +
+        '进度在右栏「写作流程」里看，可随时暂停。';
+      // 刷新一次，让左栏章节列表跟着更新
+      await render();
+    });
+
+    return box;
   }
 
   // ───────────────────────────────────────────────────────────
@@ -726,6 +999,10 @@ export function renderBlueprintWizard({ el, invoke, state, msg }) {
       ['② 核心设定', () => renderSettingsPanel()],
       ['③ 卷级大纲', () => renderOutlinePanel()],
       ['④ 逐章细纲', () => renderDetailPanel()],
+      // ⚠ 篇幅目标排在细纲**之后、统一确认之前**：
+      //   细纲的 `wordTarget` 就是按这个设定算的，作者该在看到细纲后、
+      //   确认前调整它。放最前面会被当成"还没轮到"而跳过。
+      ['篇幅目标', () => renderWordTargetPanel()],
       ['修改面板', () => renderEditPanel(d)],
       ['统一确认', () => renderConfirmPanel(d)],
     ];

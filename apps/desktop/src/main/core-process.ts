@@ -1102,6 +1102,14 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
     if (!params.title || params.title.trim().length === 0) {
       throw new AppError(ErrorCode.TOOL_VALIDATION_ERROR, '书名不得为空');
     }
+    // ⚠ 不在这里收题材。
+    //
+    //   参考项目的「基本信息」里题材是建书时填的，本项目**不是**：
+    //   题材由向导步骤①（选题方向）生成、作者从候选里挑（见
+    //   `blueprint-wizard.js` 的 `cd.genre`）。建书时问一遍等于让作者
+    //   填两次，而第二次（AI 生成的）才是真正进提示词的那个。
+    //
+    //   书级字段（目标平台等）统一走 C2 的那一次迁移，不在此处零散加列。
     const row = p.repos.books.create({
       id: bookId(),
       projectId: params.projectId,
@@ -1251,11 +1259,59 @@ const handlers: Record<string, (params: never) => Promise<unknown> | unknown> = 
    *   不在 IPC 里重写序列 —— 否则"IPC 里写错了"测试照样绿
    *   （`confirmBookSettings` 的注释记着这个教训）。
    */
+  /**
+   * 统一确认 —— **一次人工确认，同时落实两道门禁**（用户决策 2026-09-26）。
+   *
+   * ## 为什么两道门禁要在这里合并
+   *
+   * 本项目有两道**独立**门禁：
+   *   · `blueprint_gate`（向导门禁）—— 拦「用了向导但没走完统一确认」
+   *   · `settings_gate`（设定门禁）—— 拦「已登记世界观设定但没确认」
+   *
+   * 两者分开是当初的设计（0022 迁移注释），本身没错。但实测暴露出
+   * **流程断裂**：向导步骤②会把生成的设定物化进 `world_entities`，
+   * 于是 `settings_gate` 立刻变成 `NEVER_CONFIRMED`；而向导的
+   * 「统一确认」只管自己那四步，**从不确认设定**。
+   *
+   * 结果：作者走完向导 → 以为可以开写 → 点「运行完整工作流」→
+   * plan stage 被 `SETTINGS_NOT_CONFIRMED` 拦死（实测 wf_muigmce0），
+   * 而错误信息让他去「世界观设定」面板 —— 那个面板在左栏导航里
+   * **根本没有入口**。作者就此卡死。
+   *
+   * ## 修法（用户原话）
+   * > 「向导「统一确认」时一并把世界观设定也确认掉 ——
+   * >   两道门禁合并成一次人工确认（向导里已有设定内容，你刚看过）」
+   *
+   * ⚠ 这不是「取消门禁」，而是**把两次人工确认合并成一次**：
+   *   确认动作仍然必须由作者发起（`§十二 人工批准`），只是不再要求他
+   *   跑到另一个找不到的面板里做第二次。设定内容向导里已经展示过。
+   *
+   * ⚠ 顺序：先确认设定，再确认向导。两者都成功才算通过 ——
+   *   若设定确认失败（比如哈希算不出来），**不能**留下「向导已确认
+   *   但设定没确认」的中间态，那会让作者再撞一次同样的门禁。
+   */
   'blueprint.confirmAll': (params: { bookId: string }) => {
     const p = requireProject();
+
+    // ① 设定门禁：一并确认（幂等 —— 已确认过再确认一次无害）
+    const settings = confirmBookSettings(p.repos, params.bookId);
+
+    // ② 向导门禁：统一确认
     const { hash, steps } = confirmBookBlueprint(p.repos, params.bookId);
-    logger.info('开书向导前置信息已统一确认', { bookId: params.bookId, steps, hash });
-    return { bookId: params.bookId, confirmed: true, steps, hash };
+
+    logger.info('开书向导前置信息已统一确认（含世界观设定）', {
+      bookId: params.bookId,
+      steps,
+      hash,
+      settingsCount: settings.count,
+    });
+    return {
+      bookId: params.bookId,
+      confirmed: true,
+      steps,
+      hash,
+      settings: { confirmed: true, count: settings.count },
+    };
   },
 
   /** 撤回统一确认（前置内容改动后重新走一遍） */

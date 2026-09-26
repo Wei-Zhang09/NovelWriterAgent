@@ -770,3 +770,26 @@ body {
 .precheck__msg { font-size: 12px; color: var(--muted); margin-top: 3px; }
 .precheck__hint { font-size: 12px; color: var(--warn); margin-top: 3px; }
 .precheck__hash { font-family: monospace; font-size: 11px; color: var(--muted); margin-top: 3px; }
+
+/* ── 开书向导：开始写第 1 章（主 CTA）─────────────────────────
+ *
+ * ⚠ 用户决策（2026-09-26）：「至少得有个按钮吧」——
+ *   这是全流程的**终点按钮**，必须一眼看到、且与周围的普通按钮区分开。
+ *   所以给独立底色 + 左侧强调边，而不是沿用 .btn--primary 的默认外观
+ *   （默认外观与「生成」「刷新」等过程按钮完全一样，会被当成又一个步骤）。
+ */
+.start-writing {
+  margin-top: 18px;
+  padding: 14px;
+  border: 1px solid var(--accent);
+  border-left-width: 4px;
+  border-radius: 8px;
+  background: var(--nav-active-bg);
+}
+.start-writing .card__title { margin-bottom: 6px; }
+.start-writing .btn--lg {
+  margin-top: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 10px 22px;
+}
