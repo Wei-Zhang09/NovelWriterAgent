@@ -74,6 +74,13 @@ function fakeServices(log: CallLog, opts?: {
    */
   gateAt?: { stage: StageId; wait: () => Promise<void>; release: () => void };
   /**
+   * 让 summary stage 报告"已生成但**未批准**"，触发 stage 主动暂停。
+   *
+   * ⚠ 默认是 `false`（即已批准、不暂停）：本文件大部分用例测的是引擎
+   *   编排，若默认暂停就都走不到后面的 stage。
+   */
+  summaryAwaitingApproval?: boolean;
+  /**
    * 真实存在的章节 id。
    *
    * ⚠ 必须是真章节：`workflows.chapter_id` 有外键指向 `chapters(id)`，
@@ -206,6 +213,17 @@ function fakeServices(log: CallLog, opts?: {
         timelineEventCount: 0,
         rejected: [],
       };
+    },
+    async summary() {
+      rec('summary');
+      // ⚠ 默认 stub 返回「已批准」：本文件测的是**引擎编排**，
+      //   而不是摘要门禁。若默认返回未批准，每个用例都会在 summary 处
+      //   暂停、走不到后面的 stage —— 那会让这份测试失去原有覆盖。
+      //   暂停语义由专门的用例（`opts.summaryAwaitingApproval`）验证。
+      if (opts?.summaryAwaitingApproval) {
+        return { ok: true, alreadyApproved: false, chars: 100 };
+      }
+      return { ok: true, alreadyApproved: true, chars: 100 };
     },
     async readyToCommit() {
       rec('ready_to_commit');
@@ -520,6 +538,120 @@ describe('Novel Workflow（P0-1 编排 + P0-2 恢复）', () => {
     const executedInOrder = log.calls.filter((c) => STAGE_ORDER.includes(c as StageId));
     const expected = STAGE_ORDER.filter((s) => executedInOrder.includes(s));
     expect(executedInOrder).toEqual(expected);
+  });
+});
+
+// ────────────────────────────────────────────────────────────
+/**
+ * 缺陷 B：摘要 stage 生成后**暂停等人工批准**（§十二）。
+ *
+ * ## 要证伪的主张
+ *
+ * `ready_to_commit` 把「摘要为空」当阻塞，而原先没有任何 stage 产出摘要
+ * → 工作流必然失败。修复后 `summary` stage 必须：
+ *
+ *   ① 生成摘要，且**不**替作者批准（§十二 要的是人工确认）
+ *   ② 生成后**暂停**（PAUSED，不是 FAILED）等作者
+ *   ③ 批准后 resume 能继续，且**不重复**生成摘要
+ *
+ * ⚠ ③ 是这里最容易做错的一条：若暂停时把 summary 标成 FAILED/SKIPPED，
+ *   或没记 resume_cursor，resume 会重跑它 → 每次 resume 都生成一遍摘要，
+ *   作者永远走不到 commit。
+ */
+describe('缺陷 B —— summary stage：生成后暂停等作者批准', () => {
+  it('⚠⚠ 摘要未批准 → 工作流 PAUSED（不是 FAILED，也不是 DONE）', async () => {
+    t = createTestProject();
+    const log = newLog();
+    const { repo, engine, wfId, chapterId } = setup(t);
+    engine.registerAll(
+      createNovelWorkflowStages(
+        fakeServices(log, { chapterId, summaryAwaitingApproval: true }),
+      ),
+    );
+
+    const res = await engine.advance(wfId);
+
+    expect(log.count('summary')).toBe(1);
+    // ⚠ 必须是 PAUSED：用 FAILED 表达"等作者批准"会让 UI 显示成出错，
+    //   作者会去找 bug 而不是去点批准。
+    expect(res.workflow.status).toBe('PAUSED');
+    expect(res.workflow.status).not.toBe('FAILED');
+    // 关键：不能继续往下走到 ready_to_commit / commit
+    expect(log.count('ready_to_commit')).toBe(0);
+    expect(log.count('commit')).toBe(0);
+    // 该 stage 自己的工作**确实做完了**，所以记 DONE（不是 FAILED）
+    expect(repo.getStage(wfId, 'summary')!.status).toBe('DONE');
+    // 恢复依据必须落库
+    expect(repo.get(wfId)!.resumeCursor).toBe('summary');
+  });
+
+  it('⚠⚠ 作者批准后 resume → 继续到 commit，且**不重复生成**摘要', async () => {
+    t = createTestProject();
+    const log = newLog();
+    const { engine, wfId, chapterId } = setup(t);
+    engine.registerAll(
+      createNovelWorkflowStages(
+        fakeServices(log, { chapterId, summaryAwaitingApproval: true }),
+      ),
+    );
+
+    await engine.advance(wfId);
+    expect(log.count('summary')).toBe(1);
+
+    // ⚠ 不重新注册 stage：`register` 对同 id 会抛"重复注册"。
+    //   这里模拟"作者批准后 resume" —— resume 走的是**同一个**引擎
+    //   与同一套 stage；批准的效果由真实实现里 `alreadyApproved` 分支体现。
+    const res = await engine.resume(wfId);
+
+    // ⚠ 核心断言：summary 不再被调用（它已 DONE → 跳过），
+    //   否则每次 resume 都重新生成摘要，作者永远走不完。
+    expect(log.count('summary')).toBe(1);
+    expect(log.count('ready_to_commit')).toBe(1);
+    expect(log.count('commit')).toBe(1);
+    expect(res.workflow.status).toBe('DONE');
+  });
+
+  it('摘要已批准 → 不暂停（不该为已批准的内容再打扰作者一次）', async () => {
+    t = createTestProject();
+    const log = newLog();
+    const { engine, wfId, chapterId } = setup(t);
+    engine.registerAll(createNovelWorkflowStages(fakeServices(log, { chapterId })));
+
+    const res = await engine.advance(wfId);
+
+    expect(log.count('summary')).toBe(1);
+    expect(res.workflow.status).toBe('DONE');
+  });
+
+  it('⚠ summary stage 在 ready_to_commit **之前**（顺序不能反）', async () => {
+    t = createTestProject();
+    const log = newLog();
+    const { engine, wfId, chapterId } = setup(t);
+    engine.registerAll(createNovelWorkflowStages(fakeServices(log, { chapterId })));
+
+    await engine.advance(wfId);
+
+    const iSummary = STAGE_ORDER.indexOf('summary');
+    const iGate = STAGE_ORDER.indexOf('ready_to_commit');
+    expect(iSummary).toBeGreaterThan(-1);
+    expect(iSummary).toBeLessThan(iGate);
+  });
+
+  it('⚠ 摘要生成失败 → FAILED（真失败，不是等待）', async () => {
+    t = createTestProject();
+    const log = newLog();
+    const { repo, engine, wfId, chapterId } = setup(t);
+    const svc = fakeServices(log, { chapterId });
+    svc.summary = async () => {
+      log.calls.push('summary');
+      return { ok: false, alreadyApproved: false, chars: 0, error: '模型抽风' };
+    };
+    engine.registerAll(createNovelWorkflowStages(svc));
+
+    const res = await engine.advance(wfId);
+
+    expect(res.workflow.status).toBe('FAILED');
+    expect(repo.getStage(wfId, 'summary')!.status).toBe('FAILED');
   });
 });
 

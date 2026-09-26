@@ -274,6 +274,26 @@ export interface NovelWorkflowServices {
     rejected: readonly string[];
   }>;
 
+  /**
+   * 生成章节摘要（缺陷 B 修复）。
+   *
+   * ⚠ 只**生成**，不替作者批准 —— 批准是 §十二 要求的人工动作。
+   *
+   * ⚠ 取正文必须走「当前正文」的优先级链（与提交 / 审阅同一份）。
+   *   固定读 `revision ?? draft` 会让摘要描述**另一份稿子** ——
+   *   与 F1 同类：检查/描述的对象 ≠ 提交的对象。
+   */
+  readonly summary: (input: {
+    chapterId: string;
+    chapterNumber: number;
+  }) => Promise<{
+    ok: boolean;
+    /** 已存在且已批准（本 stage 无需再打扰作者） */
+    alreadyApproved: boolean;
+    chars: number;
+    error?: string;
+  }>;
+
   /** Commit 前置门禁汇总（§十二 summary approval、§33 无 BLOCKING） */
   readonly readyToCommit: (input: {
     chapterId: string;
@@ -595,6 +615,56 @@ export function createNovelWorkflowStages(
             timelineEventCount: r.timelineEventCount,
             foreshadowingCount: r.foreshadowingCount,
             rejected: r.rejected,
+          },
+        };
+      },
+    },
+
+    // ── 9b. 章节摘要（缺陷 B）──
+    //
+    // ⚠ 为什么必须是一个独立 stage：`ready_to_commit` 把「摘要为空」
+    //   当阻塞，而原先 12 个 stage 没有任何一个产出摘要 →
+    //   工作流**必然**在那里失败，作者只能退出工作流手动补。
+    //
+    // ⚠ 为什么生成后要暂停而不是直接往下走：§十二 要求摘要**人工批准**。
+    //   stage 自己批准等于把"人工确认"变成自动流程，
+    //   与 §十二 的意图相反（那是给作者的一道确认闸）。
+    {
+      id: 'summary',
+      async run(_input: StageInput, ctx: StageContext): Promise<WorkflowStageResult> {
+        const chapterId = needChapterId(ctx);
+        const chapterNumber = needChapterNumber(ctx);
+        const r = await services.summary({ chapterId, chapterNumber });
+
+        if (!r.ok) {
+          // 生成失败是**真失败**（不是等待）：模型报错/没正文，
+          // 需要作者或开发者介入修，不能让流程继续。
+          return {
+            ok: false,
+            error: `章节摘要生成失败：${r.error ?? '未知原因'}`,
+            output: { stage: 'summary' },
+          };
+        }
+
+        ctx.emit('SUMMARY_GENERATED', {
+          stage: 'summary',
+          chars: r.chars,
+          alreadyApproved: r.alreadyApproved,
+        });
+
+        // ⚠ 已批准过（作者之前补过）→ 不必再暂停打扰他，直接继续。
+        //   这条路径让"作者手动批准后 resume"不会卡在同一处无限循环。
+        if (!r.alreadyApproved) {
+          ctx.requestPause('摘要已生成，等待作者批准（§十二）');
+        }
+
+        return {
+          ok: true,
+          output: {
+            stage: 'summary',
+            chars: r.chars,
+            alreadyApproved: r.alreadyApproved,
+            awaitingApproval: !r.alreadyApproved,
           },
         };
       },

@@ -39,6 +39,7 @@ const STAGE_LABELS = {
   revision: ['改稿', '按审阅问题做替换式修订'],
   continuity: ['连续性检查', '对照 Canon / 角色状态 / 时间线'],
   state_settlement: ['状态结算', '提取→验证→应用角色与事实状态'],
+  summary: ['生成摘要', '生成章节摘要并等你批准（§十二）'],
   ready_to_commit: ['提交门禁', '摘要批准（§十二）与 BLOCKING 检查（§33）'],
   commit: ['提交', '原子写入正式章节（PREPARE→APPLY→VERIFY）'],
   verify: ['提交后校验', '确认章节状态与产物一致'],
@@ -202,6 +203,19 @@ export function renderWorkflowPanel({ el, state, invoke, msg, refreshChapters })
     ];
     if (view.currentStage) parts.push(`当前：${(STAGE_LABELS[view.currentStage] ?? [view.currentStage])[0]}`);
     progressLine.textContent = parts.join('｜');
+
+    // ⚠ 停在 summary 时必须告诉作者**该做什么**，而不只是"已暂停"。
+    //
+    //   作者看到"已暂停"的第一反应是"为什么停了？出错了？"。
+    //   而这里其实是**正常等待**：摘要已生成，等他批准（§十二）。
+    //   不说清就会去翻日志找 bug，或者直接点"恢复"——
+    //   而恢复后 ready_to_commit 仍会因未批准而失败，白跑一轮。
+    if (view.status === 'PAUSED' && view.currentStage === 'summary') {
+      headMsg.className = 'form-msg form-msg--warn';
+      headMsg.textContent =
+        '已生成章节摘要，等你批准 —— 请在「摘要」面板确认（可编辑后确认），' +
+        '批准后回到这里点「恢复」继续提交。未批准前不会进正史。';
+    }
 
     renderStages(view);
 

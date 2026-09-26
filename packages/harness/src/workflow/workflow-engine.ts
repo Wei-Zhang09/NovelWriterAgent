@@ -81,6 +81,15 @@ export class WorkflowEngine {
   /** 暂停请求（内存镜像；权威记录在 DB 的 status） */
   private readonly pauseRequests = new Set<string>();
   private readonly cancelRequests = new Set<string>();
+  /**
+   * stage 主动请求暂停（缺陷 B）：workflowId → 原因。
+   *
+   * ⚠ 与 `pauseRequests` 分开：`pauseRequests` 是**用户在 stage 中间**
+   *   要求暂停（可能打断 stage），本 map 是 **stage 自己**在成功完成后
+   *   请求停在工作流层面等人工介入（如作者批准摘要）。
+   *   混用会让"作者暂停"与"等作者批准"变成同一件事，无法区分。
+   */
+  private readonly pauseAfterStage = new Map<string, string>();
 
   constructor(opts: WorkflowEngineOptions) {
     this.repo = opts.repo;
@@ -243,6 +252,12 @@ export class WorkflowEngine {
             });
           },
           emit: (type, payload) => this.emit(workflowId, type, payload),
+          requestPause: (reason) => {
+            // ⚠ 只记请求，**不在这里改状态** —— 状态由下面
+            //   "stage 成功收尾"的分支统一写，否则会把一个
+            //   刚刚成功完成的 stage 标记成失败（P0-2 的老问题）。
+            this.pauseAfterStage.set(workflowId, reason);
+          },
         };
 
         let res: WorkflowStageResult;
@@ -296,6 +311,19 @@ export class WorkflowEngine {
         this.repo.setStageOutput(workflowId, stageId, res.output ?? null);
         this.repo.updateStatus(workflowId, STAGE_STATUS[stageId], { resumeCursor: stageId });
         this.safeEmit(workflowId, 'STAGE_COMPLETED', { stage: stageId, skipped: !!res.skipped });
+
+        // ── stage 请求暂停（等人工介入，如作者批准摘要）──
+        //
+        // ⚠ 顺序很重要：本 stage 已经**成功完成并记为 DONE**，
+        //   暂停只是不再往下走。这样 resume 时它会因 DONE 被跳过，
+        //   从下一个 stage 继续 —— 不会重复生成摘要。
+        const pauseReason = this.pauseAfterStage.get(workflowId);
+        if (pauseReason !== undefined) {
+          this.finishAs(workflowId, 'PAUSED', { resumeCursor: stageId });
+          this.safeEmit(workflowId, 'RUN_PAUSED', { resumeCursor: stageId, reason: pauseReason });
+          this.logger.info('stage 请求暂停，等待人工介入', { workflowId, stageId, reason: pauseReason });
+          return this.result(workflowId, executed, skippedDone);
+        }
       }
 
       // 全部 stage 走完
@@ -306,6 +334,8 @@ export class WorkflowEngine {
       this.controllers.delete(workflowId);
       this.pauseRequests.delete(workflowId);
       this.cancelRequests.delete(workflowId);
+      // ⚠ 必须清 —— 否则下一轮 advance（resume）会立刻又被暂停
+      this.pauseAfterStage.delete(workflowId);
     }
   }
 

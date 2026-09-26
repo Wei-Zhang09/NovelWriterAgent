@@ -69,6 +69,23 @@ export type StageId =
   | 'revision'
   | 'continuity'
   | 'state_settlement'
+  /**
+   * 章节摘要（缺陷 B 修复新增）。
+   *
+   * ⚠ 为什么必须有这个 stage：`ready_to_commit` 把「章节摘要为空」当**阻塞**
+   *   （`workflow-services.ts` 的 `missing.push('章节摘要为空（Commit 需要摘要）')`），
+   *   而原先 12 个 stage 里**没有任何一个产出摘要** ——
+   *   于是工作流**必然**在 `ready_to_commit` 失败，作者只能退出工作流
+   *   手动 `summary.generate` → `summary.approve` → `workflow.resume`。
+   *
+   *   这不是"摘要门禁太严"（§十二 要求人工批准是对的），而是
+   *   **链路缺了产出摘要的那一环**。
+   *
+   * ⚠ 语义：本 stage **只生成**，不替作者批准。生成后暂停等作者决定 ——
+   *   批准了 resume 继续，不批准就留在 PAUSED（作者改正文后再 resume 会
+   *   重新生成，因为本 stage 每次都会重新产出）。
+   */
+  | 'summary'
   | 'ready_to_commit'
   | 'commit'
   | 'verify';
@@ -89,6 +106,7 @@ export const STAGE_ORDER: readonly StageId[] = [
   'revision',
   'continuity',
   'state_settlement',
+  'summary',
   'ready_to_commit',
   'commit',
   'verify',
@@ -105,6 +123,11 @@ export const STAGE_STATUS: Readonly<Record<StageId, WorkflowStatus>> = {
   revision: 'REVISING',
   continuity: 'CHECKING_CONTINUITY',
   state_settlement: 'SETTLING_STATE',
+  // ⚠ 摘要 stage 复用 SETTLING_STATE，**不新增第 17 个状态**：
+  //   §四 的 16 态是"一个不多一个不少"的规格约束。本 stage 处在
+  //   "状态已结算、等待作者确认摘要"的同一语义段内。
+  //   UI 想知道具体卡在哪一步时读 workflow 记录的 `currentStage`。
+  summary: 'SETTLING_STATE',
   ready_to_commit: 'READY_TO_COMMIT',
   commit: 'COMMITTING',
   verify: 'VERIFYING_COMMIT',
@@ -158,6 +181,24 @@ export interface StageContext {
    *   是**状态变更**，不该藏在输出对象的形状约定里。
    */
   readonly setChapter: (chapterId: string, chapterNumber: number) => void;
+  /**
+   * 请求在工作流层面**暂停**，等待人工介入（缺陷 B 修复新增）。
+   *
+   * ⚠ 与 `WorkflowStageResult.ok = false` 的区别：
+   *   `ok:false` 是**失败**（出错、需要修代码/改数据），
+   *   `requestPause` 是**正常的等待**（等作者批准摘要）——
+   *   它不是错误，不该让工作流进 FAILED。
+   *
+   * ⚠ 为什么要有这个方法：摘要必须由作者批准（§十二），
+   *   而 stage 无法自己停在工作流里等 —— 只能"返回结果"。
+   *   若用 `ok:false` 表达"等作者批准"，UI 会把正常等待显示成
+   *   "工作流出错了"，作者会去找 bug 而不是去点批准。
+   *
+   * 用法：在返回 `{ ok: true }` **之前**调用本方法。引擎在 stage
+   * 返回后停止推进（该 stage 仍记为 DONE —— 它的工作确实做完了），
+   * 状态置 `PAUSED`，作者批准后 `workflow.resume` 从下一个 stage 继续。
+   */
+  readonly requestPause: (reason: string) => void;
   /** 发出事件（§二十 事件系统） */
   readonly emit: (type: string, payload?: unknown) => void;
 }

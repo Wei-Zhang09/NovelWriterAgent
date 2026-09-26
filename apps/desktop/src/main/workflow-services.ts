@@ -44,7 +44,7 @@ import { evaluateBookBlueprintGate } from '@nwa/storage';
 import { ManuscriptRepository } from '@nwa/storage';
 import type { ManuscriptVersionSource } from '@nwa/storage';
 import type { ToolRegistry, NovelWorkflowServices } from '@nwa/harness';
-import { pickCommitSource } from '@nwa/harness';
+import { pickCommitSource, SummaryGenerator } from '@nwa/harness';
 import {
   ConceptGenerator,
   SettingsGenerator,
@@ -1519,6 +1519,84 @@ export function createWorkflowServices(deps: WorkflowServicesDeps): NovelWorkflo
         foreshadowingCount: applied.foreshadowingWritten,
         rejected: [...r.rejected, ...applied.skipped],
       };
+    },
+
+    // ── 9b. 章节摘要（缺陷 B）──
+    //
+    // ⚠ 只生成、不批准（§十二 要求人工批准）。
+    async summary(input) {
+      const ch = needChapter(deps, input.chapterId);
+
+      // 已批准过 → 不必再生成/打扰作者。
+      // ⚠ 这条分支是"resume 不会无限循环"的关键：作者批准后 resume，
+      //   summary stage 会被 DONE 跳过；但若因某种原因重跑本 stage，
+      //   这里也能立刻放行而不是再暂停一次。
+      if (ch.summary_approved === 1 && String(ch.summary ?? '').trim() !== '') {
+        return { ok: true, alreadyApproved: true, chars: String(ch.summary).length };
+      }
+
+      const model = deps.runtime;
+      if (!model) {
+        return { ok: false, alreadyApproved: false, chars: 0, error: '尚未配置模型' };
+      }
+
+      // ⚠ 取「当前正文」必须走优先级链 —— 与提交 / 审阅同一份。
+      //   此前这里固定读 `revision ?? draft`：一旦作者手改过正文
+      //   （manuscript.md 取得优先级），摘要描述的就会是**另一份稿子**，
+      //   而摘要要进正史、还要喂给后续章节做长程记忆。
+      const ws = workspaceFor(ch.book_id, ch.chapter_number);
+      const body = ws.readText('manuscript') ?? ws.readText('revision') ?? ws.readText('draft');
+      if (body === null) {
+        return {
+          ok: false,
+          alreadyApproved: false,
+          chars: 0,
+          error: `第 ${ch.chapter_number} 章还没有正文`,
+        };
+      }
+
+      const prior = deps.repos.chapters
+        .listApprovedSummaries(ch.book_id)
+        .filter((c) => c.chapter_number < ch.chapter_number)
+        .map((c) => c.summary ?? '')
+        .filter((x) => x.trim().length > 0);
+      const plan = deps.repos.chapters.readPlan<unknown>(ch.id);
+
+      const gen = new SummaryGenerator({
+        structured: (req) => model.structured('utility', req) as never,
+        logger: deps.logger.child('summary-gen'),
+      });
+
+      const res = await gen.generate({
+        chapterNumber: ch.chapter_number,
+        draftText: body,
+        ...(plan !== null ? { planText: JSON.stringify(plan).slice(0, 4000) } : {}),
+        ...(prior.length > 0 ? { previousSummaries: prior } : {}),
+      });
+
+      // 超长候选：**保留**让作者删两句再用（与 IPC 侧同策略）——
+      // 直接丢弃会让该章永久无法提交（重生成可能同样超长）。
+      if (!res.ok && res.rejectedCandidate) {
+        deps.repos.chapters.setSummaryCandidate(ch.id, res.rejectedCandidate.summary);
+        return {
+          ok: false,
+          alreadyApproved: false,
+          chars: res.rejectedCandidate.summary.length,
+          error: `摘要超长（已保留候选供编辑）：${res.error?.message ?? '未知'}`,
+        };
+      }
+      if (!res.ok || !res.summary) {
+        return {
+          ok: false,
+          alreadyApproved: false,
+          chars: 0,
+          error: res.error?.message ?? '摘要生成失败',
+        };
+      }
+
+      // 写入**候选**（summary_approved 仍为 0）—— 批准由作者完成
+      deps.repos.chapters.setSummaryCandidate(ch.id, res.summary.summary);
+      return { ok: true, alreadyApproved: false, chars: res.summary.summary.length };
     },
 
     // ── 10. Commit 前置门禁 ──
